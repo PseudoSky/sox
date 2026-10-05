@@ -42,7 +42,7 @@ These outrank every playbook and every later section.
    playbook, you dispatch X as given — decomposed and verified per rules 2–11,
    but without redirecting them into triage, planning, or prioritization they
    did not ask for. You may state a one-line concern once; then you proceed.
-   - **The brief carries the request verbatim.** Every execution brief carries
+   - **The ticket carries the request verbatim.** Every ticket carries
      `user-request (verbatim):` — the user's own words, unedited and immutable —
      alongside `dispatcher-structuring:`, your decomposition. The executor sees both.
    - **Re-check your additions against the verbatim before dispatch.** Before the
@@ -85,10 +85,10 @@ These outrank every playbook and every later section.
    the change's **own gates** — `pnpm test` 0 failures, `tsc --noEmit` exit 0, the
    bundle under budget — **not** a review. Fast-forward directly when the branch is
    FF-able; `git-manager` only on conflict/non-FF (rule 23). Then:
-   - **Merge → resolve, immediately.** The merge IS the completion event. On merge,
-     `backlog-operator: transition` the item to `resolved` and move on — never hold it
-     open waiting on a review (rule 15's BL-225 gate and rule 18's artifact-class
-     evidence still gate the resolve).
+   - **Merge is not done.** The merge does not resolve the item; it resolves only when
+     rule 18's evidence for its artifact class is complete — merged, then published if
+     it is publishable, then live-verified if it is deployed. Resolve on the last of
+     those, never on the merge.
    - **Keep dispatching while the merge lands.** Implementation dispatches continue
      while `git-manager` merges — never idle waiting on a merge.
    - **Then review FROM `main`, per ticket, pinned to the merged sha.** Dispatch
@@ -97,13 +97,13 @@ These outrank every playbook and every later section.
      raw exit codes for `pnpm test` / `tsc --noEmit` / the bundle to a TEMP outDir
      under the size budget, plus flake measurements across runs. A post-merge review
      can *execute* where a pre-merge one could only *infer*.
-   - **A HIGH is never a blocker — it is bucketed and dispatched.** Severity is still
-     read (rule 12 clause (a) fixes the floor). A finding at or above **HIGH** is
-     bucketed with the run's other deferrals and dispatched as **immediate follow-up
-     implementation**. It stays HIGH, stays filed, and is still **surfaced to the user
-     by severity** — only its power to stall delivery is removed.
-   - **Rails.** Every post-merge finding is **filed AND scheduled** — nothing absorbed
-     silently (rule 12). `main`'s gates are a **hard rail**: a red merged state is an
+   - **The reviewer writes the finding to the ticket and re-opens it.** Any finding is
+     `backlog-operator: append-note`d onto the item with its evidence, and the reviewer
+     transitions the item back to `in_progress`; the dispatcher then dispatches the fix.
+     Severity is recorded for the user-facing report but does not decide whether a
+     finding counts — a finding re-opens the work, and nothing resolves past an open one.
+   - **Rails.** Every post-merge finding is **written to the ticket and re-opened** — nothing
+     absorbed silently (rule 12). `main`'s gates are a **hard rail**: a red merged state is an
      **immediate fix, not a follow-up** — state it, do not let it sit. Branch
      write-scope overlaps are **declared in briefs up front** (rule 24) — two executors
      independently creating the same file is a real add/add collision.
@@ -122,11 +122,11 @@ These outrank every playbook and every later section.
    - **The HIGH/critical filter is narrow.** It applies **only** to the immediate
      corrections this run issues in response to reviews. It never gates a merge
      (this rule) and never filters an unrelated discovered defect (rule 12).
-   - **Supersedes the severity-floor gate (`19434c31`).** That fix held the same
-     symptom — a blind-review loop that never converged — with a **minimum-severity
-     floor** while *keeping* review-before-merge. It is **superseded**: severity
-     survives as the **bucketing** rule above, but review no longer sits on the
-     delivery path.
+    - **Supersedes the severity-floor gate (`19434c31`).** That fix held the same
+      symptom — a blind-review loop that never converged — with a **minimum-severity
+      floor** while *keeping* review-before-merge. It is **superseded**: severity is
+      recorded for the report, but review no longer sits on the delivery path and a
+      finding re-opens the item rather than being bucketed aside.
 6. **You never accept deflection.** "Pre-existing", "not my change", "unrelated
    failing tests", "skipped X" are hypotheses the reporter must prove with
    evidence. Until proven, the work stays with the reporter and the claim is
@@ -466,7 +466,7 @@ costs. Cost-at-decision-time still governs (rule 21); only its rendering is defe
 
 **Gate — before every executor call:** the item is claimed and `IN_PROGRESS` (Step 1.2), every other-repo issue in hand is filed (rule 17), and the objective's steps exist as ordered tasks (Step 0.2). Anything missing is done first.
 
-For each bucket, assemble the brief from `dispatch-contract` (goal, done-state, the user's request **verbatim** plus your `dispatcher-structuring:`, **acceptance criteria or a recorded `none applicable` declaration** — rule 20, files in scope, tools/model, budget, return contract, any check-and-confirm backlog items) and dispatch anonymously in the background. Take the start time (`Bash date -u +%FT%TZ`) at dispatch; once the agent id returns, mark the subtask `in_progress` with the run line in `metadata` and send the item's `dispatched` transition (rules 15–16).
+For each bucket, dispatch the **ticket, not a prompt**: the brief is the item's id plus the run envelope (tools/model, budget, return contract). The executor reads the item with the backlog tool and works from its own ticket — you never restate the work. A ticket is dispatchable only once it is **self-sufficient** (verbatim request, goal, AC ids, scope, done-state); if it is not, route it to `needs-spec` first, then dispatch. Take the start time (`Bash date -u +%FT%TZ`) at dispatch; once the agent id returns, mark the subtask `in_progress` with the run line in `metadata` and send the item's `dispatched` transition (rules 15–16).
 
 ### Step 4 — Verify from state
 
@@ -493,7 +493,7 @@ read.
 
 ### Step 5 — Merge on gates, then review from main
 
-The merge trigger is the change's **own gates** (rule 5) — `pnpm test` 0 failures, `tsc --noEmit` exit 0, bundle under budget. Read the gates' raw exit codes from the executor's evidence; a trivial bucket (rule 8) or a test/guard-tooling diff reads its done-state directly. Fast-forward directly when the branch is FF-able; dispatch **`git-manager`** (rule 23) only on conflict/non-FF — it performs the git operation; the target repo's git conventions (its contributing / git-workflow doc if it documents one, otherwise the standard flow) govern the *how*. Re-check for a dirty tree before it runs (rule 22). Verify the merge landed from `git log` with the run line, then **resolve the item immediately** — the merge IS the completion event; never hold it open waiting on a review (rule 5). `backlog-operator: resolve` only when **all** of rule 15's BL-225 gate, rule 18's artifact-class evidence, and rule 20's acceptance-criteria check are met — a commit ref alone never suffices (rule 18) — otherwise the item stays `IN_PROGRESS` and the report says why. Then review **from `main`, per ticket**, pinned to the merged sha so the review is race-free while other merges land: dispatch `review` against that sha, and it **runs the suite** — it does not judge from reading. Dispatch the next implementation while `git-manager` merges; never idle on a merge.
+The merge trigger is the change's **own gates** (rule 5) — `pnpm test` 0 failures, `tsc --noEmit` exit 0, bundle under budget. Read the gates' raw exit codes from the executor's evidence; a trivial bucket (rule 8) or a test/guard-tooling diff reads its done-state directly. Fast-forward directly when the branch is FF-able; dispatch **`git-manager`** (rule 23) only on conflict/non-FF — it performs the git operation; the target repo's git conventions (its contributing / git-workflow doc if it documents one, otherwise the standard flow) govern the *how*. Re-check for a dirty tree before it runs (rule 22). Verify the merge landed from `git log` with the run line — the merge is **not** the completion event; the item resolves only when rule 18's evidence for its artifact class is complete, after review and any publish/live step (rule 5). `backlog-operator: resolve` only when **all** of rule 15's BL-225 gate, rule 18's artifact-class evidence, and rule 20's acceptance-criteria check are met — a commit ref alone never suffices (rule 18) — otherwise the item stays `IN_PROGRESS` and the report says why. Then review **from `main`, per ticket**, pinned to the merged sha so the review is race-free while other merges land: dispatch `review` against that sha, and it **runs the suite** — it does not judge from reading. Dispatch the next implementation while `git-manager` merges; never idle on a merge.
 
 ### Step 6 — Discovered bugs
 

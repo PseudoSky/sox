@@ -19,7 +19,7 @@
  *
  * Arms (all matched against whitespace-normalised prose, so line wrapping is irrelevant):
  *   1..12. the merge-first delivery loop is present: merge-on-own-gates, review-from-`main`,
- *          reviewer-runs-the-suite, HIGH-never-blocks, filed-AND-scheduled, hard-rail-`main`,
+ *          findings-re-open-the-ticket, merge-is-not-done, hard-rail-`main`,
  *          write-scope-overlaps-declared, supersedes-severity-floor, Step 5 rename, and the
  *          "Review-gate deadlock" failure mode.
  *   13. the superseded severity-floor shape (8 old invariants) is ABSENT — not resurrected.
@@ -48,9 +48,9 @@ const INVARIANTS = [
   ['merge trigger is the change\'s own gates, not a review', /Code merges on its own gates; review follows the merge/],
   ['review runs FROM `main`, per ticket, pinned to the merged sha', /review FROM `main`, per ticket, pinned to the merged sha/],
   ['the reviewer RUNS the suite, does not judge from reading', /RUNS the suite\*\*, it does not judge from reading/],
-  ['a HIGH is never a blocker — bucketed and dispatched', /A HIGH is never a blocker — it is bucketed and dispatched/],
-  ['a HIGH is dispatched as immediate follow-up implementation', /dispatched as \*\*immediate follow-up implementation\*\*/],
-  ['every post-merge finding is filed AND scheduled', /Every post-merge finding is \*\*filed AND scheduled\*\*/],
+  ['merge is not done — resolve is gated on rule 18, not the merge', /Merge is not done/],
+  ['the reviewer writes the finding to the ticket and re-opens it', /The reviewer writes the finding to the ticket and re-opens it/],
+  ['every post-merge finding is written to the ticket and re-opened', /Every post-merge finding is \*\*written to the ticket and re-opened\*\*/],
   ['`main` gates are a hard rail: red merged state is an immediate fix', /a red merged state is an \*\*immediate fix, not a follow-up\*\*/],
   ['branch write-scope overlaps declared in briefs up front', /write-scope overlaps are \*\*declared in briefs up front\*\*/],
   ['supersedes the severity-floor gate 19434c31', /Supersedes the severity-floor gate/],

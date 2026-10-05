@@ -1,3 +1,10 @@
+## 1.12.0
+
+- **Merge no longer resolves the item.** Rule 5 + Step 5: an item resolves only when rule 18's evidence for its artifact class is complete — merged, then published if publishable, then live-verified if deployed. The merge is an intermediate event, never the completion event.
+- **A review finding re-opens the ticket.** The reviewer `backlog-operator: append-note`s the finding and its evidence onto the item and transitions it back to `in_progress`; the dispatcher then dispatches the fix. Nothing resolves past an open finding. Severity is recorded for the report, not used as a gate.
+- **The ticket is the brief.** Step 3 dispatches the item id plus the run envelope (tools/model, budget, return contract) — never a restatement of the work; the executor reads its own ticket. A ticket is dispatchable only once it is self-sufficient. Rule 0's verbatim now lives on the ticket. `dispatch-contract` §1 updated to match.
+- The `19434c31` guard is **re-pinned deliberately** to the new doctrine (it had been pinning merge-first).
+
 ## 1.11.0
 
 - **Every acceptance criterion must be proven by a test that cites the ticket and the AC id.** Rule 20: an AC block now carries **stable ids** (`AC1`, `AC2`, …); each test the executor writes names the ticket and the AC it exercises (`<uid or BL-<n>> AC<n>`); verification confirms **every AC individually** — an AC no citing test exercises is `verified-fail` and the item is not resolvable. New failure mode **AC-uncovered**. Wired into Step 2.1, Step 4, and the Step 8 checklist. The brief and return are updated in `dispatch-contract` 1.7.0 (new `ac-coverage:` return line; AC section in `templates/brief.md`).

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.0
+
+- **The brief is the ticket.** §1: the brief fields live on the backlog ticket; dispatch sends the ticket id and the run envelope, and the executor reads the ticket with the backlog tool. Matches dispatcher 1.12.0.
+
 ## 1.7.0
 
 - **Acceptance criteria carry ids and every AC is proven by a citing test.** §1 gains the AC-block field (stable `AC1`/`AC2` ids; every test must cite the ticket and the AC id); §2's return block gains `ac-coverage:`; a hard rule forbids `done` with an AC that no citing test exercises. `templates/brief.md` gains the `## Acceptance criteria` section.

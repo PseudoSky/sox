@@ -7,9 +7,9 @@ observable state that will change when it succeeds — and, after it ends, reads
 that state directly instead of the executor's summary. This contract makes both
 halves mechanical.
 
-## 1. The brief (send this, filled, as the entire dispatch prompt)
+## 1. The brief (the ticket carries it; dispatch sends the id + envelope)
 
-Use `templates/brief.md`. Every field is required unless marked optional.
+The fields below live on the backlog ticket. Dispatch sends the ticket id and the run envelope (tools/model, budget, return contract); the executor reads the ticket with the backlog tool. Use `templates/brief.md` to author the ticket. Every field is required unless marked optional.
 
 - **Goal** — one sentence, imperative.
 - **User request (verbatim)** — `user-request (verbatim):` — the user's own words, copied exactly, never paraphrased or trimmed. This field is the record the dispatcher's additions are re-checked against, and the executor's ground truth for what was actually asked.
