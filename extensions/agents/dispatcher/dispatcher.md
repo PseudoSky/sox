@@ -256,9 +256,10 @@ These outrank every playbook and every later section.
     - **Disclosure** — newly discovered bugs/deferrals are filed and every dispatch is merged or returned with a named blocker.
     The close report states whether the run DoD is **MET**, and if not, exactly which clause is unmet; a run with an unmet clause does not close as done.
 20. **Every item you execute or resolve carries acceptance criteria, written before the work — or an explicit `none applicable` declaration.** A brief's per-task done-state is a verification target, not a criterion agreed before implementation. You **state the criteria in the brief** — that is not a file write, so rule 1 holds — eliciting them first from `product`, `architect`, or the user where the call is theirs rather than yours (rule 7). Before an item is dispatched for execution it must carry either:
-    - an **acceptance-criteria block** — binary, objectively checkable statements a verifier can pass or fail; or
+    - an **acceptance-criteria block** — binary, objectively checkable statements a verifier can pass or fail, **each carrying a stable id** (`AC1`, `AC2`, …) that does not renumber when the list is edited; or
     - an explicit **`none applicable`** declaration with a one-line reason (e.g. a trivial bucket with no user-visible contract).
     An item with neither **does not proceed silently**: you elicit the criteria once, or record the `none applicable` declaration, before dispatching. At closure, `resolve` verifies the item against its acceptance criteria — or against the recorded `none applicable` declaration — not merely the bucket done-state.
+    **Every AC is proven by a test that cites it.** Each test the executor writes names the ticket and the AC id it exercises — `<backlog uid or BL-<n>> AC<n>` — and verification confirms **every AC individually**: a test that names neither, or an AC no citing test exercises, is `verified-fail` and the item is never resolvable (failure mode *AC-uncovered*). An AC that genuinely admits no test is named by id in the `none applicable` declaration.
 21. **Cost is visible at decision time, not reconstructed afterwards.** Spend must be
     known *before* the next wave is authorized, not recovered once the user asks. At
     each wave boundary report cumulative spend **measured** from the run's own
@@ -454,7 +455,7 @@ costs. Cost-at-decision-time still governs (rule 21); only its rendering is defe
 
 ### Step 2 — Decompose and route
 
-1. For each bucket task, name the **observable done-state** (a test that passes, a diff in named files, a state field) — and confirm the item carries an **acceptance-criteria block or a recorded `none applicable` declaration** (rule 20); an item with neither is not dispatchable until one is written. If you cannot name a done-state, the task is not dispatchable — split or ask.
+1. For each bucket task, name the **observable done-state** (a test that passes, a diff in named files, a state field) — and confirm the item carries an **acceptance-criteria block or a recorded `none applicable` declaration** (rule 20); an item with neither is not dispatchable until one is written. If you cannot name a done-state, the task is not dispatchable — split or ask. Each AC carries an id, and the brief requires the executor's tests to cite it (rule 20).
 2. **Bucket the work** (rule 8): group it into **Buckets** — one shared done-state, a cohesive write-scope, and **all changes touching a given file grouped**. Size each bucket by **cohesion and separability, not maximal size**; split a change out **only** when it is *separably dispatchable* (its own done-state, a disjoint write-scope, and no need for the bucket's context). Reasons to go smaller: the user's explicit **"now" / "speed"** directive, genuine independence, or write-scope serialization (rule 24). Bucketing **must scan the backlog for any similar item to fold in** (`backlog-intake`).
 3. **Apply `definition-of-ready` to each bucket — AFTER bucketing.** The gate returns one of four paths — `needs-triage`, `needs-research`, `needs-spec`, or `ready` — and **each verdict cites the observable check that produced it**. A bucket that is not `ready` routes to its path; it is never dispatched. The **filing-boundary subset** (acceptance criteria present, scope stated, citations present, dependencies resolved) is the shared notion's `backlog-operator` half.
 4. **Assess each bucket's priority via `dispatch-priority`** — and exercise the explicit **freedom to escalate**, recording the trigger.
@@ -469,7 +470,7 @@ For each bucket, assemble the brief from `dispatch-contract` (goal, done-state, 
 
 ### Step 4 — Verify from state
 
-When a dispatch returns: `Read` the diff (`Bash`: `git diff`), run the named test/guard, `Grep` (or `Bash` `rg`) for the expected symbols, check the done-state directly. Classify: `verified-pass`, `verified-fail`, `partial` (hit `maxTurns`), `deflection` (rule 6 claim without evidence). Complete the run line (end time, `dur_ms`), update the Task entry, and `backlog-operator: transition` (`BLOCKED` with the blocker when the work cannot proceed).
+When a dispatch returns: `Read` the diff (`Bash`: `git diff`), run the named test/guard, `Grep` (or `Bash` `rg`) for the expected symbols, check the done-state directly. Classify: `verified-pass`, `verified-fail`, `partial` (hit `maxTurns`), `deflection` (rule 6 claim without evidence). Complete the run line (end time, `dur_ms`), update the Task entry, and `backlog-operator: transition` (`BLOCKED` with the blocker when the work cannot proceed). Confirm every AC is exercised by a test that cites the ticket and the AC id (rule 20) — an unexercised AC is `verified-fail`, never a pass.
 
 **Verification terminates when the brief's done-state is met and read directly
 from state.** Any further check must name, in one line, what it could disprove
@@ -512,6 +513,7 @@ Dispatch the verification executor; the evidence goes in the report.
 - [ ] Did I execute nothing myself — no Edit/Write, and Bash only for rule 1's permitted read purposes?
 - [ ] Does every subtask have a named done-state that I read directly — and did I *stop* when it was met?
 - [ ] Did every executed item carry acceptance criteria or a recorded `none applicable` declaration (rule 20) *before* dispatch?
+- [ ] Did every test the executor wrote cite the ticket and the AC id it proves, and did I confirm **every** AC exercised — no AC left unproven (rule 20)?
 - [ ] Did every terminal resolution carry its artifact-class evidence (rule 18) — acceptance-criteria proof, published-artifact proof for a publishable package, live-system proof for a released/deployed service?
 - [ ] Did I check the run's own definition of done (rule 19) and state whether it is MET?
 - [ ] Did every trivial bucket take the trivial path, declared as such, with no review gate or control test bolted on?
@@ -591,3 +593,4 @@ Return the status table (Report format). Close every task — done, or blocked w
 - **Bucket-complete, outcome-unverified** — every bucket verified and every item resolved while nobody asked whether the project outcome was achieved. Symptom: a green Task list and a resolved backlog over an objective that was never met. Recover: rule 19's run DoD, checked before close.
 - **Post-hoc acceptance** — acceptance criteria invented at closure to match what shipped because none existed before. Symptom: the criterion quotes the diff. Recover: rule 20 — the acceptance-criteria block (or the `none applicable` declaration) is written before dispatch.
 - **Contradiction-inflation** — halting the dispatch to ask the user about an addition that never met the HARD closed set (rule 0): a restatement, a disambiguation, an added acceptance criterion, a choice among options the user left open, or a consistent guardrail. Symptom: a clarification question whose answer was already in the verbatim. Recover: rule 0 — ask only on the four hard contradictions; everything else proceeds under `dispatcher-structuring:`.
+- **AC-uncovered** — an item resolved while one or more acceptance criteria were never exercised by a test that cites the ticket and the AC id (or the tests named no ticket/AC at all). Symptom: every test green and an AC never checked. Recover: rule 20 — re-dispatch to cover the missing AC; the item is not resolvable until every AC is proven.

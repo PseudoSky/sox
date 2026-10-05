@@ -14,6 +14,7 @@ Use `templates/brief.md`. Every field is required unless marked optional.
 - **Goal** — one sentence, imperative.
 - **User request (verbatim)** — `user-request (verbatim):` — the user's own words, copied exactly, never paraphrased or trimmed. This field is the record the dispatcher's additions are re-checked against, and the executor's ground truth for what was actually asked.
 - **Dispatcher structuring** — `dispatcher-structuring:` — everything the dispatcher added: the restatement, the decomposition, acceptance criteria, guardrails, the chosen option among ones the user left open. **Before dispatch, re-check each addition against the verbatim.** A **HARD contradiction** is the closed set — it *forbids what the user required*, *requires what the user forbade*, *reverses a stated order/priority/constraint*, or *redirects target/scope to something the user did not name*. On a HARD contradiction, **halt and ask the user before dispatching**. Restating, disambiguating, adding acceptance criteria, choosing among open options, and adding consistent guardrails are **not** contradictions — never ask on those.
+- **Acceptance criteria (with ids)** — the item's AC block, each criterion carrying a stable id (`AC1`, `AC2`, …). Every test the executor writes must cite the ticket and the AC id it exercises (`<uid or BL-<n>> AC<n>`); an AC with no citing test fails verification. Where an AC admits no test, it is named by id in the `none applicable` declaration (dispatcher rule 20).
 - **Done-state** — the observable evidence: `tests: <cmd> exits 0`, `diff touches only: <paths>`, `state: <file>.<field> == <value>`, `artifact: <path> exists with <shape>`. At least one; never "when you are confident".
 - **Scope** — files/dirs in scope; anything else is out of scope and must be reported, not edited.
 - **Context inline** — the file excerpts, error text, and prior findings the executor needs. Never "read `<path>` for context" for anything under 200 lines; inline it.
@@ -79,6 +80,7 @@ evidence:
   - <cmd> → <exit code / last line>
   - diff: <paths touched> (<n> files, +<a>/−<b>)
   - <state or artifact check> → <observed value>
+ac-coverage: [<AC id → test citing ticket+AC id>] | none-applicable
 out-of-scope-observed: [<path or symptom> — <one line>] | none
 claims-needing-proof: [<"pre-existing"/"unrelated" style claim> — <evidence attached or "none">] | none
 remaining (if partial/blocked): <what is left, or the blocker>
@@ -144,3 +146,4 @@ note, and the source of the §4 row's `dur_ms`/`item`.
 - Never reference a file for the executor to open when it can be inlined.
 - Every brief states model and tools explicitly.
 - Every check-and-confirm item is confirmed to the dispatcher *before* it is corrected.
+- Every AC is proven by a test citing the ticket and the AC id; an AC with no citing test is not `done`.

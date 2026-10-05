@@ -1,3 +1,7 @@
+## 1.11.0
+
+- **Every acceptance criterion must be proven by a test that cites the ticket and the AC id.** Rule 20: an AC block now carries **stable ids** (`AC1`, `AC2`, …); each test the executor writes names the ticket and the AC it exercises (`<uid or BL-<n>> AC<n>`); verification confirms **every AC individually** — an AC no citing test exercises is `verified-fail` and the item is not resolvable. New failure mode **AC-uncovered**. Wired into Step 2.1, Step 4, and the Step 8 checklist. The brief and return are updated in `dispatch-contract` 1.7.0 (new `ac-coverage:` return line; AC section in `templates/brief.md`).
+
 ## 1.10.3
 
 - **Coordination principles harvested from the `claude-agents` meta-orchestration catalog (`agent-organizer`, `multi-agent-coordinator`), two edits into existing homes (no new section):** rule 24 now treats a shared **external resource** (running service, database, port, migration) as a scope that serializes like a file, and resolves unclear disjointness to **serial** (latency beats a corrupted merge); Step 2.6 names a `blocks` blocker cycle a **plan defect to surface**, never worked around. The catalog's other principles (agent selection, decomposition, dependency ordering via the ready view, brief/return contract, retry ladder, write-scope) were already carried and left un-restated; two fresh-subagent review passes cut the two candidate clauses that duplicated the ready view and the `Roster invention` remedy. README dependency count corrected six → eight (`definition-of-ready`, `dispatch-priority` were omitted).

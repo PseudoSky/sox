@@ -12,6 +12,13 @@ user-request (verbatim): <the user's own words, copied exactly — never paraphr
 
 dispatcher-structuring: <everything the dispatcher added — goal narrowing, acceptance criteria, ordering, scope, routing>
 
+## Acceptance criteria (test each; cite the ticket and the AC id)
+
+- <uid or BL-<n>> AC1 — <binary, checkable statement>
+- <uid or BL-<n>> AC2 — <statement>
+
+Every test you write names the ticket and the AC id it exercises (`<uid or BL-<n>> AC<n>`). An AC with no citing test is not done. Where an AC admits no test, write `AC<n>: none applicable — <reason>`.
+
 ## Done-state (the dispatcher will check these directly)
 
 - tests: `<command>` exits 0

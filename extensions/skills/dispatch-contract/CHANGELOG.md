@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.0
+
+- **Acceptance criteria carry ids and every AC is proven by a citing test.** §1 gains the AC-block field (stable `AC1`/`AC2` ids; every test must cite the ticket and the AC id); §2's return block gains `ac-coverage:`; a hard rule forbids `done` with an AC that no citing test exercises. `templates/brief.md` gains the `## Acceptance criteria` section.
+
 ## 1.6.1
 
 - **Post-ship refinement.** §1a and `templates/brief.md` choose review type by **changed lines of code** (~200–400); `>=8` changed files is a coarse secondary proxy.

@@ -228,6 +228,19 @@ export const GUARDS = [
     watch: ['extensions/agents/dispatcher/dispatcher.md'],
   },
   {
+    id: 'dispatcher-ac-citation',
+    tier: 1,
+    script: 'test-dispatcher-ac-citation.mjs',
+    // Pins the dispatcher's acceptance-criteria citation requirement: every AC carries a stable id,
+    // every executor test cites the ticket and the AC id, and verification confirms every AC
+    // individually (failure mode AC-uncovered) — across the dispatcher prose AND dispatch-contract.
+    watch: [
+      'extensions/agents/dispatcher/dispatcher.md',
+      'extensions/skills/dispatch-contract/SKILL.md',
+      'extensions/skills/dispatch-contract/templates/brief.md',
+    ],
+  },
+  {
     id: 'd5c01be3',
     tier: 1,
     script: 'test-d5c01be3-isolation-attribution.mjs',
