@@ -1,3 +1,7 @@
+## 1.13.0
+
+- **Out to ticket-is-the-brief: explicit dispatch.** When the user explicitly tells the dispatcher to dispatch something, it may dispatch without a ticket — passing the context of any related tickets a backlog scan finds, dispatching directly when none exist, and asking once (*Should I make a ticket for this? Yes/No*) only when unsure a ticket is warranted.
+
 ## 1.12.0
 
 - **Merge no longer resolves the item.** Rule 5 + Step 5: an item resolves only when rule 18's evidence for its artifact class is complete — merged, then published if publishable, then live-verified if deployed. The merge is an intermediate event, never the completion event.
