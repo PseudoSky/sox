@@ -517,12 +517,24 @@ function splitSqlStatements(ddl: string): string[] {
 }
 
 /**
- * Maximum number of ids bound per `IN (…)` list in a single batched
- * {@link GraphBackend.getEdges} statement (`srcs` / `dsts`). Larger lists are
- * split into ascending chunks of this size; chunk results are concatenated in
- * chunk order, so the result equals one unchunked read.
+ * Bind-variable budget for ONE batched {@link GraphBackend.getEdges} statement.
+ * Every parameter of the statement — the `srcs` / `dsts` id lists, the `rels`
+ * list and any singular / metadata filters — together stays at or under this
+ * value, which is below SQLite's historical 999-variable ceiling (<3.32). Id
+ * lists longer than the remaining budget are split into ascending chunks;
+ * chunk results are concatenated in chunk order, so the result equals one
+ * unchunked read.
  */
 export const EDGE_READ_CHUNK = 500;
+
+/**
+ * Maximum number of distinct `rels` accepted by one batched read. `rels` is a
+ * filter, not a key list: it is not chunked (chunking a filter would split the
+ * order contract), so it is bounded and a larger list is a
+ * {@link ConstraintError}. Leaves at least `EDGE_READ_CHUNK - EDGE_READ_MAX_RELS`
+ * bind variables per statement for ids.
+ */
+export const EDGE_READ_MAX_RELS = 64;
 
 /**
  * Query for {@link GraphBackend.getEdges}. Every form reads only live edges
@@ -532,9 +544,13 @@ export const EDGE_READ_CHUNK = 500;
  * exclusive per axis (passing both throws {@link ConstraintError}). A
  * present-but-empty plural list returns `[]` without executing SQL.
  *
- * Batch ordering is contractual: `srcs` yields `(src, rel, rowid)` ascending,
- * `dsts`-only yields `(dst, rel, rowid)` ascending. With both lists the
- * result is their intersection and order is unspecified.
+ * Batch ordering is contractual: `srcs` (with `dst`, `dsts` or neither) yields
+ * `(src, rel, rowid)` ascending; `dsts` without `srcs` (with `src` or neither)
+ * yields `(dst, rel, rowid)` ascending. `srcs` + `dsts` is the intersection,
+ * ordered `(src, rel, rowid)`. Ids must be non-negative integers
+ * ({@link ConstraintError} otherwise); `rels` holds at most
+ * {@link EDGE_READ_MAX_RELS} distinct values; no statement binds more than
+ * {@link EDGE_READ_CHUNK} variables.
  */
 export interface IEdgeQuery {
   src?: number;
@@ -549,11 +565,28 @@ export interface IEdgeQuery {
   rels?: readonly EdgeRel[];
 }
 
-/** Sort ascending, de-duplicate, and split into {@link EDGE_READ_CHUNK}-sized chunks. */
-function chunkSortedUnique(ids: readonly number[]): number[][] {
-  const sorted = [...new Set(ids)].sort((a, b) => a - b);
+/**
+ * Validate a batch id list before any SQL runs: ids are node rowids, so each
+ * must be a finite, non-negative safe integer (NaN, ±Infinity, fractions and
+ * negatives can never match a row and would otherwise bind silently).
+ */
+function assertEdgeIds(axis: string, ids: readonly number[]): void {
+  for (const id of ids) {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) {
+      throw new ConstraintError(`getEdges: \`${axis}\` ids must be non-negative integers, got ${String(id)}`);
+    }
+  }
+}
+
+/** Sort ascending and de-duplicate. */
+function sortedUnique(ids: readonly number[]): number[] {
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+
+/** Split an already-sorted list into chunks of at most `size`. */
+function chunkBy(sorted: readonly number[], size: number): number[][] {
   const chunks: number[][] = [];
-  for (let i = 0; i < sorted.length; i += EDGE_READ_CHUNK) chunks.push(sorted.slice(i, i + EDGE_READ_CHUNK));
+  for (let i = 0; i < sorted.length; i += size) chunks.push(sorted.slice(i, i + size));
   return chunks;
 }
 
@@ -2761,6 +2794,9 @@ export class StoreGraphBackend implements GraphBackend {
     // (ADR-0017 / BUG-032): return [] without executing SQL — never an
     // `IN ()` parse error and never a silently-widened scan.
     if (opts.srcs?.length === 0 || opts.dsts?.length === 0 || opts.rels?.length === 0) return [];
+    // Reject unusable ids before any SQL runs (R4).
+    if (opts.srcs !== undefined) assertEdgeIds('srcs', opts.srcs);
+    if (opts.dsts !== undefined) assertEdgeIds('dsts', opts.dsts);
 
     const base: string[] = ['t_invalid IS NULL'];
     const baseParams: unknown[] = [];
@@ -2769,6 +2805,9 @@ export class StoreGraphBackend implements GraphBackend {
     if (opts.rel !== undefined) { base.push('rel = ?'); baseParams.push(opts.rel); }
     if (opts.rels !== undefined) {
       const rels = [...new Set(opts.rels)];
+      if (rels.length > EDGE_READ_MAX_RELS) {
+        throw new ConstraintError(`getEdges: \`rels\` holds ${rels.length} distinct values; the maximum is ${EDGE_READ_MAX_RELS}`);
+      }
       base.push(`rel IN (${rels.map(() => '?').join(', ')})`);
       baseParams.push(...rels);
     }
@@ -2787,33 +2826,49 @@ export class StoreGraphBackend implements GraphBackend {
       return rows.map(rowToEdgeRecord);
     }
 
-    // Batch forms: sorted + de-duplicated ascending id lists, chunked so the
-    // bound-variable count stays under every driver's ceiling. Deterministic
-    // chunks make the concatenation equal one unchunked read (§3.5).
-    const srcChunks = opts.srcs !== undefined ? chunkSortedUnique(opts.srcs) : [undefined];
-    const dstChunks = opts.dsts !== undefined ? chunkSortedUnique(opts.dsts) : [undefined];
+    // Batch forms. Every statement's TOTAL bind count (filters + id lists)
+    // stays <= EDGE_READ_CHUNK: `avail` is what the filters leave for ids.
+    const avail = EDGE_READ_CHUNK - baseParams.length;
+    if (avail < 2) {
+      throw new ConstraintError(`getEdges: filters bind ${baseParams.length} variables, leaving no room for batch ids (budget ${EDGE_READ_CHUNK})`);
+    }
+    const srcs = opts.srcs !== undefined ? sortedUnique(opts.srcs) : undefined;
+    const dsts = opts.dsts !== undefined ? sortedUnique(opts.dsts) : undefined;
+    const inList = (col: string, ids: readonly number[]): string => `${col} IN (${ids.map(() => '?').join(', ')})`;
     // Explicit ORDER BY makes the order planner-independent: (src,rel,rowid)
-    // for `srcs`, (dst,rel,rowid) for `dsts`-only — the per-key order the
-    // indexed single-key reads yield.
-    const orderBy = opts.srcs !== undefined ? 'src, rel, rowid' : 'dst, rel, rowid';
+    // whenever `srcs` is present, else (dst,rel,rowid) — the per-key order the
+    // indexed single-key reads yield. Chunks are ascending key ranges, so
+    // concatenating them keeps that order globally (§3.5).
+    const orderBy = srcs !== undefined ? 'src, rel, rowid' : 'dst, rel, rowid';
+    const run = async (clauses: string[], params: unknown[]): Promise<DbEdgeRow[]> => {
+      const { rows } = await db.executeAll<DbEdgeRow>(
+        `SELECT * FROM edge WHERE ${clauses.join(' AND ')} ORDER BY ${orderBy}`, params,
+      );
+      return rows;
+    };
     const out: EdgeRecord[] = [];
-    for (const sChunk of srcChunks) {
-      for (const dChunk of dstChunks) {
-        const clauses = [...base];
-        const params = [...baseParams];
-        if (sChunk !== undefined) {
-          clauses.push(`src IN (${sChunk.map(() => '?').join(', ')})`);
-          params.push(...sChunk);
+    if (srcs !== undefined && dsts !== undefined) {
+      // R3: chunk ONE axis (srcs) — never the cross product. `dsts` rides along
+      // as a bounded IN when it fits in half the budget, otherwise it is
+      // applied as a JS set filter on the rows the (indexed, chunked) src read
+      // returns. Statements: ceil(|srcs| / (avail - |dsts|)) <= 2*ceil(|srcs|/avail).
+      const inSql = dsts.length <= Math.floor(avail / 2);
+      const size = inSql ? avail - dsts.length : avail;
+      const dstSet = inSql ? undefined : new Set(dsts);
+      for (const sChunk of chunkBy(srcs, size)) {
+        const clauses = [...base, inList('src', sChunk)];
+        const params = [...baseParams, ...sChunk];
+        if (inSql) { clauses.push(inList('dst', dsts)); params.push(...dsts); }
+        for (const r of await run(clauses, params)) {
+          if (dstSet === undefined || dstSet.has(r.dst)) out.push(rowToEdgeRecord(r));
         }
-        if (dChunk !== undefined) {
-          clauses.push(`dst IN (${dChunk.map(() => '?').join(', ')})`);
-          params.push(...dChunk);
-        }
-        const { rows } = await db.executeAll<DbEdgeRow>(
-          `SELECT * FROM edge WHERE ${clauses.join(' AND ')} ORDER BY ${orderBy}`, params,
-        );
-        for (const r of rows) out.push(rowToEdgeRecord(r));
       }
+      return out;
+    }
+    const axis = srcs !== undefined ? 'src' : 'dst';
+    const ids = (srcs ?? dsts) as number[];
+    for (const chunk of chunkBy(ids, avail)) {
+      for (const r of await run([...base, inList(axis, chunk)], [...baseParams, ...chunk])) out.push(rowToEdgeRecord(r));
     }
     return out;
   }

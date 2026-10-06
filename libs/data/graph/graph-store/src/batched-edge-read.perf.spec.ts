@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SqliteAdapterImpl } from '@adhd/sox-store-adapter';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import { createGraphBackend, ConstraintError, EDGE_READ_CHUNK } from './index.js';
+import { createGraphBackend, ConstraintError, EDGE_READ_CHUNK, EDGE_READ_MAX_RELS } from './index.js';
 import type { GraphBackend, EdgeRecord, TypePolicy } from './index.js';
 
 const permissivePolicy: TypePolicy = { validateKind() {}, validateRel() {} };
@@ -419,3 +419,118 @@ describe('89cc3a30 AC-7 — empty lists execute zero SQL', () => {
 });
 
 afterEach(() => { /* spies restore in finally blocks */ });
+
+// ── 89cc3a30 AC-9..AC-12 — bind budget, linear srcs x dsts, id validation ────
+
+const range = (from: number, n: number): number[] => Array.from({ length: n }, (_, i) => from + i);
+
+describe('89cc3a30 AC-9 — srcs+dsts binds at most EDGE_READ_CHUNK variables per statement', () => {
+  it('89cc3a30 AC-9: 500 srcs + 500 dsts: every statement binds <= EDGE_READ_CHUNK params and the intersection is exact', async () => {
+    const spy = spyOn(big.adapter);
+    try {
+      spy.reset();
+      const got = await big.backend.getEdges({ srcs: range(1, 500), dsts: range(2, 500) });
+      const calls = edgeSelects(spy.calls);
+      expect(got.map((e) => [e.src, e.dst])).toEqual(range(1, 500).map((i) => [i, i + 1]));
+      expect(calls.length).toBeGreaterThan(0);
+      expect(Math.max(...calls.map((c) => c.args.length))).toBeLessThanOrEqual(EDGE_READ_CHUNK);
+    } finally {
+      spy.restore();
+    }
+  });
+
+  it('89cc3a30 AC-9: a small dsts list rides as a bounded IN; total params (srcs+dsts+rels) still <= EDGE_READ_CHUNK', async () => {
+    const spy = spyOn(big.adapter);
+    try {
+      spy.reset();
+      const got = await big.backend.getEdges({ srcs: range(1, 1200), dsts: range(2, 100), rels: ['RELATES_TO', 'PART_OF'] });
+      const calls = edgeSelects(spy.calls);
+      expect(got.map((e) => [e.src, e.dst])).toEqual(range(1, 100).map((i) => [i, i + 1]));
+      expect(Math.max(...calls.map((c) => c.args.length))).toBeLessThanOrEqual(EDGE_READ_CHUNK);
+    } finally {
+      spy.restore();
+    }
+  });
+});
+
+describe('89cc3a30 AC-10 — rels is inside the same bind budget', () => {
+  it('89cc3a30 AC-10: more than EDGE_READ_MAX_RELS distinct rels is a ConstraintError with zero statements', async () => {
+    const spy = spyOn(big.adapter);
+    try {
+      spy.reset();
+      const rels = range(0, EDGE_READ_MAX_RELS + 1).map((i) => `REL_${i}`);
+      await expect(big.backend.getEdges({ srcs: [1], rels })).rejects.toBeInstanceOf(ConstraintError);
+      expect(edgeSelects(spy.calls).length).toBe(0);
+    } finally {
+      spy.restore();
+    }
+  });
+
+  it('89cc3a30 AC-10: EDGE_READ_MAX_RELS rels (duplicates collapsed) + 5000 srcs: every statement <= EDGE_READ_CHUNK params, rows exact', async () => {
+    const spy = spyOn(big.adapter);
+    try {
+      spy.reset();
+      const rels = [...range(0, EDGE_READ_MAX_RELS - 1).map((i) => `REL_${i}`), 'RELATES_TO'];
+      const got = await big.backend.getEdges({ srcs: range(1, 5000), rels: [...rels, ...rels] });
+      const calls = edgeSelects(spy.calls);
+      expect(got.map((e) => e.src)).toEqual(range(1, 5000));
+      expect(Math.max(...calls.map((c) => c.args.length))).toBeLessThanOrEqual(EDGE_READ_CHUNK);
+      expect(calls.length).toBe(Math.ceil(5000 / (EDGE_READ_CHUNK - EDGE_READ_MAX_RELS)));
+    } finally {
+      spy.restore();
+    }
+  });
+});
+
+describe('89cc3a30 AC-11 — srcs x dsts is linear in the list sizes, not quadratic', () => {
+  it('89cc3a30 AC-11: 5000 srcs x 5000 dsts: statement count is linear (<= 2*ceil(n/EDGE_READ_CHUNK)), rows equal the SQL ground truth in (src,rel,rowid) order', async () => {
+    const n = 5_000;
+    const spy = spyOn(big.adapter);
+    try {
+      spy.reset();
+      const got = await big.backend.getEdges({ srcs: range(1, n), dsts: range(2, n) });
+      const calls = edgeSelects(spy.calls);
+      const { rows } = await big.adapter.executeAll<{ src: number; dst: number }>(
+        `SELECT src, dst FROM edge WHERE t_invalid IS NULL AND src BETWEEN 1 AND ${n} AND dst BETWEEN 2 AND ${n + 1} ORDER BY src, rel, rowid`,
+      );
+      expect(got.map((e) => [e.src, e.dst])).toEqual(rows.map((r) => [r.src, r.dst]));
+      expect(got.length).toBe(n);
+      const chunks = Math.ceil(n / EDGE_READ_CHUNK);
+      expect(calls.length).toBeLessThanOrEqual(2 * chunks); // chunk^2 would be 100
+      for (const c of calls) expect(c.args.length).toBeLessThanOrEqual(EDGE_READ_CHUNK);
+    } finally {
+      spy.restore();
+    }
+  });
+
+  it('89cc3a30 AC-11: differential — srcs+dsts equals the single-key reads filtered, on both the bounded-IN and JS-filter paths', async () => {
+    const { backend, ids } = await freshBackend();
+    await seedMixed(backend, ids);
+    const rnd = prng(7);
+    for (let trial = 0; trial < 30; trial++) {
+      const s = ids.filter(() => rnd() < 0.5);
+      const d = ids.filter(() => rnd() < 0.5);
+      const dSet = new Set(d);
+      const expected: EdgeRecord[] = [];
+      for (const x of [...s].sort((a, b) => a - b)) expected.push(...(await backend.getEdges({ src: x })).filter((e) => dSet.has(e.dst)));
+      expect(await backend.getEdges({ srcs: s, dsts: d })).toEqual(expected);
+    }
+  });
+});
+
+describe('89cc3a30 AC-12 — unusable ids are rejected before any SQL', () => {
+  it('89cc3a30 AC-12: NaN, +/-Infinity, fractions and negatives in srcs or dsts throw ConstraintError with zero statements', async () => {
+    const spy = spyOn(big.adapter);
+    try {
+      for (const bad of [Number.NaN, Infinity, -Infinity, 1.5, -1, Number.MAX_SAFE_INTEGER + 2]) {
+        for (const q of [{ srcs: [1, bad] }, { dsts: [bad] }, { srcs: [1], dsts: [bad] }]) {
+          spy.reset();
+          await expect(big.backend.getEdges(q)).rejects.toBeInstanceOf(ConstraintError);
+          expect(spy.calls.length).toBe(0);
+        }
+      }
+    } finally {
+      spy.restore();
+    }
+  });
+});

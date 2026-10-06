@@ -119,9 +119,20 @@ const incoming = await graph.getEdges({ dsts: pageIds, rels: ['PART_OF', 'BLOCKS
 ```
 
 - Only live edges (`t_invalid IS NULL`); inside `graph.transaction` the tx-scoped `tx.getEdges` sees uncommitted writes and invalidations.
-- Ordering is contractual: `srcs` returns `(src, rel, rowid)` ascending, `dsts`-only returns `(dst, rel, rowid)` ascending, identical to concatenating the single-key reads over the ascending page. `srcs` + `dsts` is an intersection (order unspecified).
+- Ordering is contractual and stated per combination (identical to concatenating the single-key reads over the ascending page):
+
+  | Combination | Order |
+  | --- | --- |
+  | `srcs` | `(src, rel, rowid)` ascending |
+  | `srcs` + `dst` | `(src, rel, rowid)` ascending |
+  | `src` + `dsts` | `(dst, rel, rowid)` ascending |
+  | `dsts` | `(dst, rel, rowid)` ascending |
+  | `srcs` + `dsts` | intersection, `(src, rel, rowid)` ascending |
 - Singular and plural on the same axis (`src`+`srcs`, `dst`+`dsts`, `rel`+`rels`) throw `ConstraintError`. A present-but-empty list returns `[]` without executing SQL.
-- Large lists are sorted, de-duplicated and chunked at `EDGE_READ_CHUNK` (500) ids per statement; the concatenated result equals one unchunked read.
+- Bind budget: no statement binds more than `EDGE_READ_CHUNK` (500) variables in total (ids + `rels` + any other filters), so it runs on SQLite < 3.32 (999-variable limit). Large id lists are sorted, de-duplicated and chunked; the concatenated result equals one unchunked read.
+- `srcs` + `dsts` is linear, not a cross product: `srcs` is chunked and `dsts` is applied as a bounded `IN` (or, when `dsts` exceeds half the budget, as an in-memory filter), so statements are `O(ceil(|srcs| / EDGE_READ_CHUNK))`.
+- `rels` is a filter and is not chunked: more than `EDGE_READ_MAX_RELS` (64) distinct values throws `ConstraintError`.
+- Ids must be non-negative integers (node rowids). `NaN`, `±Infinity`, fractions and negatives in `srcs` / `dsts` throw `ConstraintError` before any SQL runs.
 
 ### Core types
 
