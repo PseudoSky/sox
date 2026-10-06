@@ -81,7 +81,16 @@ in order and stop at the first that fires:
    missing ingredient is a design or contract decision (interface shape, module
    boundary, data format), it is spec. If the done-state is unwritable because a
    *fact* is missing, go back to check 2.
-4. **Ready check** → `ready`.
+4. **Surface-vs-enforcement check** → `needs-spec`.
+   Does the bucket ship a config field, type, interface, or schema whose
+   *observable effect* is implemented by a **different slice**? If yes, it is spec
+   unless it carries one of two things: (a) an AC proving the field is **inert
+   until slice X** — a declared, tested fact, e.g. a test asserting no production
+   consumer yet — or (b) the surface is **withheld** from the public type/API until
+   its enforcement slice lands. A field that validates, persists, and documents but
+   does nothing is a silent no-op — a verification failure, not ready work. Resolve
+   by adding the AC or moving the field to the enforcement slice.
+5. **Ready check** → `ready`.
    Done-state writable as an observable action, scope named, no blocking unknown. A
    bucket that reaches here without a check firing is ready — **do not invent a gate
    to look rigorous.**
