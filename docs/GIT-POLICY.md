@@ -277,6 +277,19 @@ Schema version **1**. Each edit appends one dated entry; entries are never rewri
   and [`package.json`](../package.json) rather than restating them. It is appended as §8 after §7 so
   that no existing section number changes and every `§`-reference inside earlier entries stays
   accurate; no other rule changed. Policy revision read from `main` @ `b06e0d7e`.
+- **2026-10-06 — fast-forwarded `feat/getedges-batched-b7d4` and reaped its worktree**
+  (`git-manager`, run `dispatch-2026-10-04-b7d4`, backlog `89cc3a30`). *Reason:* §6's operation-log
+  convention requires one entry per git operation; no policy rule changed. The branch tip
+  `60892e9a` (one commit, four paths: `libs/data/graph/graph-store/src/index.ts`, its `README.md`,
+  `src/batched-edge-read.perf.spec.ts`, `.changeset/getedges-batched-srcs-dsts-rels.md`) was based
+  on the then-current `main` tip `fc67c02e`, so §1's already-based-linear rule applied:
+  `git merge --ff-only` moved `main` `fc67c02e..60892e9a`. The feature commit passed the
+  repo's commit hooks (lint green). The worktree `.worktrees/getedges-batched-b7d4` was removed
+  under §5's three-part predicate (empty `git status --porcelain`, unlocked, tip merged) with the
+  safe `git branch -d`; no `--force`, `-D`, or §7 break-glass was used. Not pushed (awaiting
+  separate approval), so §5's "committed and pushed" recovery preference is unmet for this
+  branch's content until `main` is pushed; the commit is durable on `main`. Policy revision read
+  from `main` @ `fc67c02e`.
 
 ## 7. Break-glass
 
