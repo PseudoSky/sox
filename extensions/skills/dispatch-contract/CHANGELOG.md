@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.0
+
+- §1a: blind review applies only to first-pass implementations; corrections (finding fixes, `main` hot fixes, re-dispatches) get no review round.
+- §5: the run line is now the dispatch record `dispatcher: …, session: …, agent: …, task: …, run_at: …` (+ lifecycle fields), appended to the plan or issue it serves. Matches dispatcher 1.14.0.
+
 ## 1.8.0
 
 - **The brief is the ticket.** §1: the brief fields live on the backlog ticket; dispatch sends the ticket id and the run envelope, and the executor reads the ticket with the backlog tool. Matches dispatcher 1.12.0.

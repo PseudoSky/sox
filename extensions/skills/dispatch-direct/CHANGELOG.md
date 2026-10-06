@@ -1,3 +1,7 @@
+## 1.7.0
+
+- Step 7 appends the §5 run line to the plan or issue served; Step 11 post-merge blind review excludes corrections. Matches dispatcher 1.14.0.
+
 ## 1.6.3
 
 - Dedupe the blind-review sizing rule to its two homes (87ba1b48): dispatcher rule 5 and dispatch-direct Step 11 now point at `dispatch-contract` §1a and AGENTS.md’s `## Blind Review` instead of restating the threshold.

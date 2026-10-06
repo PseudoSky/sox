@@ -241,6 +241,18 @@ export const GUARDS = [
     ],
   },
   {
+    id: 'dispatcher-plain-status-no-correction-review',
+    tier: 1,
+    script: 'test-dispatcher-plain-status-no-correction-review.mjs',
+    // Pins dispatcher 1.14.0: plain-markdown status table (no HTML), blind review first-pass only
+    // (never corrections), and the single dispatch-record run line. Negative control = commit d7c954b4.
+    watch: [
+      'extensions/agents/dispatcher/dispatcher.md',
+      'extensions/skills/dispatch-contract/SKILL.md',
+      'AGENTS.md',
+    ],
+  },
+  {
     id: 'd5c01be3',
     tier: 1,
     script: 'test-d5c01be3-isolation-attribution.mjs',

@@ -424,6 +424,10 @@ surrounding context and review points). **Changed-file count (>=8) is a coarse s
 a large mechanical rename is big by count but low cognitive load. Plan completion uses exactly
 one full-delta blind review (plan-start sha → finish sha) regardless of size.
 
+**It never applies to corrections.** Only the first-pass implementation of an item is reviewed
+blind; a fix for a review finding, a hot fix or follow-on fix to `main`, and a re-dispatch of a
+failed attempt get no review round — they are verified against their own gates.
+
 ## ⛔ AGENT CONSTRAINT — LIVE SHIP VERIFICATION (MANDATORY)
 
 **Every agent MUST read and follow [`CONTRIBUTING.md`](./CONTRIBUTING.md) before reporting any change as complete.**

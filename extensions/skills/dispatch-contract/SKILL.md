@@ -47,6 +47,11 @@ with these review-specific fields (`templates/brief.md` carries them):
   no review points. Below → **guided review**, which may carry focused context and review points.
   At **plan completion**, run exactly one **full-delta blind review** over the plan-start sha →
   finish sha, independent of size.
+- **Blind review applies only to the first-pass implementation of an item.** A **correction** to
+  work — a fix for a review finding, a hot fix or follow-on fix to `main`, a re-dispatch of a
+  failed or partial attempt — gets **no review round**: the dispatcher verifies it against its own
+  gates and the finding it answers (a correction loop that re-reviews never converges and blocks
+  the release).
 
 ## 1b. What a review finding means now (severity is for bucketing)
 
@@ -127,16 +132,23 @@ executor's `outcome`. `scope=out` means the diff touched files outside the brief
 evidence. These rows are the raw material for `docs/catalog/agents/dispatcher/METRICS.md`;
 the dispatcher does not aggregate or act on them.
 
-## 5. Run line (one per dispatch, kept current)
+## 5. Run line / dispatch record (one per dispatch, kept current)
 
 ```text
-event=<claimed|started|dispatched|blocked|merged|resolved> agent=<type> model=<tier> id=<agent/dispatch id> start=<ISO UTC> end=<ISO UTC|running> dur_ms=<n|running> item=<backlog uid|none>
+dispatcher: <dispatcher session_id>, session: <subagent session id>, agent: <dispatched agent name>, task: <task title>, run_at: <ISO UTC timestamp>
 ```
 
-`start` is taken with `date -u +%FT%TZ` at dispatch; `end` and `dur_ms` come from
-the task-notification (`duration_ms`) when available, else from `date -u` at
-return. The same line is the Task entry's `metadata`, the backlog transition's
-note, and the source of the §4 row's `dur_ms`/`item`.
+This line is the single dispatch record. At dispatch it is appended (`backlog-operator:
+append-note`) to the plan or issue the dispatch serves — the issue, or the plan item for
+plan-level work; with no item it lives only in the Task entry's `metadata`. Lifecycle
+transitions carry it followed by `; event=<claimed|started|dispatched|blocked|merged|resolved>
+model=<tier> end=<ISO UTC|running> dur_ms=<n|running> item=<backlog uid|none>`.
+
+`run_at` is taken with `date -u +%FT%TZ` at dispatch; `end` and `dur_ms` come from the
+task-notification (`duration_ms`) when available, else from `date -u` at return. Session ids
+come from the host and the dispatch result — an id the host does not expose is written
+`unknown`, never invented. The same line is the Task entry's `metadata`, the backlog
+transition's note, and the source of the §4 row's `dur_ms`/`item`.
 
 ## Hard rules
 

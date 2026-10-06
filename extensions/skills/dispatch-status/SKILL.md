@@ -15,16 +15,20 @@ The dispatcher's read-only playbook — answer "where are we" for the current ru
 
 ```text
 Run <id> · playbook <name>
-| task | executor | item | dur | state | verified | note |
-|---|---|---|---|---|---|---|
-| <bucket> | <agent> | <backlog uid> | <dur_ms or running> | in_progress / done / blocked | pass / fail / partial / — | <blocker or commit> |
+Objectives: ▶ **<active objective>** — NOT MET (<clause>) | <other> — queued / stalled — <reason> / done
+| task | executor | item | dur | state | verified |
+|---|---|---|---|---|---|
+| <bucket> | <agent> <issue> <short title> | <backlog uid> | <dur_ms or running> | in_progress / done / blocked · notes: <blocker or commit> | pass / fail / partial / — |
 
 In flight: <n> · merged: <n> (<refs>) · blocked: <n>
 Backlog touched: <ids + status>
-Plans: <slug: state, claim> | none
+Plans: <slug: active / stalled (<reason>) / done, claim> | none
 Unrecorded transitions: <list> | none
 New/unacknowledged bugs/deferrals: <list> | none
 ```
+
+Plain markdown only (no HTML). `notes:` is omitted when empty. Every outstanding
+objective gets a line; a plan paused for a side ask is `stalled`, never dropped.
 
 ## At close (mandatory before any dispatcher return)
 

@@ -115,6 +115,8 @@ These outrank every playbook and every later section.
       above that rule's changed-lines band, guided below. One home, so the reviewer's
       brief and the dispatcher's expectation cannot drift. *(Supersedes the earlier
       literal ">=8 changed files" threshold — file count only proxies changed LOC.)*
+      **Corrections are never reviewed** (`dispatch-contract` §1a): a finding fix, a `main`
+      hot fix, or a re-dispatch is verified against its own gates, then the item moves on.
    - **At plan completion, exactly one full-delta blind review.** When a plan's
      work finishes, run **one** full-delta **blind review** over the whole delta
      between the plan's **start sha** and its **finish sha** — the integration
@@ -228,14 +230,15 @@ These outrank every playbook and every later section.
     gates the resolve, not verification — never bolt a control test onto a trivial
     bucket just to resolve it.
 16. **Every transition names the dispatched agent, its run time, and its cost.**
-    Its note is the `dispatch-contract` §5 run line: agent type, model,
-    dispatch/agent id, wall-clock start and end, `dur_ms` (the task-notification's
+    Its note is the `dispatch-contract` §5 run line: dispatcher and subagent session
+    ids, agent name, task title, `run_at`, then model, end, `dur_ms` (the task-notification's
     `duration_ms` when available), the **cost and token usage measured from whatever
     the host actually exposes** — the dispatch's own result where it carries them,
     otherwise the host's session/usage telemetry; if it exposes neither, write
     `unmeasured` and name the gap (rule 21) — and the backlog item uid. The same line
-    goes in the Task entry's `metadata`. Never a placeholder: times come from `date -u`,
-    the id from the dispatch result, cost from measurement — never an estimate.
+    goes in the Task entry's `metadata` and, via `backlog-operator: append-note`, on
+    the plan or issue the dispatch serves (§5) — one record, not a second log. Never a placeholder: times come from `date -u`,
+    session ids from the host and dispatch result, cost from measurement — never an estimate.
     **`opus` on an executor requires a recorded, user-approved reason in this
     line**; without one, use the declared tier default (`sonnet`; `haiku` for
     mechanical transforms).
@@ -378,26 +381,34 @@ You write no files. If a playbook needs an artifact written, an executor writes 
 Every reply ends with this table, filled with **measured** values and deltas **since your
 previous reply**. It replaces the prose dump: an item's text is printed **once**, when
 discovered, then carried as a **count** until it resolves or is acknowledged. "Nothing
-new" is a `+0`, never a sentence. One line states the objective above the table.
+new" is a `+0`, never a sentence. Output is **plain markdown only** — no HTML tags, no
+colour; the format must render the same in Claude Code, opencode and a plain terminal.
 
-Three columns; the `status` cell splits **by project** (a run spans >1 repo). Each
-project is a block: **project name**, then `·`, then its delta on the same line; a line
-break; then that project's values for the axis. Deltas are inline — never a separate
-column — coloured by **meaning, not sign**: green `#1a7f37` = good movement (merged,
-completed, done up, blocker cleared); red `#cf222e` = bad (blocker added, failure,
-regression, non-compliance); amber `#9a6700` = flat / zero / unmeasurable. A `0` renders
-explicitly (`+0 failed`); an axis never previously reported renders `— unchanged`, never a
-fabricated delta. One-project rows carry only that block. `note` stays terse so `status`
-is the widest column.
+**Objectives (above the table) — one line per outstanding objective**: every user-directed
+outcome not yet MET, including a plan handed over and every side ask. Exactly one is
+active and is written in **bold** with a `▶` marker; the rest are plain lines carrying a
+state — `queued`, `stalled — <reason>` (not being worked: blocked, or paused because the
+run is serving another objective), or `done`. Each line ends with its rule-19 DoD:
+`MET` / `NOT MET (<unmet clause>)`.
 
-| axis | status | note |
-|---|---|---|
-| Objective | **<project>** · <one line> | rule-19 DoD: **MET** / **NOT MET** (unmet clause) |
-| Plan | **<project>** · <span style="color:#1a7f37">+<d> done</span>, <span style="color:#9a6700">+0 ready</span><br><n> items — <r> ready / <b> blocked / <d> done | from the ready view |
-| Absorbed | **<project>** · <span style="color:#1a7f37">+<i> in flight</span><br><i> in flight / <m> merged / <x> returned | work taken into this run — incl. dirty-tree absorption (rule 22) |
-| Discovered | **<project>** · <span style="color:#cf222e">+<f> filed</span><br><f> filed / <p> dispatched / <h> filed-not-scheduled | rule 12; new text once, then counts |
-| Dispatches | **<project>** · <span style="color:#1a7f37">+<a> active</span><br><a> active / <c> completed / <f> failed | rule 10's substrate |
-| Blockers | **<project>** · <span style="color:#9a6700">+0</span><br><n> open | one line each, max 3, then "+N in the Task list" |
+Two columns. The `status` cell splits **by project** when a run spans >1 repo: one row per
+(axis, project), the project's name in **bold** first. Deltas are inline in plain text,
+`(+2 done)`, `(+0 failed)`; an axis never previously reported renders `(— unchanged)`,
+never a fabricated delta. A bad movement (blocker added, failure, regression) is said in
+words (`+1 failed`), not coloured. Rows needing a second line put it after ` · `; a cell
+never carries a line break. An optional `notes: <text>` ends the status cell — **omit it
+when there is nothing to say**.
+
+| axis | status |
+|---|---|
+| Plan | **<project>** <plan> — active / stalled (<reason>) / done · <n> items: <r> ready / <b> blocked / <d> done (+<d> done) |
+| Absorbed | **<project>** <i> in flight / <m> merged / <x> returned (+<i> in flight) · notes: <dirty-tree absorption, rule 22> |
+| Discovered | **<project>** <f> filed / <p> dispatched / <h> filed-not-scheduled (+<f> filed) · notes: <new text once, rule 12> |
+| Dispatches | **<project>** <a> active / <c> completed / <f> failed (+<a> active) · active: `<agent> <issue> <short title>`; … |
+| Blockers | **<project>** <n> open (+0) · notes: <one line each, max 3, then "+N in the Task list"> |
+
+Each active dispatch is named `<agent> <issue> <short title>` (e.g. `typescript BL-12 fix
+edge paging`) — the agent, the item uid, and a title of at most six words.
 
 Rules: measured numbers only (rule 21); deltas are against your previous reply, persisted
 in the run's state — the task entry's `metadata` where the host keeps it, otherwise the
@@ -526,7 +537,7 @@ Dispatch the verification executor; the evidence goes in the report.
 - [ ] Are Task list and backlog both current, with every write read back by the operator?
 - [ ] Is the primary objective an ordered, current Task list rather than a prose list?
 - [ ] Was every claim/start/dispatch/block/merge/resolve a backlog transition naming agent type, model, and cost — never a note alone — and did every `RESOLVED` carry rule 15's evidence (a red→green test naming the id, or a recorded `none applicable` plus a direct state read)?
-- [ ] Does every dispatch carry the full run line — agent type, model, start, end, `dur_ms`, cost/token usage, backlog uid (rule 16)?
+- [ ] Does every dispatch carry the full run line (`dispatch-contract` §5 — session ids, agent, task, `run_at`, model, end, `dur_ms`, cost/token usage, backlog uid) and is it appended to its plan or issue (rule 16)?
 - [ ] Was every issue seen in another repo filed to that repo's backlog?
 - [ ] Was every discovered bug *recorded*, and every correction dispatch authorized by rule 12's three clauses — rather than scheduled on discovery?
 - [ ] Did I check the target branch for a dirty tree — `git diff HEAD`, untracked files — and absorb what was there rather than clearing it (rule 22)?

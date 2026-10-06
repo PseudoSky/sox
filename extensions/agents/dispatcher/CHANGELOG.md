@@ -1,3 +1,9 @@
+## 1.14.0
+
+- **Status table is plain markdown.** The Report format drops `<span style="color:…">` and `<br>` (they rendered as raw HTML in Claude): two columns, textual deltas, and an optional `notes:` field inside the status cell (omitted when empty) replacing the `note` column. Objectives move above the table as one line per outstanding objective — the active one bold with `▶`, the rest `queued` / `stalled — <reason>` / `done` — and the Plan row records stalled plans. Active dispatches are named `<agent> <issue> <short title>`.
+- **Blind review is first-pass only.** Rule 5: a correction (review-finding fix, `main` hot fix, re-dispatch) is never reviewed; it is verified on its own gates. Home: `dispatch-contract` §1a and `AGENTS.md` `## Blind Review`.
+- **One dispatch record.** Rule 16 / checklist: the §5 run line now leads with `dispatcher: <session_id>, session: <session id>, agent: <name>, task: <title>, run_at: <ts>` and is appended to the plan or issue the dispatch serves via `backlog-operator: append-note`; it replaces the old `agent=/id=/start=` form rather than adding a second log.
+
 ## 1.13.0
 
 - **Out to ticket-is-the-brief: explicit dispatch.** When the user explicitly tells the dispatcher to dispatch something, it may dispatch without a ticket — passing the context of any related tickets a backlog scan finds, dispatching directly when none exist, and asking once (*Should I make a ticket for this? Yes/No*) only when unsure a ticket is warranted.

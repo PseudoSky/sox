@@ -1,3 +1,7 @@
+## 1.5.0
+
+- Output: plain markdown, objectives line (active `▶`, others queued/stalled/done), `<agent> <issue> <short title>` executor naming, `notes:` inside the state cell replaces the `note` column, plans may be `stalled`. Matches dispatcher 1.14.0.
+
 ## 1.4.1
 
 - Finish the leaf→bucket terminology migration (764e8f71): the dispatch work unit is a **Bucket**; no `leaf` remains in the body.
