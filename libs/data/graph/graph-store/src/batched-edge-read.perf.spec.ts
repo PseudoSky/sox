@@ -516,6 +516,56 @@ describe('89cc3a30 AC-11 — srcs x dsts is linear in the list sizes, not quadra
       expect(await backend.getEdges({ srcs: s, dsts: d })).toEqual(expected);
     }
   });
+
+  it('89cc3a30 AC-14: JS-filter path (dsts > floor(avail/2)) on a mixed corpus deep-equals the single-key ground truth, same order, and the dsts IN-list is NOT in the SQL', async () => {
+    const { adapter, backend, ids } = await freshBackend();
+    await seedMixed(backend, ids); // mixed rels, ~10% invalidated edges
+    const spy = spyOn(adapter);
+    try {
+      const rnd = prng(14);
+      // Real dsts (a strict subset, so the Set filter has rows to drop) padded with
+      // valid-but-non-existent ids so |dsts| exceeds the threshold.
+      const realDsts = ids.filter(() => rnd() < 0.5);
+      const pad = (n: number): number[] => range(1_000_000, n);
+      const cases: Array<{ label: string; rels?: string[]; padTo: number }> = [
+        { label: 'no filters: |dsts| = floor(500/2)+1', padTo: Math.floor(EDGE_READ_CHUNK / 2) + 1 },
+        { label: 'rels filter (2 binds): |dsts| = floor(498/2)+1', rels: ['RELATES_TO', 'BLOCKS'], padTo: Math.floor((EDGE_READ_CHUNK - 2) / 2) + 1 },
+        { label: 'far above threshold', padTo: 400 },
+      ];
+      for (const c of cases) {
+        const dsts = [...realDsts, ...pad(c.padTo - realDsts.length)];
+        expect(dsts.length).toBeGreaterThan(Math.floor((EDGE_READ_CHUNK - (c.rels?.length ?? 0)) / 2));
+        const srcs = ids.filter((_, i) => i % 2 === 0 || rnd() < 0.3);
+        const dSet = new Set(dsts);
+        const keep = (e: EdgeRecord): boolean => dSet.has(e.dst) && (c.rels === undefined || c.rels.includes(e.rel));
+        const expected: EdgeRecord[] = [];
+        for (const x of [...srcs].sort((a, b) => a - b)) expected.push(...(await backend.getEdges({ src: x })).filter(keep));
+        // Teeth precondition: the corpus has live matches AND edges the filter must drop.
+        expect(expected.length).toBeGreaterThan(0);
+        const unfiltered = (await backend.getEdges({ srcs, ...(c.rels ? { rels: c.rels } : {}) })).length;
+        expect(unfiltered).toBeGreaterThan(expected.length);
+
+        spy.reset();
+        const got = await backend.getEdges({ srcs, dsts, ...(c.rels ? { rels: c.rels } : {}) });
+        expect(got, c.label).toEqual(expected);
+        const calls = edgeSelects(spy.calls);
+        expect(calls.length).toBeGreaterThan(0);
+        // JS-filter branch ran: no statement carries a dst IN-list, and no statement binds the dsts.
+        for (const call of calls) {
+          expect(call.sql).not.toMatch(/\bdst IN\b/);
+          expect(call.args.some((a) => typeof a === 'number' && a >= 1_000_000)).toBe(false);
+          expect(call.args.length).toBeLessThanOrEqual(EDGE_READ_CHUNK);
+        }
+      }
+
+      // Control: below the threshold the SAME helper sees the bounded dst IN-list, so the assertion above discriminates the two branches.
+      spy.reset();
+      await backend.getEdges({ srcs: ids, dsts: realDsts });
+      expect(edgeSelects(spy.calls).every((call) => /\bdst IN\b/.test(call.sql))).toBe(true);
+    } finally {
+      spy.restore();
+    }
+  });
 });
 
 describe('89cc3a30 AC-12 — unusable ids are rejected before any SQL', () => {
@@ -529,6 +579,33 @@ describe('89cc3a30 AC-12 — unusable ids are rejected before any SQL', () => {
           expect(spy.calls.length).toBe(0);
         }
       }
+    } finally {
+      spy.restore();
+    }
+  });
+});
+
+describe('89cc3a30 AC-16 — a metadata filter that exhausts the bind budget is a ConstraintError, not a malformed statement', () => {
+  it('89cc3a30 AC-16: srcs + a metadata `in` list leaving avail < 2 throws ConstraintError with zero statements', async () => {
+    const spy = spyOn(big.adapter);
+    try {
+      for (const q of [{ srcs: [1] }, { dsts: [2] }, { srcs: [1], dsts: [2] }]) {
+        spy.reset();
+        // `in` binds the path + every value: EDGE_READ_CHUNK - 1 values + path = EDGE_READ_CHUNK binds, so avail = 0.
+        const metadata = { sha: { in: Array.from({ length: EDGE_READ_CHUNK + 100 }, (_, i) => `sha-${i}`) } };
+        await expect(big.backend.getEdges({ ...q, metadata })).rejects.toBeInstanceOf(ConstraintError);
+        expect(spy.calls.length).toBe(0);
+      }
+      // Boundary: baseParams = EDGE_READ_CHUNK - 2 leaves avail = 2 and is still served.
+      spy.reset();
+      const ok = { sha: { in: Array.from({ length: EDGE_READ_CHUNK - 3 }, (_, i) => `sha-${i}`) } };
+      await expect(big.backend.getEdges({ srcs: [1], metadata: ok })).resolves.toEqual([]);
+      expect(edgeSelects(spy.calls).length).toBe(1);
+      // Boundary: baseParams = EDGE_READ_CHUNK - 1 leaves avail = 1 and is rejected.
+      spy.reset();
+      const tight = { sha: { in: Array.from({ length: EDGE_READ_CHUNK - 2 }, (_, i) => `sha-${i}`) } };
+      await expect(big.backend.getEdges({ srcs: [1], metadata: tight })).rejects.toBeInstanceOf(ConstraintError);
+      expect(spy.calls.length).toBe(0);
     } finally {
       spy.restore();
     }

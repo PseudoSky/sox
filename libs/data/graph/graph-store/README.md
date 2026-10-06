@@ -133,6 +133,8 @@ const incoming = await graph.getEdges({ dsts: pageIds, rels: ['PART_OF', 'BLOCKS
 - `srcs` + `dsts` is linear, not a cross product: `srcs` is chunked and `dsts` is applied as a bounded `IN` (or, when `dsts` exceeds half the budget, as an in-memory filter), so statements are `O(ceil(|srcs| / EDGE_READ_CHUNK))`.
 - `rels` is a filter and is not chunked: more than `EDGE_READ_MAX_RELS` (64) distinct values throws `ConstraintError`.
 - Ids must be non-negative integers (node rowids). `NaN`, `±Infinity`, fractions and negatives in `srcs` / `dsts` throw `ConstraintError` before any SQL runs.
+- Id validation applies to the plural lists (`srcs` / `dsts`) only, deliberately: the singular `src` / `dst` forms are not validated, so their statement and behavior stay byte-for-byte identical to the pre-batch `getEdges` (89cc3a30 AC-6 back-compat).
+- If the other filters (`rel`, `rels`, `metadata`) bind so many variables that fewer than 2 remain under the `EDGE_READ_CHUNK` budget (e.g. a very large metadata `in` list), a batch read throws `ConstraintError` before any SQL runs.
 
 ### Core types
 
