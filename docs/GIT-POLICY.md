@@ -267,6 +267,16 @@ Schema version **1**. Each edit appends one dated entry; entries are never rewri
   (empty `git status --porcelain`, unlocked, tip `619e8a49` merged), with the safe `git branch -d`
   (never `-D`); no `--force` and no §7 break-glass were used. Policy revision read from `main` @
   `bd669a0b`.
+- **2026-10-06 — added §8 Release** (`git-manager`, run `dispatch-2026-10-04-b7d4`, committing
+  `docs/spec/graph-store-batched-edge-read.md`). *Reason:* the policy carried **no Release section**,
+  although the tool contract requires one (versioning & tag scheme; changelog / release-note
+  generation; rollback; deploy triggers; monorepo release coordination) — the single-file
+  content-equivalence test therefore failed on a missing required section. §8 cites
+  [`PUBLISHING.md`](../PUBLISHING.md), [`AGENTS.md`](../AGENTS.md),
+  [`.github/workflows/release.yml`](../.github/workflows/release.yml), [`CHANGELOG.md`](../CHANGELOG.md)
+  and [`package.json`](../package.json) rather than restating them. It is appended as §8 after §7 so
+  that no existing section number changes and every `§`-reference inside earlier entries stays
+  accurate; no other rule changed. Policy revision read from `main` @ `b06e0d7e`.
 
 ## 7. Break-glass
 
@@ -315,3 +325,30 @@ next operation re-applies §5 in full.
   extras), so committing it would have **regressed** metadata already on `main`. The branch was
   deleted with the safe `git branch -d` (never `-D`), which succeeded because the tip is merged.
 - **Scope honoured.** No other worktree, branch, or file was touched.
+
+## 8. Release
+
+- **Versioning & tags.** SemVer, driven by **Changesets** (`@changesets/cli`); a `version` field is
+  never hand-bumped and `npm publish`/`pnpm publish` is never run by hand
+  ([`AGENTS.md`](../AGENTS.md) §"RELEASING A PACKAGE TO NPM GOES THROUGH CHANGESETS", line 270).
+  `changeset publish` creates one git tag per published package, `<pkg>@<version>`
+  (`git tag --sort=-creatordate`). A purely additive public-API change may ship as a **patch**
+  (owner-accepted exception, [`PUBLISHING.md`](../PUBLISHING.md) §"Patch-for-additive-API exception").
+- **Changelog / release notes.** `changeset version` consumes `.changeset/*.md` and writes each
+  package's `CHANGELOG.md` entry ([`PUBLISHING.md`](../PUBLISHING.md) line 255); repo-level notes are
+  wave-scoped — one release train per wave
+  ([`CHANGELOG.md`](../CHANGELOG.md) §"BL-444: one release train").
+- **Deploy trigger.** [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs **on
+  push to `main`**: with pending changesets, `@changesets/action` opens/updates a `Version Packages`
+  PR; merging that PR publishes via `pnpm release:prepared` (clean-tree gate → portable registry →
+  build → `changeset publish`) and commits the regenerated `registry/index.json` back to `main`
+  ([`.github/workflows/release.yml`](../.github/workflows/release.yml) lines 1–16, 95–103).
+- **Rollback.** A published npm version can never be replaced and is not rolled back in place
+  ([`PUBLISHING.md`](../PUBLISHING.md) §"Publish to PUBLIC npm (irreversible…)"). A bad release is
+  superseded by a new version; its registry row is corrected by re-pinning, never by re-publishing
+  the same version or force-pushing a tag.
+- **Monorepo coordination.** One release train per wave; `pnpm release:prepared` is the only
+  sanctioned publish entrypoint — `pnpm release` is deliberately disabled because it once published a
+  stale bundled registry (PROD-BREAK-SOXCLI-121) ([`package.json`](../package.json)
+  `scripts.release`). A source-only change must leave `registry/index.json` unchanged
+  ([`AGENTS.md`](../AGENTS.md) §"registry is release-only").
