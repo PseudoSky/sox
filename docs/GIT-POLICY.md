@@ -307,6 +307,15 @@ Schema version **1**. Each edit appends one dated entry; entries are never rewri
   or §7 break-glass. Not pushed (awaiting separate approval). Policy revision read from `main` @
   `5b0cfcae`.
 
+- **2026-10-06 — committed `4133fba2` on `main` by pathspec** (`git-manager`, requested by the
+  dispatcher). *Reason:* §6's operation-log convention; no policy rule changed. One commit on 16
+  explicit paths (dispatcher 1.14.0 and the dispatch-contract/direct/status skills, `AGENTS.md`,
+  `tools/guards-manifest.mjs`, and the new untracked test, added with `git add -N` on that path only);
+  hooks ran (no `--no-verify`). Two attempts were rejected by commitlint (`header-max-length` 113 >
+  100, then `body-max-line-length`), so the header's trailing ", single dispatch record" moved to the
+  body; no commit resulted from the rejected attempts. Not pushed. Policy revision read from `main`
+  @ `b53ef491`.
+
 ## 7. Break-glass
 
 A break-glass bypass is permitted **only** for a genuine emergency, **only** with explicit
