@@ -516,6 +516,47 @@ function splitSqlStatements(ddl: string): string[] {
     .filter((s) => s.trim().length > 1);
 }
 
+/**
+ * Maximum number of ids bound per `IN (…)` list in a single batched
+ * {@link GraphBackend.getEdges} statement (`srcs` / `dsts`). Larger lists are
+ * split into ascending chunks of this size; chunk results are concatenated in
+ * chunk order, so the result equals one unchunked read.
+ */
+export const EDGE_READ_CHUNK = 500;
+
+/**
+ * Query for {@link GraphBackend.getEdges}. Every form reads only live edges
+ * (`t_invalid IS NULL`).
+ *
+ * The singular `src`/`dst`/`rel` and plural `srcs`/`dsts`/`rels` are mutually
+ * exclusive per axis (passing both throws {@link ConstraintError}). A
+ * present-but-empty plural list returns `[]` without executing SQL.
+ *
+ * Batch ordering is contractual: `srcs` yields `(src, rel, rowid)` ascending,
+ * `dsts`-only yields `(dst, rel, rowid)` ascending. With both lists the
+ * result is their intersection and order is unspecified.
+ */
+export interface IEdgeQuery {
+  src?: number;
+  dst?: number;
+  rel?: EdgeRel;
+  metadata?: Record<string, MetadataFilterValue>;
+  /** Batch out-keys: edges whose `src` is in the list (uses `ix_edge_src_live`). */
+  srcs?: readonly number[];
+  /** Batch in-keys: edges whose `dst` is in the list (uses `ix_edge_dst_live`). */
+  dsts?: readonly number[];
+  /** Relation narrowing for any form (ANDed). */
+  rels?: readonly EdgeRel[];
+}
+
+/** Sort ascending, de-duplicate, and split into {@link EDGE_READ_CHUNK}-sized chunks. */
+function chunkSortedUnique(ids: readonly number[]): number[][] {
+  const sorted = [...new Set(ids)].sort((a, b) => a - b);
+  const chunks: number[][] = [];
+  for (let i = 0; i < sorted.length; i += EDGE_READ_CHUNK) chunks.push(sorted.slice(i, i + EDGE_READ_CHUNK));
+  return chunks;
+}
+
 export class ConstraintError extends Error {
   constructor(message: string) {
     super(message);
@@ -802,7 +843,7 @@ export interface GraphTransaction extends AdapterTransaction {
   /** Tx-scoped read — sees this transaction's uncommitted writes. */
   getNodeByUid(uid: string): Promise<NodeRecord | null>;
   /** Tx-scoped read — sees this transaction's uncommitted edge writes/invalidations. */
-  getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel; metadata?: Record<string, MetadataFilterValue> }): Promise<EdgeRecord[]>;
+  getEdges(opts: IEdgeQuery): Promise<EdgeRecord[]>;
   /** Tx-scoped read — sees this transaction's uncommitted writes. */
   getNodesByIds(ids: number[], opts?: { liveOnly?: boolean }): Promise<NodeRecord[]>;
 }
@@ -883,7 +924,7 @@ export interface GraphBackend {
 
   writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void>;
 
-  getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel; metadata?: Record<string, MetadataFilterValue> }): Promise<EdgeRecord[]>;
+  getEdges(opts: IEdgeQuery): Promise<EdgeRecord[]>;
   getNeighbors(
     nodeId: number,
     opts?: { rel?: EdgeRel; depth?: number; direction?: 'in' | 'out' | 'both' },
@@ -2699,30 +2740,82 @@ export class StoreGraphBackend implements GraphBackend {
     }
   }
 
-  async getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel; metadata?: Record<string, MetadataFilterValue> }): Promise<EdgeRecord[]> {
+  async getEdges(opts: IEdgeQuery): Promise<EdgeRecord[]> {
     return this.getEdgesInTx(opts, this.adapter);
   }
 
   /** G1 — tx-scoped {@link getEdges}; sees this transaction's uncommitted edge writes/invalidations. */
-  private async getEdgesInTx(
-    opts: { src?: number; dst?: number; rel?: EdgeRel; metadata?: Record<string, MetadataFilterValue> },
-    db: AdapterTransaction,
-  ): Promise<EdgeRecord[]> {
-    const clauses: string[] = ['t_invalid IS NULL'];
-    const params: unknown[] = [];
-    if (opts.src !== undefined) { clauses.push('src = ?'); params.push(opts.src); }
-    if (opts.dst !== undefined) { clauses.push('dst = ?'); params.push(opts.dst); }
-    if (opts.rel !== undefined) { clauses.push('rel = ?'); params.push(opts.rel); }
+  private async getEdgesInTx(opts: IEdgeQuery, db: AdapterTransaction): Promise<EdgeRecord[]> {
+    // Singular/plural are mutually exclusive per axis (an ambiguous
+    // "union or intersect?" reading is rejected, not guessed).
+    if (opts.src !== undefined && opts.srcs !== undefined) {
+      throw new ConstraintError('getEdges: pass either `src` or `srcs`, not both');
+    }
+    if (opts.dst !== undefined && opts.dsts !== undefined) {
+      throw new ConstraintError('getEdges: pass either `dst` or `dsts`, not both');
+    }
+    if (opts.rel !== undefined && opts.rels !== undefined) {
+      throw new ConstraintError('getEdges: pass either `rel` or `rels`, not both');
+    }
+    // A present-but-empty list is a scope that resolves to zero candidates
+    // (ADR-0017 / BUG-032): return [] without executing SQL — never an
+    // `IN ()` parse error and never a silently-widened scan.
+    if (opts.srcs?.length === 0 || opts.dsts?.length === 0 || opts.rels?.length === 0) return [];
+
+    const base: string[] = ['t_invalid IS NULL'];
+    const baseParams: unknown[] = [];
+    if (opts.src !== undefined) { base.push('src = ?'); baseParams.push(opts.src); }
+    if (opts.dst !== undefined) { base.push('dst = ?'); baseParams.push(opts.dst); }
+    if (opts.rel !== undefined) { base.push('rel = ?'); baseParams.push(opts.rel); }
+    if (opts.rels !== undefined) {
+      const rels = [...new Set(opts.rels)];
+      base.push(`rel IN (${rels.map(() => '?').join(', ')})`);
+      baseParams.push(...rels);
+    }
     // FEAT-024 (B6) — edge metadata filtering (same operator surface as
     // NodeFilter.metadata, FEAT-014). The v2 transition-edge queries filter by
     // `sha`/`agent`.
     if (opts.metadata !== undefined) {
-      appendMetadataFilterClauses('', opts.metadata, clauses, params);
+      appendMetadataFilterClauses('', opts.metadata, base, baseParams);
     }
-    const { rows } = await db.executeAll<DbEdgeRow>(
-      `SELECT * FROM edge WHERE ${clauses.join(' AND ')}`, params,
-    );
-    return rows.map(rowToEdgeRecord);
+
+    // Single-key forms (and `{}`) keep the original statement byte-for-byte.
+    if (opts.srcs === undefined && opts.dsts === undefined) {
+      const { rows } = await db.executeAll<DbEdgeRow>(
+        `SELECT * FROM edge WHERE ${base.join(' AND ')}`, baseParams,
+      );
+      return rows.map(rowToEdgeRecord);
+    }
+
+    // Batch forms: sorted + de-duplicated ascending id lists, chunked so the
+    // bound-variable count stays under every driver's ceiling. Deterministic
+    // chunks make the concatenation equal one unchunked read (§3.5).
+    const srcChunks = opts.srcs !== undefined ? chunkSortedUnique(opts.srcs) : [undefined];
+    const dstChunks = opts.dsts !== undefined ? chunkSortedUnique(opts.dsts) : [undefined];
+    // Explicit ORDER BY makes the order planner-independent: (src,rel,rowid)
+    // for `srcs`, (dst,rel,rowid) for `dsts`-only — the per-key order the
+    // indexed single-key reads yield.
+    const orderBy = opts.srcs !== undefined ? 'src, rel, rowid' : 'dst, rel, rowid';
+    const out: EdgeRecord[] = [];
+    for (const sChunk of srcChunks) {
+      for (const dChunk of dstChunks) {
+        const clauses = [...base];
+        const params = [...baseParams];
+        if (sChunk !== undefined) {
+          clauses.push(`src IN (${sChunk.map(() => '?').join(', ')})`);
+          params.push(...sChunk);
+        }
+        if (dChunk !== undefined) {
+          clauses.push(`dst IN (${dChunk.map(() => '?').join(', ')})`);
+          params.push(...dChunk);
+        }
+        const { rows } = await db.executeAll<DbEdgeRow>(
+          `SELECT * FROM edge WHERE ${clauses.join(' AND ')} ORDER BY ${orderBy}`, params,
+        );
+        for (const r of rows) out.push(rowToEdgeRecord(r));
+      }
+    }
+    return out;
   }
 
   async getNeighbors(nodeId: number, opts?: { rel?: EdgeRel; depth?: number; direction?: 'in' | 'out' | 'both' }): Promise<NodeRecord[]> {

@@ -94,7 +94,8 @@ interface GraphBackend {
   countBy(field: 'kind' | 'namespace' | 'agentId', filter?: NodeFilter): Promise<Record<string, number>>;
   countNodesFts(query: string, filter?: NodeFilter): Promise<number>;
   getSupersessionChain(nodeId: number): Promise<NodeRecord[]>;
-  getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel; metadata?: Record<string, MetadataFilterValue> }): Promise<EdgeRecord[]>;
+  /** Live edges. Singular src/dst/rel, or the page-keyed batch forms srcs/dsts/rels (see below). */
+  getEdges(opts: IEdgeQuery): Promise<EdgeRecord[]>;
 
   // Traversal
   getNeighbors(nodeId: number, opts?: { rel?: EdgeRel; depth?: number; direction?: 'in' | 'out' | 'both' }): Promise<NodeRecord[]>;
@@ -105,6 +106,22 @@ interface GraphBackend {
     Promise<{ nodes: NodeRecord[]; edges: EdgeRecord[] }>;
 }
 ```
+
+### Page-keyed edge reads: `getEdges({ srcs, dsts, rels })`
+
+`getEdges({ rel })` alone has no `rel`-leading index, so it scans every live edge of the relation. To read the
+edges of a *page* of nodes, pass the page's ids instead; both round-trips and fetched rows are then
+`O(page x per-node degree)`, using `ix_edge_src_live` / `ix_edge_dst_live`:
+
+```ts
+const outgoing = await graph.getEdges({ srcs: pageIds });                          // all live out-edges of the page
+const incoming = await graph.getEdges({ dsts: pageIds, rels: ['PART_OF', 'BLOCKS'] }); // narrowed in-edges
+```
+
+- Only live edges (`t_invalid IS NULL`); inside `graph.transaction` the tx-scoped `tx.getEdges` sees uncommitted writes and invalidations.
+- Ordering is contractual: `srcs` returns `(src, rel, rowid)` ascending, `dsts`-only returns `(dst, rel, rowid)` ascending, identical to concatenating the single-key reads over the ascending page. `srcs` + `dsts` is an intersection (order unspecified).
+- Singular and plural on the same axis (`src`+`srcs`, `dst`+`dsts`, `rel`+`rels`) throw `ConstraintError`. A present-but-empty list returns `[]` without executing SQL.
+- Large lists are sorted, de-duplicated and chunked at `EDGE_READ_CHUNK` (500) ids per statement; the concatenated result equals one unchunked read.
 
 ### Core types
 
