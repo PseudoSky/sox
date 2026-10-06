@@ -290,6 +290,22 @@ Schema version **1**. Each edit appends one dated entry; entries are never rewri
   separate approval), so §5's "committed and pushed" recovery preference is unmet for this
   branch's content until `main` is pushed; the commit is durable on `main`. Policy revision read
   from `main` @ `fc67c02e`.
+- **2026-10-06 — created worktree `.worktrees/getedges-review-b7d4`, committed `67348657`,
+  fast-forwarded `main`, and reaped the worktree** (`git-manager`, run `dispatch-2026-10-04-b7d4`,
+  backlog `f8e4e689`, successor of `89cc3a30`). *Reason:* §6's operation-log convention requires one
+  entry per git operation; no policy rule changed. (1) Worktree created from `main` @ `5b0cfcae` on
+  branch `fix/getedges-review-b7d4` under §4's layout; `pnpm install` exit 0. (2) One commit
+  `67348657` ("fix(graph-store): bound batched getEdges bind budget, linear srcs×dsts, validate
+  ids — 89cc3a30") on exactly four paths (`.changeset/getedges-batched-srcs-dsts-rels.md`,
+  `libs/data/graph/graph-store/README.md`, `src/batched-edge-read.perf.spec.ts`, `src/index.ts`),
+  committed with an explicit pathspec; hooks ran (no `--no-verify`). The first attempt was rejected by
+  commitlint `header-max-length` (102 > 100), so the header's trailing " review" was dropped (body
+  unchanged); no commit was made by the rejected attempt. (3) `main` `5b0cfcae..67348657` by
+  `git merge --ff-only` (§1 already-based-linear; `main` unmoved since the fork, so no rebase and no
+  re-test was required). (4) The worktree was removed under §5's three-part predicate (empty
+  `git status --porcelain`, unlocked, tip merged) with the safe `git branch -d`; no `--force`, `-D`,
+  or §7 break-glass. Not pushed (awaiting separate approval). Policy revision read from `main` @
+  `5b0cfcae`.
 
 ## 7. Break-glass
 
