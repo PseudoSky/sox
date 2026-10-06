@@ -78,3 +78,6 @@ tmp/
 
 # machine-local secrets/env file — never committed, never tracked
 .env
+
+# agent research run output (never packaged)
+.research/
