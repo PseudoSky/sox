@@ -390,3 +390,21 @@ next operation re-applies §5 in full.
   stale bundled registry (PROD-BREAK-SOXCLI-121) ([`package.json`](../package.json)
   `scripts.release`). A source-only change must leave `registry/index.json` unchanged
   ([`AGENTS.md`](../AGENTS.md) §"registry is release-only").
+
+- **2026-10-06 — created worktree `.worktrees/getedges-review2-b7d4`, committed `05751d98`,
+  fast-forwarded `main`, and reaped the worktree** (`git-manager`, run `dispatch-2026-10-04-b7d4`,
+  backlog `cbf985e1`, successor of `89cc3a30`). *Reason:* §6's operation-log convention; no policy
+  rule changed. (1) Worktree created from `b53ef491` on branch `fix/getedges-review2-b7d4` under
+  §4's layout; `pnpm install` exit 0. (2) One commit (originally `131f3bd0`) "test(graph-store):
+  cover JS-filter path + avail<2 guard; document plural-only id validation" on exactly two paths
+  (`libs/data/graph/graph-store/README.md`,
+  `libs/data/graph/graph-store/src/batched-edge-read.perf.spec.ts`), committed with an explicit
+  pathspec; hooks ran (no `--no-verify`). The first attempt was rejected by commitlint
+  `body-max-line-length` (body line > 100), so the body was re-wrapped with its words unchanged; no
+  commit resulted from the rejected attempt. (3) `main` had moved `b53ef491..de4a8fe4` (dispatcher
+  1.14.0), so the branch was rebased onto `main` (`131f3bd0` -> `05751d98`) and the graph-store suite
+  re-run (`npx vitest run --config libs/data/graph/graph-store/vitest.config.ts`: exit 0, 254 passed,
+  1 skipped); `main` `de4a8fe4..05751d98` by `git merge --ff-only`. (4) The worktree was removed
+  under §5's three-part predicate (empty `git status --porcelain`, unlocked, tip an ancestor of
+  `main`) with the safe `git branch -d`; no `--force`, `-D`, or §7 break-glass. Not pushed. Policy
+  revision read from `main` @ `de4a8fe4`.
