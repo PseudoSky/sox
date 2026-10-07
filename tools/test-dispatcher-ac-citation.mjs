@@ -32,20 +32,20 @@ const PRE_FIX = `- an **acceptance-criteria block** — binary, objectively chec
 const INVARIANTS = [
   ['rule 20 AC block carries stable ids', /each carrying a stable id/i],
   ['rule 20 names the AC id form', /AC1/],
-  ['every AC proven by a citing test', /Every AC is proven by a test that cites it/],
-  ['test names the ticket and the AC id', /names the ticket and the AC id it exercises/],
-  ['verification confirms every AC individually', /confirms \*\*every AC individually\*\*/],
-  ['unexercised AC is verified-fail', /no citing test exercises, is `verified-fail`/],
+  ['every AC cited by a passing test', /every AC must be cited by at least one passing test/],
+  ['tests cite criteria by id and ticket', /Tests cite criteria by id and ticket/],
+  ['verification confirms each AC individually', /confirms \*\*each AC individually\*\*/],
+  ['an AC no test cites is verified-fail', /an AC no test cites is `verified-fail`/],
   ['Step 2.1 requires the AC id + citation', /Each AC carries an id, and the brief requires the executor's tests to cite it/],
   ['Step 4 confirms every AC covered', /Confirm every AC is exercised by a test that cites the ticket and the AC id/],
-  ['Step 8 checklist item present', /Did every test the executor wrote cite the ticket and the AC id it proves/],
+  ['Step 8 checklist item present', /Did every test cite its ticket and AC ids, and is \*\*every\*\* AC cited by a passing test/],
   ['failure mode AC-uncovered catalogued', /\*\*AC-uncovered\*\*/],
 ]
 
 const CONTRACT_INVARIANTS = [
   ['contract §1 AC-block field with ids', /Acceptance criteria \(with ids\)/],
   ['contract return line ac-coverage', /ac-coverage:/],
-  ['contract hard rule', /Every AC is proven by a test citing the ticket and the AC id/],
+  ['contract hard rule', /Every AC is cited by a test carrying the ticket and the AC id/],
   ['brief template Acceptance-criteria section', /## Acceptance criteria \(test each; cite the ticket and the AC id\)/],
 ]
 

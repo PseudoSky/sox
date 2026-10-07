@@ -57,20 +57,20 @@ const PRE_FIX_OPERATOR = `1. Parse the verb and arguments from the incoming requ
 
 const DISPATCHER_INVARIANTS = [
   ['requires an acceptance-criteria block (rule 20)', /acceptance-criteria block/],
-  ['requires a `none applicable` declaration as the alternative', /`none applicable` declaration/],
-  ['the criterion is written before the work', /written before the work/],
-  ['an item with neither does not proceed silently', /does not proceed silently/],
+  ['no item is dispatched without acceptance criteria', /No item is dispatched without acceptance criteria/],
+  ['the criteria are carried before dispatch', /Before dispatch an item carries an \*\*acceptance-criteria block\*\*/],
+  ['there is no opt-out declaration', /there is no opt-out declaration/],
   ['criteria are binary and objectively checkable', /binary, objectively checkable/],
-  ['Step 2 wires the requirement in', /acceptance-criteria block or a recorded `none applicable` declaration/],
-  ['Step 3 brief assembly wires the requirement in', /acceptance criteria or a recorded `none applicable` declaration/],
-  ['Step 5 closure verifies against the acceptance criteria', /verifies the item against its acceptance criteria/],
+  ['Step 2 wires the requirement in', /confirm the item carries an \*\*acceptance-criteria block\*\* \(rule 20\)/],
+  ['Step 3 explicit dispatch still states criteria', /the brief still states acceptance criteria/],
+  ['resolve requires every AC cited by a test', /and every AC cited by a test \(rule 20\)/],
   ['Post-hoc acceptance failure mode catalogued', /Post-hoc acceptance/],
-  ['Step 8 wires the acceptance-criteria check in', /Did every executed item carry acceptance criteria or a recorded `none applicable` declaration \(rule 20\)/],
+  ['Step 8 wires the acceptance-criteria check in', /Did every dispatched item carry an acceptance-criteria block \(rule 20\) \*before\* dispatch/],
 ];
 
 const OPERATOR_INVARIANTS = [
   ['resolve requires acceptance-criteria proof', /acceptance-criteria proof/],
-  ['resolve accepts a recorded `none applicable` declaration', /`none applicable` declaration/],
+  ['resolve requires each AC cited by a passing test', /each cited by a passing test/],
 ];
 
 const normalise = (s) => s.replace(/\s+/g, ' ').trim();

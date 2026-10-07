@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3
+
+- `resolve` precondition: every AC is cited by a passing test; the `none applicable` declaration is removed (dispatcher 2.0.0, rule 20).
+
 ## 0.6.2
 
 - **All three install surfaces declared — claude, opencode, agent-mcp.** `install.hosts` gains `agent-mcp` and `render.agent-mcp` federates the uniform server set (agent, search, memory-server, gitnexus, backlog) into the catalog row, so a task dispatched through agent-mcp has the same tool surface as a native opencode run. `render.opencode` pins its model and `mode: all`.

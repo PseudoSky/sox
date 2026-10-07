@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0
+
+- Removed the HIGH+ review-correction trigger and the materiality classes: corrections are dispatched at their lifecycle stage (dispatcher Step 5), not ranked.
+
 ## 1.1.0
 
 - **Escalation roster + twofold purpose.** Escalation targets are the full roster (`product` for order, `architect`/`architect-decision` for design, `researcher` for facts, any named specialist) — not `product` alone. Purpose stated as twofold: in-run strategic resolution and not relying on the user for what the dispatcher can resolve. The user remains the last resort.

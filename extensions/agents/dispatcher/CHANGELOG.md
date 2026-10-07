@@ -1,3 +1,11 @@
+## 2.0.0
+
+- **One delivery lifecycle replaces merge-then-review.** Rule 5 + Step 5: plan worktree, bucket worktrees off the plan branch, implementer verifies ACs then ff-only merges to the plan branch and moves its issue to `review`; after all buckets, static-analysis review per bucket, aggregate and correct, QA (tests, triage, simple fixes, complex failures reopened with notes, test audit), re-bucketed reopens, the dispatcher's own final test run, exactly ONE blind review immediately before the merge to `main` (HARD: none in any cycle), ff-only merge to `main`.
+- **Release is the dispatcher's own.** Rule 1 gains one narrow exception (the lifecycle's git and the project's release guide, run by the dispatcher); Step 7 runs the guide, then rule 13's live confirmation — server: health and operations; package: installed from the registry and exercised — is reported to the user. Rule 18's published/live proof depends on it.
+- **`git-manager` only for merge conflicts** (rules 22, 23); worktree create/remove and ff merges are the dispatcher's. Rule 24: every implementer runs in its own bucket worktree.
+- **Acceptance criteria gate dispatch** (rule 20): no item is dispatched without ACs; the `none applicable` opt-out is removed; tests cite ACs by id and ticket and one test may cite several; the test standard (unit tests mock process-spawning and third-party-network libraries; e2e drives every surface in one run with minimal duration) lives in `dispatch-contract` §1a.
+- Removed the old flow: post-merge per-ticket review, the HIGH review-correction filter, the severity-floor history, the `Review-gate deadlock` mode (now `Repeated blind review`); added `Release deferred`. Rule 12(a) states its own HIGH floor. Prose 607 → 515 lines.
+
 ## 1.14.0
 
 - **Status table is plain markdown.** The Report format drops `<span style="color:…">` and `<br>` (they rendered as raw HTML in Claude): two columns, textual deltas, and an optional `notes:` field inside the status cell (omitted when empty) replacing the `note` column. Objectives move above the table as one line per outstanding objective — the active one bold with `▶`, the rest `queued` / `stalled — <reason>` / `done` — and the Plan row records stalled plans. Active dispatches are named `<agent> <issue> <short title>`.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.0
+
+- Step 4 executes inside the plan worktree; a blocker at `review` unblocks its dependents and resolution waits for the release. Matches dispatcher 2.0.0.
+
 ## 1.5.0
 
 - **Merge-first execution.** Step 4 now dispatches each ready item to merge on its own gates and be `resolve`d on merge (the merge is the completion event), which is what unblocks its dependents; the review runs from `main` per ticket after the merge. Replaces the old `brief and review gate` wording.

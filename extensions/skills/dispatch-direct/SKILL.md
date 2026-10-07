@@ -1,6 +1,6 @@
-# dispatch-direct — direction in, merged work out
+# dispatch-direct — direction in, released work out
 
-The dispatcher's default playbook — turn explicit user direction (a task, a list, a port, a refactor, a PR) into a Task tree, dispatch 00-active executors in the background under dispatch-contract briefs, verify each outcome from git/tests/state, merge on the change's own gates, resolve the item on merge, review from `main` after the merge, and keep the Task list and backlog in sync. Load when the user gives direction that is not an issue report (that is dispatch-triage) and not a plan reference (that is dispatch-plan). Explicit direction is followed as given.
+The dispatcher's default playbook — turn explicit user direction (a task, a list, a port, a refactor, a PR) into a Task tree, dispatch 00-active executors in the background under dispatch-contract briefs, verify each outcome from git/tests/state, carry the buckets through the dispatcher's delivery lifecycle (plan worktree, ff-only merges, static review, QA, one blind review, release, live confirmation), and keep the Task list and backlog in sync. Load when the user gives direction that is not an issue report (that is dispatch-triage) and not a plan reference (that is dispatch-plan). Explicit direction is followed as given.
 
 The user told you what they want. Your job is to get it done by others, prove it
 is done, and leave nothing in flight. You do not reframe the request into
@@ -12,7 +12,7 @@ triage or planning they did not ask for (dispatcher rule 0).
 direction ─► intake (backlog-intake) ─► task tree ─► route + brief ─► dispatch (bg, parallel)
         ◄───────────── verify from state ◄── return block
                 │
-                ├─ verified-pass ─► gates ─► merge ─► resolve item ─► post-merge review ─► next
+                ├─ verified-pass ─► (all buckets) ─► delivery lifecycle (dispatcher Step 5) ─► release + live confirmation (Step 7)
                 ├─ verified-fail ─► retry ladder (same tier ×1, +1 tier ×1, then surface)
                 ├─ partial ──────► append (running) / resume (completed) — Step 8
                 └─ deflection ──► prove-or-fix back to executor
@@ -27,22 +27,21 @@ direction ─► intake (backlog-intake) ─► task tree ─► route + brief �
 5. **Order.** Keep the user's order if they gave one. If order matters, is unpinned, and there are more than three buckets, dispatch `product` for the order; otherwise dependency order, then shortest-first.
 6. **Route.** Match each bucket to a named specialist against the dispatcher's Step 2.5 work-class table; route gaps are surfaced, not forced, and `general` is never the route for work a specialist covers. Typical matches:
    - implement a module/API/service (production code) → `backend`; type-system depth → `typescript`; restructure → `refactor`; measured perf → `performance`
-   - run tests → `test`; static review → `review`; root-cause a failure → `debug` (via `dispatch-triage`); one-shot decision → `architect-decision`; multi-package spec → `architect`
-   - backlog graph writes → `backlog-operator`; docs surface → `doc-steward`; git ops → `git-manager`; prioritisation → `product`; research → `researcher`
+   - QA, test runs and test audit → `qa`; static and blind review → `review`; root-cause a failure → `debug` (via `dispatch-triage`); one-shot decision → `architect-decision`; multi-package spec → `architect`
+   - backlog graph writes → `backlog-operator`; docs surface → `doc-steward`; merge conflicts → `git-manager`; prioritisation → `product`; research → `researcher`
    - `general` is a last resort only; no match → surface the roster gap to the user
 7. **Brief + dispatch.** Fill `dispatch-contract` §1; dispatch anonymously in the background with `model` and `tools` stated. Mark the subtask `in_progress` with the `dispatch-contract` §5 run line in `metadata`, and have `backlog-operator: append-note` the same line onto the plan or issue the dispatch serves; `backlog-operator: transition` any linked item to `IN_PROGRESS` with that run line as the note (dispatcher rules 15–16).
 8. **Verify.** On return, read the diff, run the done-state checks yourself, classify (`verified-pass` / `verified-fail` / `partial` / `deflection`). Update the Task entry. A `RETURN` block without evidence is `blocked`. **To reach a dispatch already sent** — correct it or supply the missing scope — re-invoke it by id: a **running** target takes the text as an *advisory append* (no interrupt; it reads it when it next looks), a **completed** target resumes with its transcript replayed (expensive — only when the follow-up needs that context). **Never cold-restart a partial:** send the full brief plus an account of what it already achieved (dispatcher Step 4).
 9. **Retry ladder.** `verified-fail` → once more at the same tier with the failure evidence inlined → once at the next tier up → surface to the user with the evidence. Never a fourth attempt without the user.
-10. **Merge on gates.** The merge trigger is the change's **own gates** — `pnpm test` 0 failures, `tsc --noEmit` exit 0, bundle under budget — **not** a review. Fast-forward directly when the branch is FF-able; dispatch `git-manager` only on conflict/non-FF. Confirm from `git log`; keep dispatching implementation while the merge lands — never idle on it. Then `transition` the item `merged` and **`backlog-operator: resolve` immediately** — the merge IS the completion event; `resolve` with the commit ref only when a red→green test names its id (BL-225) and rule 18's artifact-class evidence holds, else leave it at its intermediate status; mark the subtask done.
-11. **Post-merge review from `main`.** After the merge of a first-pass implementation (never of a correction — `dispatch-contract` §1a), blind-review **per ticket against the merged sha** (see `dispatch-contract` §1a) — pinned so the review is race-free while other merges land. The reviewer **runs the suite**, it does not judge from reading. A finding at or above **HIGH** is never a merge blocker: bucket it with the run's other deferrals, dispatch it as immediate follow-up implementation, and surface it to the user by severity. Review type (blind vs guided) and the plan-completion full-delta blind review follow `dispatch-contract` §1a and `AGENTS.md`'s `## Blind Review` — one rule, so the brief and the expectation cannot drift. The **HIGH/critical filter is narrow** — it applies only to immediate corrections arising from reviews (rule 12 governs unrelated defects).
-12. **Out-of-scope observations.** Anything in `out-of-scope-observed` is a candidate discovered bug: route it through `dispatch-triage`; if confirmed, `TaskCreate` + `backlog-operator: file` + a correction dispatch in this run (dispatcher rule 12). An observation in another repo is filed to that repo instead (dispatcher rule 17).
-13. **Post-deploy.** If any bucket deployed, dispatch live-status + upstream-consumer verification before closing (dispatcher rule 13).
-14. **Close.** `dispatch-status` check: every subtask terminal. Write the report with one telemetry row per dispatch and only the new/unacknowledged bugs/deferrals.
+10. **Delivery lifecycle.** Once a bucket verifies, it waits at `review` for the rest. Then run the dispatcher's Step 5 in order — static review per bucket, aggregate and correct, QA, reopens, your final test run, the **one blind review**, the ff-only merge to the target. That procedure is the only home; do not restate or reorder it here. Keep dispatching implementation for later buckets meanwhile.
+11. **Release.** Run the dispatcher's Step 7: the release guide yourself, the live confirmation, then `backlog-operator: resolve` per item once its artifact-class evidence holds (dispatcher rules 13, 18).
+12. **Out-of-scope observations.** Anything in `out-of-scope-observed` is a candidate discovered bug: route it through `dispatch-triage`; if confirmed, `TaskCreate` + `backlog-operator: file`, and dispatch a correction only when dispatcher rule 12's clauses hold. An observation in another repo is filed to that repo instead (dispatcher rule 17).
+13. **Close.** `dispatch-status` check: every subtask terminal. Write the report with one telemetry row per dispatch and only the new/unacknowledged bugs/deferrals.
 
 ## Hard rules
 
 - Never dispatch a bucket without a done-state.
 - Never run two writers on the same file concurrently.
-- Never merge without the change's own gates green; never merge a review gate into the delivery path.
+- Never merge to the target without your own green final test run, and never dispatch a second blind review of a plan.
 - Never let an `out-of-scope-observed` item vanish — it is triaged, filed, and scheduled, or the user explicitly defers it.
 - Never redirect explicit direction into another playbook uninvited.

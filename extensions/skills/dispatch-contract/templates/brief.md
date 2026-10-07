@@ -17,7 +17,7 @@ dispatcher-structuring: <everything the dispatcher added — goal narrowing, acc
 - <uid or BL-<n>> AC1 — <binary, checkable statement>
 - <uid or BL-<n>> AC2 — <statement>
 
-Every test you write names the ticket and the AC id it exercises (`<uid or BL-<n>> AC<n>`). An AC with no citing test is not done. Where an AC admits no test, write `AC<n>: none applicable — <reason>`.
+Every test you write names the ticket and the AC ids it exercises (`<uid or BL-<n>> AC<n>`); one test may cite several ACs. Every AC is cited by at least one test; an AC no test cites is not done.
 
 ## Done-state (the dispatcher will check these directly)
 
@@ -34,18 +34,22 @@ Out of scope (report, do not edit): everything else
 
 <file excerpts / error text / prior findings — no "read <path>" pointers for anything you can paste>
 
-## Review target (post-merge review briefs only)
+## Worktree (implementer briefs only)
 
-Repo/commit: review `main` at the merged sha `<sha>` — pinned so the review is race-free while other merges land.
-RUN the suite, do not judge from reading. Gates, each with its raw exit code:
-- `pnpm test` → 0 failures
-- `tsc --noEmit` → exit 0
-- bundle to a TEMP outDir → under the size budget
-Flake: run the suite <n> times; report pass/fail per run.
-Fixtures: `public/events.json` / `details.json` are gitignored — copy them from the repo root; a missing fixture is NOT a code failure.
-Report findings by severity. A HIGH is bucketed as follow-up impl, never a merge blocker.
+Worktree: `<path>` · bucket branch: `<branch>` · plan branch: `<plan-branch>`. When every AC is verified, merge into the plan branch fast-forward only (rebase your bucket branch first if the plan branch moved; hand a conflicting rebase back as `blocked`), then transition your issue to `review`.
 
-Review type by changed lines of code (~200–400 is the blind threshold; `>=8` changed files is a coarse secondary proxy): at/above → **blind review** (reviewer gets ONLY the diff + the instruction "Review"); below → **guided review** (may carry focused context). At plan completion, one full-delta blind review over the plan-start sha → finish sha.
+## Test standard (briefs that write or change tests)
+
+- Unit tests mock every library that spawns a process or touches a third-party network.
+- e2e tests drive every surface in one run on one shared scaffold and teardown; minimize wall-clock duration and report it.
+
+## Static-analysis review (per-bucket review briefs only)
+
+Target: `<bucket diff on the plan branch>`. Read and analyse against the ACs and scope above; do not run the suite. Return findings by severity with file:line evidence.
+
+## Blind review (the plan's one blind review — nothing but this)
+
+The brief is the plan's whole diff and the single word: `Review`. Nothing else is added.
 
 ## Tools / model
 

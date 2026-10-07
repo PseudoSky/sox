@@ -9,7 +9,7 @@ so that when they do not, the existence of a plan is *mentioned*, not *imposed*.
 A plan is not a document the dispatcher reads. It is an `issue` row in the
 backlog: its work items attach by a `part_of` edge, and their order is expressed
 as `blocks` dependencies. Execution is driven by the **ready view** — the items
-whose blockers are resolved.
+whose blockers are resolved (a blocker at `review` counts; Step 4).
 
 ## Entry conditions (any one)
 
@@ -37,9 +37,10 @@ wait.
    edge. The dispatcher never writes the graph directly (rule 15). Done-state: the ready view
    returns the first dispatchable items.
 4. **Execute from the ready view.** Dispatch the ready items through the normal `dispatch-contract`
-   brief; each merges on its own gates and is `resolve`d on merge (the merge is the completion
-   event), which unblocks its dependents, and the review runs from `main` per ticket after the
-   merge. Re-read the ready view. Repeat until nothing is ready and the plan is complete or blocked.
+   brief, inside the plan worktree (dispatcher Step 5). An item whose blockers have reached `review`
+   (merged onto the plan branch) is dispatchable — resolution waits for the release. Re-read the ready
+   view. Repeat until nothing is ready, then run the rest of the lifecycle; the plan is done when it
+   is released and confirmed live, or blocked.
 5. **Track.** One Task entry per item; every claim/transition goes through `backlog-operator`. The
    plan's dependency structure is landed from the architect's output — never edited by you.
 

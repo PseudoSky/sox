@@ -1,3 +1,7 @@
+## 2.0.0
+
+- Steps 10-11 hand a verified bucket to the dispatcher's delivery lifecycle (Step 5) and release (Step 7) instead of merging on its own gates with a post-merge review; routing adds `qa` and limits `git-manager` to conflicts. Matches dispatcher 2.0.0.
+
 ## 1.7.0
 
 - Step 7 appends the §5 run line to the plan or issue served; Step 11 post-merge blind review excludes corrections. Matches dispatcher 1.14.0.

@@ -46,8 +46,8 @@ An item lacking any of these is **transitioned back to needs-triage/scoping**, n
 `resolve` is the only verb that asserts work is *done*, so it carries a precondition keyed on the
 **artifact class**. A commit/merge ref is **never** sufficient on its own:
 
-- Every item — acceptance-criteria proof: the acceptance criteria the item carries are met (or a
-  recorded `none applicable` declaration), verified against state.
+- Every item — acceptance-criteria proof: the acceptance criteria the item carries are met, each cited
+  by a passing test, verified against state.
 - Publishable package — published-artifact proof: the released version actually resolves (the
   registry version / the package registry answers for it). Merging to main is not publishing.
 - Released/deployed service or artifact — live-system / deploy proof: a verification dispatch

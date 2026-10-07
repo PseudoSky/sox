@@ -1,3 +1,7 @@
+## 1.7.0
+
+- Close-the-loop and flow diagram follow the delivery lifecycle; a fix to a finding is never blind-reviewed. Matches dispatcher 2.0.0.
+
 ## 1.6.1
 
 - Finish the leaf→bucket terminology migration (764e8f71): the dispatch work unit is a **Bucket**; no `leaf` remains in the body.

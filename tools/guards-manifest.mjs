@@ -221,11 +221,28 @@ export const GUARDS = [
     id: '19434c31',
     tier: 1,
     script: 'test-19434c31-dispatcher-review-floor.mjs',
-    // Pins a property of the dispatcher agent prose (the merge-first delivery loop: merge on the
-    // change's own gates, review from `main` after the merge, HIGH bucketed as follow-up), not a
-    // tool script — the superseded pre-merge severity-floor shape must stay absent, and the pre-fix
-    // shape (v1.4.0, commit 9ab825e3) is the negative control.
+    // Pins a property of the dispatcher agent prose (2.0.0: static reviews inside the cycle, exactly
+    // ONE blind review pre-merge), not a tool script — the severity-floor and merge-first shapes
+    // must stay absent, and the 1.14.0 rule 5 (commit a713f684) is the negative control.
     watch: ['extensions/agents/dispatcher/dispatcher.md'],
+  },
+  {
+    id: 'dispatcher-delivery-lifecycle',
+    tier: 1,
+    script: 'test-dispatcher-delivery-lifecycle.mjs',
+    // Pins the dispatcher 2.0.0 lifecycle (plan worktree, bucket worktrees off the plan branch,
+    // ff-only merges, static review, QA, one blind review, dispatcher-run release, live
+    // confirmation), AC-gated dispatch, and the unit-mock / one-shot-e2e test standard across the
+    // dispatcher, dispatch-contract, dispatch-direct, backlog-operator and AGENTS.md.
+    // Negative control = commit a713f684.
+    watch: [
+      'extensions/agents/dispatcher/dispatcher.md',
+      'extensions/skills/dispatch-contract/SKILL.md',
+      'extensions/skills/dispatch-contract/templates/brief.md',
+      'extensions/skills/dispatch-direct/SKILL.md',
+      'extensions/agents/backlog-operator/backlog-operator.md',
+      'AGENTS.md',
+    ],
   },
   {
     id: 'dispatcher-ac-citation',
@@ -244,8 +261,9 @@ export const GUARDS = [
     id: 'dispatcher-plain-status-no-correction-review',
     tier: 1,
     script: 'test-dispatcher-plain-status-no-correction-review.mjs',
-    // Pins dispatcher 1.14.0: plain-markdown status table (no HTML), blind review first-pass only
-    // (never corrections), and the single dispatch-record run line. Negative control = commit d7c954b4.
+    // Pins the plain-markdown status table (no HTML), the single blind review per plan (never for
+    // a correction, reopen or re-dispatch), and the single dispatch-record run line.
+    // Negative control = commit d7c954b4.
     watch: [
       'extensions/agents/dispatcher/dispatcher.md',
       'extensions/skills/dispatch-contract/SKILL.md',

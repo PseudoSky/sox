@@ -58,13 +58,13 @@ const DISPATCHER_INVARIANTS = [
   ['terminal resolution keyed on the artifact class', /Terminal resolution requires evidence of the artifact class/],
   ['acceptance-criteria proof for every item', /Acceptance-criteria proof/],
   ['published-artifact proof for a publishable package', /Published-artifact proof/],
-  ['merging to main is not publishing', /Merging to main is not publishing/],
-  ['live-system \/ deploy proof for a released\/deployed artifact', /Live-system \/ deploy proof/],
-  ['a merge plus a restart is not a verified release', /A merge plus a restart is not a verified release/],
+  ['a merge, a publish exit code or a registry listing is not confirmation', /A merge, a publish exit code, or a registry listing is not confirmation/],
+  ['live-system proof for a deployed artifact', /Live-system proof/],
+  ['the published package is installed from the registry and exercised', /installed from the registry into a clean scratch directory/],
   ['a commit\/merge ref alone is insufficient', /commit\/merge ref alone is insufficient/],
   ['requirement derived from what the artifact REQUIRES', /derived from what the artifact REQUIRES/],
-  ['Step 7 not conditional on a deploy having occurred', /independent of whether this run performed the deploy/],
-  ['Step 5 resolve gate carries rule 18 evidence', /rule 18's artifact-class evidence/],
+  ['requirement not conditional on a release having occurred in this run', /never from whether a release happened to occur in this run/],
+  ['Step 7 resolve gate carries rule 18 evidence', /resolve` each item once rule 18's evidence for its class holds/],
   ['Merge-as-terminal-evidence failure mode catalogued', /Merge-as-terminal-evidence/],
 ];
 

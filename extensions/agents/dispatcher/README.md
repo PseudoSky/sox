@@ -6,7 +6,7 @@
 
 Decomposes ad-hoc user direction into a Task tree, dispatches `00-active` executors in the
 background under `dispatch-contract` briefs, verifies every outcome from git/tests/state (never
-from a subagent's report), review-gates every merge, and keeps the live Task list and the backlog
+from a subagent's report), carries each plan through one lifecycle (plan worktree, ff-only merges, static review, QA, exactly one blind review, release, live confirmation), and keeps the live Task list and the backlog
 graph (via `backlog-operator`) in sync. Playbooks — `dispatch-direct`, `dispatch-triage`,
 `dispatch-plan`, `dispatch-status`, `backlog-intake` — load on demand and are never forced;
 explicit user direction always wins.

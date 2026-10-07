@@ -2,28 +2,17 @@
 /**
  * tools/test-19434c31-dispatcher-review-floor.mjs
  *
- * Red->green contract pin for backlog 19434c31, superseded by dispatcher 1.8.0. The original fix
- * put a minimum-severity floor + round cap on the blind review — but it KEPT review on the delivery
- * path, so a pre-merge gate that re-opened on every finding still never converged. The 1.8.0
- * doctrine ("merge-first delivery loop") moves the review gate OFF the delivery path entirely:
- * code merges on its OWN gates, review runs AFTER the merge from `main` against the pinned sha, and
- * a HIGH finding is bucketed + dispatched as immediate follow-up implementation rather than blocking
- * the merge.
+ * Red->green contract pin for backlog 19434c31 (a review loop that never converges), re-pinned to
+ * dispatcher 2.0.0. History: a severity floor kept review on the delivery path and still looped;
+ * merge-first moved review after the merge and re-opened work after it landed. 2.0.0 removes the
+ * loop's cause: static-analysis reviews run inside the cycle, QA runs the tests, and exactly ONE
+ * blind review runs immediately before the merge to `main` — never in a later cycle.
  *
- * This guard now pins that merge-first doctrine (the positive arms) AND proves the supersession —
- * the pre-merge severity-floor shape (v1.5..v1.7) must be ABSENT, and the authentic no-floor pre-fix
- * v1.4.0 shape (commit 9ab825e3) is the negative control. The v1.4.0 rule 5 read "You never merge
- * unreviewed code. Every merge waits for a `code-reviewer` pass with zero open items." — that exact
- * sentence is rejected by the same predicate that accepts the shipped artifact, so this guard is
- * demonstrably able to fail.
- *
- * Arms (all matched against whitespace-normalised prose, so line wrapping is irrelevant):
- *   1..12. the merge-first delivery loop is present: merge-on-own-gates, review-from-`main`,
- *          findings-re-open-the-ticket, merge-is-not-done, hard-rail-`main`,
- *          write-scope-overlaps-declared, supersedes-severity-floor, Step 5 rename, and the
- *          "Review-gate deadlock" failure mode.
- *   13. the superseded severity-floor shape (8 old invariants) is ABSENT — not resurrected.
- *   14. NEGATIVE CONTROL: the v1.4.0 pre-fix rule-5 shape is rejected.
+ * Arms (matched against whitespace-normalised prose, so line wrapping is irrelevant):
+ *   1. the 2.0.0 lifecycle invariants are PRESENT in dispatcher.md.
+ *   2. the superseded severity-floor and merge-first shapes are ABSENT (not resurrected).
+ *   3. NEGATIVE CONTROL: the authentic 1.14.0 rule-5 shape (commit a713f684) is rejected by the
+ *      same predicate that accepts the shipped artifact.
  *
  * Usage: node tools/test-19434c31-dispatcher-review-floor.mjs [--file <path-to-dispatcher.md>]
  * Exit 0 iff the artifact carries the merge-first doctrine AND the severity-floor shape is absent
@@ -39,24 +28,27 @@ const DEFAULT_TARGET = path.join(REPO_ROOT, 'extensions/agents/dispatcher/dispat
 const fileArgIdx = process.argv.indexOf('--file');
 const TARGET = fileArgIdx !== -1 ? path.resolve(process.argv[fileArgIdx + 1]) : DEFAULT_TARGET;
 
-// Authentic pre-fix rule 5 (v1.4.0, commit 9ab825e3). Kept verbatim as the negative control.
-const PRE_FIX = `5. **You never merge unreviewed code.** Every merge waits for a \`code-reviewer\`
-   pass with zero open items.`;
+// Authentic pre-fix rule 5 (dispatcher 1.14.0, commit a713f684): merge on own gates, review FROM `main`
+// afterwards. Kept verbatim as the negative control of the 2.0.0 doctrine.
+const PRE_FIX = `5. **Code merges on its own gates; review follows the merge.** The merge trigger is
+   the change's **own gates** — \`pnpm test\` 0 failures, \`tsc --noEmit\` exit 0, the
+   bundle under budget — **not** a review. Then review FROM \`main\`, per ticket, pinned to the merged sha.`;
 
-// The merge-first delivery loop (dispatcher 1.8.0) — every invariant must be PRESENT.
+// The 2.0.0 delivery lifecycle: review never sits on the delivery path as a looping blind gate.
+// Static reviews run inside the cycle, ONE blind review runs pre-merge — every invariant PRESENT.
 const INVARIANTS = [
-  ['merge trigger is the change\'s own gates, not a review', /Code merges on its own gates; review follows the merge/],
-  ['review runs FROM `main`, per ticket, pinned to the merged sha', /review FROM `main`, per ticket, pinned to the merged sha/],
-  ['the reviewer RUNS the suite, does not judge from reading', /RUNS the suite\*\*, it does not judge from reading/],
-  ['merge is not done — resolve is gated on rule 18, not the merge', /Merge is not done/],
-  ['the reviewer writes the finding to the ticket and re-opens it', /The reviewer writes the finding to the ticket and re-opens it/],
-  ['every post-merge finding is written to the ticket and re-opened', /Every post-merge finding is \*\*written to the ticket and re-opened\*\*/],
-  ['`main` gates are a hard rail: red merged state is an immediate fix', /a red merged state is an \*\*immediate fix, not a follow-up\*\*/],
-  ['branch write-scope overlaps declared in briefs up front', /write-scope overlaps are \*\*declared in briefs up front\*\*/],
-  ['supersedes the severity-floor gate 19434c31', /Supersedes the severity-floor gate/],
-  ['review no longer sits on the delivery path', /review no longer sits on the delivery path/],
-  ['Step 5 renamed to "Merge on gates, then review from main"', /Step 5 — Merge on gates, then review from main/],
-  ['failure mode renamed to "Review-gate deadlock"', /Review-gate deadlock/],
+  ['rule 5 is the one lifecycle', /One lifecycle carries every plan to `main`/],
+  ['review is static first, blind once', /Review is static first, blind once/],
+  ['exactly ONE blind review per plan, pre-merge, HARD', /Exactly ONE blind review per plan, immediately before the merge to `main` — HARD rule/],
+  ['no correction / reopen / re-dispatch is blind-reviewed', /No correction, reopen cycle or re-dispatch, before or after it, is blind-reviewed/],
+  ['a second blind review is never dispatched', /a second blind review is never dispatched/],
+  ['static reviewer does not run the suite (QA does)', /does not run the suite \(QA does\)/],
+  ['`main` receives only a green plan branch the dispatcher ran', /`main` receives only a plan branch whose final test run you read green/],
+  ['a red merged state is an immediate fix', /A red merged state is an immediate fix, never a follow-up/],
+  ['write-scope overlaps declared in briefs up front', /Write-scope overlaps are declared in briefs up front/],
+  ['Step 5 is the delivery lifecycle', /Step 5 — The delivery lifecycle/],
+  ['stage 9 is the one blind review', /The one blind review \(rule 5, HARD\)/],
+  ['failure mode Repeated blind review', /Repeated blind review/],
 ];
 
 // The superseded pre-merge severity-floor shape (19434c31 v1.5..v1.7) — every invariant must be ABSENT.
@@ -69,6 +61,10 @@ const SUPERSEDED = [
   ['the cap forbids a third round', /Never a third round/],
   ['Review-loop divergence failure mode', /Review-loop divergence/],
   ['Step 5 merge gate reiterates the floor', /Only blocking items \(≥ HIGH — rule 5\) go back to the executor/],
+  ['merge-first: review follows the merge', /review follows the merge/],
+  ['merge-first: review FROM `main`', /review FROM `main`/],
+  ['merge-first: post-merge finding re-opens', /post-merge finding/],
+  ['superseded failure mode name', /Review-gate deadlock/],
 ];
 
 const normalise = (s) => s.replace(/\s+/g, ' ').trim();
@@ -93,7 +89,7 @@ function report(name, ok, detail) {
 const text = fs.readFileSync(TARGET, 'utf8');
 const missingPositive = missing(text, INVARIANTS);
 report(
-  `19434c31: dispatcher carries the merge-first delivery loop (${INVARIANTS.length} invariants)`,
+  `19434c31: dispatcher carries the one-blind-review delivery lifecycle (${INVARIANTS.length} invariants)`,
   missingPositive.length === 0,
   missingPositive.length === 0
     ? `all ${INVARIANTS.length} invariants present in ${path.relative(REPO_ROOT, TARGET)}`
@@ -105,7 +101,7 @@ report(
 // ---------------------------------------------------------------------------
 const resurrected = present(text, SUPERSEDED);
 report(
-  `19434c31: the pre-merge severity-floor shape is SUPERSEDED (${SUPERSEDED.length} old invariants absent)`,
+  `19434c31: the severity-floor and merge-first shapes are SUPERSEDED (${SUPERSEDED.length} old invariants absent)`,
   resurrected.length === 0,
   resurrected.length === 0
     ? `all ${SUPERSEDED.length} severity-floor invariants absent from ${path.relative(REPO_ROOT, TARGET)}`
@@ -118,7 +114,7 @@ report(
 // ---------------------------------------------------------------------------
 const preFixMissing = missing(PRE_FIX, INVARIANTS);
 report(
-  '19434c31: the pre-fix rule-5 shape (v1.4.0 "pass with zero open items") is REJECTED',
+  '19434c31: the pre-fix rule-5 shape (1.14.0 merge-first, review from `main`) is REJECTED',
   preFixMissing.length > 0,
   preFixMissing.length > 0
     ? `negative control correctly rejected on ${preFixMissing.length}/${INVARIANTS.length} invariants`

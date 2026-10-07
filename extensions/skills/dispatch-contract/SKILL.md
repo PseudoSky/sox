@@ -14,8 +14,9 @@ The fields below live on the backlog ticket. Dispatch sends the ticket id and th
 - **Goal** — one sentence, imperative.
 - **User request (verbatim)** — `user-request (verbatim):` — the user's own words, copied exactly, never paraphrased or trimmed. This field is the record the dispatcher's additions are re-checked against, and the executor's ground truth for what was actually asked.
 - **Dispatcher structuring** — `dispatcher-structuring:` — everything the dispatcher added: the restatement, the decomposition, acceptance criteria, guardrails, the chosen option among ones the user left open. **Before dispatch, re-check each addition against the verbatim.** A **HARD contradiction** is the closed set — it *forbids what the user required*, *requires what the user forbade*, *reverses a stated order/priority/constraint*, or *redirects target/scope to something the user did not name*. On a HARD contradiction, **halt and ask the user before dispatching**. Restating, disambiguating, adding acceptance criteria, choosing among open options, and adding consistent guardrails are **not** contradictions — never ask on those.
-- **Acceptance criteria (with ids)** — the item's AC block, each criterion carrying a stable id (`AC1`, `AC2`, …). Every test the executor writes must cite the ticket and the AC id it exercises (`<uid or BL-<n>> AC<n>`); an AC with no citing test fails verification. Where an AC admits no test, it is named by id in the `none applicable` declaration (dispatcher rule 20).
+- **Acceptance criteria (with ids)** — the item's AC block, each criterion carrying a stable id (`AC1`, `AC2`, …). Every test the executor writes cites the ticket and the AC ids it exercises (`<uid or BL-<n>> AC<n>`); one test may cite several ACs, but every AC is cited by at least one, and an AC no test cites fails verification. An item with no ACs is not dispatched.
 - **Done-state** — the observable evidence: `tests: <cmd> exits 0`, `diff touches only: <paths>`, `state: <file>.<field> == <value>`, `artifact: <path> exists with <shape>`. At least one; never "when you are confident".
+- **Worktree** (implementer briefs) — the bucket worktree path, the bucket branch, and the plan branch it merges into fast-forward only before transitioning its issue to `review`.
 - **Scope** — files/dirs in scope; anything else is out of scope and must be reported, not edited.
 - **Context inline** — the file excerpts, error text, and prior findings the executor needs. Never "read `<path>` for context" for anything under 200 lines; inline it.
 - **Tools / model** — the exact tool set and model tier; the executor aborts and returns if it needs an undeclared tool.
@@ -24,49 +25,16 @@ The fields below live on the backlog ticket. Dispatch sends the ticket id and th
 - **Return contract** — section 2, verbatim.
 - **Delivery** — anonymous dispatch: the return block is the final message. Named teammate: the final action is `SendMessage` to the dispatcher with the return block.
 
-## 1a. The post-merge review brief (review follows the merge)
+## 1a. Review briefs and the test standard
 
-Review is dispatched **after** the change has merged on its own gates, **per ticket**, and it
-is not a delivery gate — a HIGH it returns is bucketed, not a blocker (see §1b). Fill the brief
-with these review-specific fields (`templates/brief.md` carries them):
+Reviews occur twice in a plan (dispatcher Step 5); `templates/brief.md` carries both shapes.
 
-- **Review target** — the merged commit **by sha**, reviewed from `main`. Pin the sha so the
-  review is race-free while other merges land.
-- **The reviewer RUNS the suite — it does not judge from reading.** Mandatory gates, raw exit
-  codes required for each: `pnpm test` (0 failures), `tsc --noEmit` (exit 0), and the bundle
-  built to a **TEMP outDir** under the size budget.
-- **Evidence shape** — raw exit codes, file/test counts, and **flake measurements across runs**
-  (the same suite run more than once, with the pass/fail deltas). "It looks correct" is not a
-  review return.
-- **Gitignored fixtures** — `public/events.json` and `details.json` are gitignored. Copy them
-  from the repo root into place before running; a missing fixture is **not** a code failure and
-  must never be reported as one (this trap has taxed four dispatches).
-- **Review type is chosen by the review's changed lines of code** (~200–400 is the blind threshold;
-  `>=8` changed files is a coarse secondary proxy). At/above the band → **blind review**: the
-  reviewer receives ONLY the diff content and the instruction "Review" — no context, no rationale,
-  no review points. Below → **guided review**, which may carry focused context and review points.
-  At **plan completion**, run exactly one **full-delta blind review** over the plan-start sha →
-  finish sha, independent of size.
-- **Blind review applies only to the first-pass implementation of an item.** A **correction** to
-  work — a fix for a review finding, a hot fix or follow-on fix to `main`, a re-dispatch of a
-  failed or partial attempt — gets **no review round**: the dispatcher verifies it against its own
-  gates and the finding it answers (a correction loop that re-reviews never converges and blocks
-  the release).
+- **Static-analysis review** (stage 4, per bucket, guided) — **target**: the bucket's diff on the plan branch. The brief carries the bucket's ACs and scope. The reviewer reads and analyses and does **not** run the suite (QA does). Return: findings by severity, each with file:line evidence.
+- **The blind review** (stage 9, exactly one per plan) — the reviewer receives **only** the plan's whole diff (start sha to head) and the instruction "Review": no ACs, context, rationale, review points or return contract. The dispatcher reads the findings from the reply and files them. A correction, a reopen cycle or a re-dispatch never gets one.
 
-## 1b. What a review finding means now (severity is for bucketing)
-
-Severity is still read — it fixes the **bucket**, not the merge. The floor is at or above
-**HIGH**, applied to the defect itself (user-visible or shipped breakage), never to a review
-finding. Every post-merge finding is **filed AND scheduled** — nothing absorbed silently.
-A finding at or above HIGH is bucketed with the run's other deferrals and dispatched as
-**immediate follow-up implementation**: it stays HIGH, stays filed, and is still **surfaced to
-the user by severity** — only its power to stall delivery is removed. `main`'s gates are a
-**hard rail**: a red merged state is an **immediate fix, not a follow-up** — state it, do not
-let it sit. Review-after-merge means `main` **will** carry defects a pre-merge gate would have
-caught; that is the accepted price of a loop that converges — stated, not discovered.
-The high/critical filter is **narrow**: it applies ONLY to **immediate corrections arising from
-reviews** — it never stalls a fix and never filters an unrelated defect (dispatcher rule 12
-governs those).
+**Test standard** — carried by every brief that writes or changes tests, enforced by QA's audit:
+- **Unit tests mock every library that spawns a process or touches a third-party network** (child-process wrappers, HTTP clients, vendor SDKs): no unit test spawns, dials out, or needs a running service.
+- **e2e tests drive every surface of the artifact in one run** on one shared scaffold and teardown; split only where isolation cannot be had, with the reason stated. Minimum wall-clock duration is a primary goal; the return's evidence states the e2e duration.
 
 ## Verification (run before returning)
 
@@ -85,7 +53,7 @@ evidence:
   - <cmd> → <exit code / last line>
   - diff: <paths touched> (<n> files, +<a>/−<b>)
   - <state or artifact check> → <observed value>
-ac-coverage: [<AC id → test citing ticket+AC id>] | none-applicable
+ac-coverage: [<AC id → test citing ticket+AC id>]
 out-of-scope-observed: [<path or symptom> — <one line>] | none
 claims-needing-proof: [<"pre-existing"/"unrelated" style claim> — <evidence attached or "none">] | none
 remaining (if partial/blocked): <what is left, or the blocker>
@@ -158,4 +126,4 @@ transition's note, and the source of the §4 row's `dur_ms`/`item`.
 - Never reference a file for the executor to open when it can be inlined.
 - Every brief states model and tools explicitly.
 - Every check-and-confirm item is confirmed to the dispatcher *before* it is corrected.
-- Every AC is proven by a test citing the ticket and the AC id; an AC with no citing test is not `done`.
+- Every AC is cited by a test carrying the ticket and the AC id; an AC no test cites is not `done`.

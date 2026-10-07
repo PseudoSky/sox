@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.0
+
+- §1a rewritten: the static-analysis review brief (per bucket, guided, no suite run) and the plan's single blind review (diff + "Review" only); the post-merge review brief and §1b are removed. Adds the test standard (unit-test mocking, one-shot e2e).
+- Brief gains a Worktree field; `none applicable` removed from the AC, return and hard-rule text; tests may cite several ACs. Matches dispatcher 2.0.0.
+
 ## 1.9.0
 
 - §1a: blind review applies only to first-pass implementations; corrections (finding fixes, `main` hot fixes, re-dispatches) get no review round.

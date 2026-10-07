@@ -403,13 +403,13 @@ When the `dispatcher` fans out multiple agents in parallel, these rules prevent 
 1. **Disjoint file sets only**: the dispatcher's dependency tree must declare a dependency if two segments touch the same file. Segments with overlapping file sets are NEVER dispatched in parallel.
 2. **Read-before-edit is enforced**: The Edit tool requires reading files first — stale reads are auto-detected. If an agent's read is stale, it will re-read and retry.
 3. **Per-project test scope**: Agents run `nx test|lint <project>` for the project(s) they changed — NOT the full monorepo. This prevents test collision (two agents running the same test suite).
-4. **No git worktree needed for well-partitioned work**: The `depends_on` tree + disjoint file sets is sufficient. Worktrees are reserved for destructive/experimental work (major refactors, force-rebuilds that dirty the tree).
+4. **A plan runs in a plan worktree and every bucket gets its own worktree off it**: disjoint file sets still decide what runs in parallel, because the ff-only merges into the plan branch must not conflict.
 5. **Pre-commit gate is serial**: The primary agent (or the dispatcher after all waves complete) runs `npx nx affected -t lint` across ALL changed projects before committing. This catches cross-project breakage.
 6. **No stash, ever**: Already constrained above. Extends to ALL dispatched agents — if an agent needs to set work aside, it commits to a branch.
 
 ## ⛔ AGENT CONSTRAINT — DISPATCH PROTOCOL
 
-Orchestration is owned by the **`dispatcher`** extension (`extensions/agents/dispatcher/`). It decomposes the direction, dispatches named registry agents in the background via the task tool, verifies each outcome from git/tests/state (never from a report), merges on each change's own gates, and keeps the Task list and the backlog graph (via `backlog-operator`) in sync. The brief/return/telemetry contract is the **`dispatch-contract`** skill.
+Orchestration is owned by the **`dispatcher`** extension (`extensions/agents/dispatcher/`). It decomposes the direction, dispatches named registry agents in the background via the task tool, verifies each outcome from git/tests/state (never from a report), carries each plan through one lifecycle to `main` and its release, and keeps the Task list and the backlog graph (via `backlog-operator`) in sync. The brief/return/telemetry contract is the **`dispatch-contract`** skill.
 
 Every dispatched agent is a structured extension under `extensions/agents/`, or one of the project-scope / built-in agents opencode enumerates. The retired `pro`/`implement`/`flash` agents and the `.opencode/artifacts/` `dispatch.json` protocol they wrote are not part of this model.
 
@@ -418,15 +418,10 @@ Every dispatched agent is a structured extension under `extensions/agents/`, or 
 The reviewer receives **only the content to review and the instruction "Review"** — no context,
 rationale, review points, or prior state.
 
-**When it applies.** Review type is chosen by the review's **changed lines of code** — roughly
-**>=200–400 lines** is reviewed blind; below that uses guided review (the reviewer is given the
-surrounding context and review points). **Changed-file count (>=8) is a coarse secondary proxy** —
-a large mechanical rename is big by count but low cognitive load. Plan completion uses exactly
-one full-delta blind review (plan-start sha → finish sha) regardless of size.
-
-**It never applies to corrections.** Only the first-pass implementation of an item is reviewed
-blind; a fix for a review finding, a hot fix or follow-on fix to `main`, and a re-dispatch of a
-failed attempt get no review round — they are verified against their own gates.
+**Exactly one blind review runs per plan, immediately before the merge to `main` — HARD rule.** It
+covers the plan's whole delta. Per-bucket reviews earlier in the lifecycle are static-analysis
+reviews and are not blind. No correction, reopen cycle, or re-dispatch — before or after the blind
+review — is blind-reviewed, and a second blind review is never dispatched.
 
 ## ⛔ AGENT CONSTRAINT — LIVE SHIP VERIFICATION (MANDATORY)
 

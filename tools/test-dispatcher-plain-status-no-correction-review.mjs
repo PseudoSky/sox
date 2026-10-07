@@ -4,8 +4,8 @@
  *
  * Red->green pin for the dispatcher 1.14.0 corrections (user report, run dispatch-2026-10-04-b7d4):
  *   A. the status table is plain markdown — no <span style=...> / <br> (they rendered as raw HTML in Claude);
- *   B. blind review applies only to first-pass implementations — never to corrections (a blind review of a
- *      `main` hot fix would block the release indefinitely);
+ *   B. blind review runs exactly once per plan, pre-merge — never for a correction, reopen cycle or
+ *      re-dispatch (a blind review of each cycle never converges and blocks the release);
  *   C. one dispatch record: the §5 run line leads with dispatcher/session/agent/task/run_at.
  *
  * NEGATIVE CONTROL: the authentic pre-fix text, read from commit d7c954b4 (dispatcher 1.13.0), is run
@@ -35,9 +35,9 @@ const PREDICATES = [
   ['status table: optional notes field in the status cell', (t) => /optional `notes: <text>` ends the status cell/.test(t.dispatcher), 'dispatcher'],
   ['objectives: one line per outstanding objective, active bolded', (t) => /one line per outstanding objective/.test(t.dispatcher) && /stalled — <reason>/.test(t.dispatcher), 'dispatcher'],
   ['active dispatches named <agent> <issue> <short title>', (t) => /`<agent> <issue> <short title>`/.test(t.dispatcher), 'dispatcher'],
-  ['contract §1a: blind review is first-pass only', (t) => /Blind review applies only to the first-pass implementation/.test(t.contract), 'contract'],
-  ['dispatcher rule 5: corrections never reviewed', (t) => /Corrections are never reviewed/.test(t.dispatcher), 'dispatcher'],
-  ['AGENTS.md Blind Review: never applies to corrections', (t) => /It never applies to corrections/.test(t.agents), 'agents'],
+  ['contract §1a: the blind review is never dispatched for a correction, reopen or re-dispatch', (t) => /A correction, a reopen cycle or a re-dispatch never gets one/.test(t.contract), 'contract'],
+  ['dispatcher rule 5: no correction, reopen cycle or re-dispatch is blind-reviewed', (t) => /No correction, reopen cycle or re-dispatch, before or after it, is blind-reviewed/.test(t.dispatcher), 'dispatcher'],
+  ['AGENTS.md Blind Review: exactly one per plan, never for corrections', (t) => /Exactly one blind review runs per plan/.test(t.agents) && /No correction, reopen cycle, or re-dispatch/.test(t.agents), 'agents'],
   ['contract §5: run line is the dispatch record', (t) => /dispatcher: <dispatcher session_id>, session: <subagent session id>, agent: <dispatched agent name>, task: <task title>, run_at: <ISO UTC timestamp>/.test(t.contract), 'contract'],
 ]
 

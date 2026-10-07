@@ -64,7 +64,7 @@
   "render": {
     "claude": {
       "model": "haiku",
-      "version": "v0.6.2"
+      "version": "v0.6.3"
     },
     "opencode": {
       "model": "deepseek/deepseek-flash",
@@ -133,5 +133,5 @@
   "requires": {
     "tool_calling": true
   },
-  "version": "0.6.2"
+  "version": "0.6.3"
 }
