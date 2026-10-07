@@ -8,9 +8,12 @@
  * tricked into removing anything that is not a direct `run-*` child of the
  * smoke root.
  *
- * Run: node scripts/lib/prune-smoke-runs.test.mjs
+ * Run: npx vitest run scripts/lib/prune-smoke-runs.test.mjs
+ *
+ * Must be a vitest file: the root vitest config includes `scripts/**\/*.test.mjs`,
+ * and a node:test-only file registers no vitest suite ("No test suite found").
  */
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
