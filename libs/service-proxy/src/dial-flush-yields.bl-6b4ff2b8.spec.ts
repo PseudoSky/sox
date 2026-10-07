@@ -15,31 +15,34 @@
  * pass. The default `maxQueue` (256) means this alone cannot explain a 640s
  * stall — it is real and worth fixing, but secondary to the infinite hang.
  *
- * THE PROOF. Queue 50,000 requests while the backend is down (so they sit in
- * `queue`), start the backend, and use `onConnect` — fired synchronously
- * INSIDE the 'connect' handler, immediately BEFORE `flushQueue()` runs in the
- * same callback (see dial.ts's `connect()`) — to schedule a `setImmediate`
- * probe at the exact instant the drain is about to start. If `flushQueue()`
- * drains the whole backlog in one unbroken synchronous pass, the probe cannot
- * fire until that entire pass (every `socket.write()` for all 50,000 items)
- * has returned and the 'connect' callback's stack has unwound. If it drains
- * in bounded chunks yielding via `setImmediate` between them, the probe fires
- * as soon as the FIRST chunk (<= `maxItemsPerTick`, default 100) returns —
- * orders of magnitude sooner.
+ * THE PROOF (deterministic — counts, not wall-clock). Queue 50,000 requests
+ * while the backend is down (so they sit in `queue`), start the backend, and
+ * use `onConnect` — fired synchronously INSIDE the 'connect' handler,
+ * immediately BEFORE `flushQueue()` runs in the same callback (see dial.ts's
+ * `connect()`) — to schedule a `setImmediate` probe at the exact instant the
+ * drain is about to start. A spy on `net.Socket.prototype.write` counts how
+ * many request frames have been handed to the socket when the probe runs. If
+ * `flushQueue()` drains the whole backlog in one unbroken synchronous pass,
+ * the probe cannot run until all 50,000 frames have been written. If it
+ * drains in bounded chunks yielding via `setImmediate` between them, the
+ * probe runs after the FIRST chunk, i.e. <= `maxItemsPerTick` (default 100)
+ * frames. The count is a pure function of the code's control flow, so it is
+ * independent of machine load.
  *
- * RED (fix disabled — restore the old `while (queue.length > 0 && socket) {
- * const p = queue.shift(); ...}` unbounded loop in flushQueue with no
- * per-tick cap and no `setImmediate` yield): measured directly against this
- * exact fixture — reverting flushQueue to the unbounded loop (Deque itself
- * still O(1), so this isolates ONLY the missing chunk/yield, not the
- * separate O(N^2) Array.shift defect) — the onConnect->setImmediate delta for
- * N=50,000 was **55.77ms**, over the `MAX_CHUNK_DELTA_MS` threshold below.
- * GREEN (fix restored): the same measurement was **1.90ms** — a ~29x drop,
- * because the probe fires after the first <=100-item chunk instead of after
- * the full 50,000-item drain.
+ * Why not a time threshold: an earlier version asserted
+ * `onConnect->setImmediate` delta < 20ms (GREEN ~1.9ms, RED ~55.8ms idle) and
+ * failed at 51.77ms with the machine at load average ~80 — OS preemption of
+ * the test process inflated the GREEN delta into the RED band. The yield
+ * guarantee is "bounded work per tick", which the write count asserts
+ * directly.
+ *
+ * RED (fix disabled — an unbounded `while (queue.length > 0 && socket)` loop in
+ * flushQueue with no per-tick cap and no `setImmediate` yield): frames written
+ * at probe time == N (50,000). GREEN: <= 100.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { dialBackend, type BackendConnection } from './dial.js';
@@ -58,12 +61,24 @@ describe('BL-6b4ff2b8 — reconnect flush yields the event loop under a large ba
   it('yields within a bounded first chunk instead of draining 50,000 items in one synchronous pass', async () => {
     const sock = tmpSock('backlog');
     const N = 50_000;
-    // RED measured 55.77ms; GREEN measured 1.90ms. Set well above GREEN noise
-    // and well below RED so the assertion discriminates cleanly either way.
-    const MAX_CHUNK_DELTA_MS = 20;
+    // Default per-tick cap in dial.ts (DEFAULTS.maxItemsPerTick).
+    const MAX_ITEMS_PER_TICK = 100;
 
-    let probeDeltaMs: number | null = null;
-    let connectedAt = 0;
+    // Count request frames handed to a socket. Backend replies carry a
+    // `result`, never `"method":"ping"`, so only the client's drain is counted.
+    let pingFramesWritten = 0;
+    const realWrite = net.Socket.prototype.write;
+    const writeSpy = vi
+      .spyOn(net.Socket.prototype, 'write')
+      .mockImplementation(function (this: net.Socket, ...args: unknown[]) {
+        const chunk = args[0];
+        const text = typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : '';
+        if (text.includes('"method":"ping"')) pingFramesWritten++;
+        return (realWrite as (...a: unknown[]) => boolean).apply(this, args);
+      } as typeof net.Socket.prototype.write);
+    cleanups.push(() => writeSpy.mockRestore());
+
+    let framesWrittenAtProbe: number | null = null;
 
     // No backend started yet — every send() lands in the disconnected queue.
     const conn: BackendConnection = dialBackend({
@@ -75,9 +90,8 @@ describe('BL-6b4ff2b8 — reconnect flush yields the event loop under a large ba
       // the exact instant the drain of the 50,000-item backlog is about to
       // start.
       onConnect: () => {
-        connectedAt = performance.now();
         setImmediate(() => {
-          probeDeltaMs = performance.now() - connectedAt;
+          framesWrittenAtProbe = pingFramesWritten;
         });
       },
     });
@@ -102,12 +116,14 @@ describe('BL-6b4ff2b8 — reconnect flush yields the event loop under a large ba
       expect((r as { error?: unknown }).error).toBeUndefined();
     }
 
-    // THE ASSERTION: the setImmediate scheduled at the instant the drain
-    // began fired promptly — proving flushQueue() returned control to the
-    // event loop after a bounded first chunk instead of draining all 50,000
-    // items in one unbroken synchronous pass.
-    expect(probeDeltaMs, 'onConnect->setImmediate probe never fired').not.toBeNull();
-    expect(probeDeltaMs ?? Number.POSITIVE_INFINITY).toBeLessThan(MAX_CHUNK_DELTA_MS);
+    // THE ASSERTION: when the setImmediate scheduled at the instant the drain
+    // began ran, at most one bounded chunk had been written — proving
+    // flushQueue() returned control to the event loop instead of draining all
+    // 50,000 items in one unbroken synchronous pass.
+    expect(framesWrittenAtProbe, 'onConnect->setImmediate probe never ran').not.toBeNull();
+    expect(framesWrittenAtProbe ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(MAX_ITEMS_PER_TICK);
+    // All 50,000 were eventually written (the drain continued across ticks).
+    expect(pingFramesWritten).toBe(N);
   }, 30_000);
 
   it('preserves request order and drops none across a chunked drain', async () => {
