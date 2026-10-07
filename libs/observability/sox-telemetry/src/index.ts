@@ -69,6 +69,25 @@ export type {
 export type { RollupRow, RollupSeries } from './rollup.js';
 export type { OtelAttributes, OtelMetricPoint, OtelRuntime, OtelSpanHandle, OtelState } from './otel-types.js';
 
+// 621a11c5: shared process-identity span attributes (session_id, worktree, role)
+// + the required-prefix helpers, upstreamed from the adhd tracing plugins.
+export {
+  SESSION_ID_ENV,
+  classifyWorktree,
+  resolveProcessIdentity,
+  processIdentity,
+  identityAttributes,
+  toOtelAttributes,
+  requireTelemetryPrefix,
+  prefixAttributes,
+  _resetProcessIdentityForTest,
+} from './identity.js';
+export type { WorktreeKind, ProcessIdentity, IdentityAttributes } from './identity.js';
+
+// 621a11c5: idempotent, single-owner, ref-counted telemetry acquisition.
+export { acquireTelemetry, _activeLeaseCountForTest } from './acquire.js';
+export type { TelemetryLease } from './acquire.js';
+
 export {
   SOX_TELEMETRY_INIT,
   bootstrapChildTelemetry,

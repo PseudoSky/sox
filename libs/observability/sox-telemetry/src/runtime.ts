@@ -569,6 +569,21 @@ function otelDefaultFor(role: Role): boolean {
 }
 
 export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
+  return initTelemetryInternal(opts).handle;
+}
+
+/**
+ * `initTelemetry`'s body, additionally returning the awaitable teardown that
+ * `handle.close()` fires-and-forgets. Internal (`_`-prefixed export below):
+ * `acquireTelemetry` needs a promise it can await so `release()` resolves only
+ * once the final snapshot is written and the sinks/provider are closed — which
+ * lets callers and tests be deterministic without sleeping.
+ */
+function initTelemetryInternal(opts: InitTelemetryOptions): {
+  handle: TelemetryHandle;
+  closeAsync: () => Promise<void>;
+  state: Readonly<RuntimeState>;
+} {
   const rt = runtime();
   rt.state.sink?.close();
   void rt.state.otel.shutdown();
@@ -665,7 +680,48 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
     rt.otelReady = Promise.resolve();
   }
 
-  return {
+  // Ownership generation (621a11c5): the exact state object THIS call installed.
+  // A later `initTelemetry()` replaces `rt.state` and itself closes this
+  // generation's sink and provider, so a handle that outlives its generation
+  // must not tear down the live state of whoever superseded it. Before this
+  // guard, `staleHandle.close()` shut down the NEW generation's global tracer
+  // provider (observed: global delegate became `NoopTracerProvider`) and lost
+  // every span a third-party instrumentation emitted afterwards.
+  const generation = rt.state;
+
+  const closeAsync = (): Promise<void> => {
+    if (rt.state !== generation) return Promise.resolve();
+    // §5.8: a snapshot on graceful shutdown, so the final window of
+    // non-recomputable state (counters, sink drop counts) is not lost.
+    // S8: then fold one last rollup over the just-written final snapshot —
+    // BEFORE the sinks close — so shutdown's own data is in the final row.
+    return (async () => {
+      await snapshotMetrics('shutdown');
+      await rollupMetrics('shutdown');
+    })()
+      .catch((err: unknown) => {
+        // `snapshotMetrics`/`rollupMetrics` are written never to reject, but
+        // this chain is floated by `close()`: a future edit that lets either
+        // throw must not surface as an unhandled rejection (which Node
+        // terminates the process on by default). Traced via the runtime logger
+        // — never an empty catch — and placed BEFORE `.finally` so the sinks
+        // are still open when the warning is emitted.
+        log.warn('telemetry.close.failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .then(async () => {
+        // Re-check: a re-init may have landed while the final snapshot ran.
+        if (rt.state !== generation) return;
+        const otelDone = rt.state.otel.shutdown().catch(() => undefined);
+        rt.state.sink?.close();
+        closeSnapshotSink();
+        closeRollupSink();
+        await otelDone;
+      });
+  };
+
+  const handle: TelemetryHandle = {
     service: opts.service,
     role: opts.role,
     // BL-433: `plannedPath()`, not `currentPath()` — the question a caller is
@@ -675,33 +731,27 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
     flush: () => rt.state.sink?.flush() ?? Promise.resolve(),
     otelReady: () => rt.otelReady,
     close: () => {
-      // §5.8: a snapshot on graceful shutdown, so the final window of
-      // non-recomputable state (counters, sink drop counts) is not lost.
-      // S8: then fold one last rollup over the just-written final snapshot —
-      // BEFORE the sinks close — so shutdown's own data is in the final row.
-      void (async () => {
-        await snapshotMetrics('shutdown');
-        await rollupMetrics('shutdown');
-      })()
-        .catch((err: unknown) => {
-          // `snapshotMetrics`/`rollupMetrics` are written never to reject, but
-          // this chain is `void`-floating: a future edit that lets either throw
-          // must not surface as an unhandled rejection (which Node terminates
-          // the process on by default). Traced via the runtime logger — never an
-          // empty catch — and placed BEFORE `.finally` so the sinks are still
-          // open when the warning is emitted.
-          log.warn('telemetry.close.failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        })
-        .finally(() => {
-          void rt.state.otel.shutdown();
-          rt.state.sink?.close();
-          closeSnapshotSink();
-          closeRollupSink();
-        });
+      void closeAsync();
     },
   };
+  return { handle, closeAsync, state: generation };
+}
+
+/**
+ * Internal (consumed by `acquire.ts`): like `initTelemetry`, plus the awaitable
+ * teardown and the installed state object used for ownership checks.
+ */
+export const _initTelemetryOwned = initTelemetryInternal;
+
+/** Per-process acquire registry, hung off the shared runtime slot (additive;
+ *  tolerated absent so a copy created by an older version still works). */
+export interface AcquireSlot {
+  owner: unknown;
+}
+export function _acquireSlot(): AcquireSlot {
+  const rt = runtime() as TelemetryRuntime & { acquire?: AcquireSlot };
+  rt.acquire ??= { owner: null };
+  return rt.acquire;
 }
 
 /** Test-only: drop all state back to the uninitialised default. */
@@ -723,6 +773,7 @@ export function _resetTelemetryForTest(): void {
   rt.snapshotDir = null;
   rt.snapshotComponent = '';
   rt.rollupFileCache.clear();
+  _acquireSlot().owner = null;
   resetSelfCheck();
 }
 

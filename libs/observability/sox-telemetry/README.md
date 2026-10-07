@@ -78,6 +78,70 @@ function currentRuntimeState(): Readonly<{ service: string; role: Role; logSink:
 function resolveProcessRole(structuralDefault: Role): Role;
 ```
 
+### Sharing telemetry between libraries — `acquireTelemetry`
+
+`initTelemetry` is **last-wins**: each call closes the previous sink, shuts the previous OTel
+provider down and installs a new configuration. Use it at a composition root that is the sole
+owner. A library or plugin that may share a process with another telemetry user should
+**acquire** instead:
+
+```typescript
+function acquireTelemetry(opts: InitTelemetryOptions): TelemetryLease;
+
+interface TelemetryLease extends TelemetryHandle {
+  readonly owned: boolean;               // true: this call brought telemetry up; false: it joined an existing instance
+  readonly conflicts: readonly string[]; // opts that differ from the owner's (service | role | logSink | logDir | otel)
+  release(): Promise<void>;              // idempotent; resolves after teardown when it was the LAST lease; close() is an alias
+}
+```
+
+```typescript
+const a = acquireTelemetry({ service: 'agent-mcp', role: 'live-service' });
+const b = acquireTelemetry({ service: 'agent-mcp', role: 'live-service' }); // joins; options ignored
+await a.otelReady();   // ONE provider, registered once
+await a.release();     // provider stays up: b still holds a lease
+await b.release();     // last lease: final snapshot, then sinks + provider close
+```
+
+The first acquirer owns the configuration; later acquirers' options are ignored (a mismatch is
+reported in `lease.conflicts` and logged once as `telemetry.acquire.config_conflict`). The owner
+record lives on the shared `globalThis` runtime slot, so two installed copies of this package share
+one owner and one reference count. A raw `initTelemetry` call supersedes the owner (it always did);
+the next `acquireTelemetry` then owns again, and leases of the superseded epoch cannot close the new
+one. `handle.close()` from `initTelemetry` is also generation-scoped now: a handle that was
+superseded by a later `initTelemetry` no longer tears down the live configuration.
+
+### Process identity attributes
+
+Every product tracing through this package stamps the same three dimensions so a process run can be
+aggregated by session, checkout and population:
+
+```typescript
+type WorktreeKind = 'main' | 'linked' | 'none';
+
+function identityAttributes(): { session_id: string; worktree: WorktreeKind; role: Role };
+function processIdentity(): { readonly sessionId: string; readonly worktree: WorktreeKind }; // resolved once, frozen
+function resolveProcessIdentity(env?: ProcessEnv, cwd?: string, sessionId?: string): ProcessIdentity; // pure
+function classifyWorktree(cwd?: string): WorktreeKind;
+function toOtelAttributes(fields: Record<string, unknown>): OtelAttributes; // keeps string|number|boolean only
+function requireTelemetryPrefix(prefix: unknown, owner?: string): string;   // required, no default; throws if blank
+function prefixAttributes(prefix: string, fields: Record<string, unknown>): OtelAttributes; // { op } -> { 'prefix.op' }
+```
+
+```typescript
+const prefix = requireTelemetryPrefix(opts.prefix, 'my-plugin');
+await withSpan(`${prefix}.op`, { ...prefixAttributes(prefix, { op: id }), ...identityAttributes() }, run);
+```
+
+- `session_id` is `ADHD_SESSION_ID` when set, else a process-stable `randomUUID()`; it is shared
+  across duplicate installed copies of the package.
+- Identity keys are **unprefixed** by design (a prefix would split one session across products).
+  A product's own keys take a required `prefix` — there is deliberately no default.
+- Spread `identityAttributes()` last so a configured key can never shadow an identity dimension.
+- There is no `release.*` helper: `service.version` and `sox.artifact_sha256` already ride every span
+  as OTel resource attributes, and the full `{ version, artifact_sha256, git_sha }` rides every JSONL
+  record envelope. (`git_sha` is envelope-only; it is not a resource attribute.)
+
 ### Logging
 
 ```typescript
@@ -283,6 +347,9 @@ A child that never calls `bootstrapChildTelemetry` shows up as `unacked` in the 
 
 ## Gotchas
 
+- Libraries and plugins should call `acquireTelemetry`, not `initTelemetry`: two `initTelemetry` calls
+  in one process reconfigure each other (last-wins) while the OTel API's global registration is
+  first-wins.
 - `role` is required and has no default — pass whichever of `'live-service' | 'test' | 'cli' |
   'harness'` genuinely describes this process. There is no `'stdout'` `LogSink`: writing telemetry
   to stdout is not offered as an option, because a stray stdout write can corrupt a process's own
