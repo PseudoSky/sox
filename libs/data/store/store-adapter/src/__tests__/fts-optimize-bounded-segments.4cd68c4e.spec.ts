@@ -65,15 +65,18 @@ async function seedFtsStore(dbPath: string): Promise<void> {
   await seed.close();
 }
 
-async function medianInsertMs(a: TursoAdapterImpl, n: number): Promise<number> {
-  const xs: number[] = [];
+/** Best-of-N insert latency. Scheduler/CPU contention only ever ADDS time to a
+ *  sample, so the minimum is the load-robust estimator of the cost the index
+ *  itself imposes; a median (or mean) absorbs contention bursts and flaked
+ *  `after < before * 1.5` at load 100-300 (BUG 5590f706). */
+async function bestInsertMs(a: TursoAdapterImpl, n: number): Promise<number> {
+  let best = Number.POSITIVE_INFINITY;
   for (let i = 0; i < n; i++) {
     const t = performance.now();
     await a.executeRun('INSERT INTO node (content) VALUES (?)', [doc()]);
-    xs.push(performance.now() - t);
+    best = Math.min(best, performance.now() - t);
   }
-  xs.sort((x, y) => x - y);
-  return xs[Math.floor(xs.length / 2)]!;
+  return best;
 }
 
 tursoDescribe('4cd68c4e — FTS segments are bounded by an idle-point OPTIMIZE INDEX pass', () => {
@@ -97,7 +100,7 @@ tursoDescribe('4cd68c4e — FTS segments are bounded by an idle-point OPTIMIZE I
       for (let i = 0; i < 400; i++) {
         await a.executeRun('INSERT INTO node (content) VALUES (?)', [doc()]);
       }
-      const before = await medianInsertMs(a, 15);
+      const before = await bestInsertMs(a, 30);
       expect(a.ftsMaintenance.writesSinceOptimize).toBeGreaterThanOrEqual(400);
 
       await until(
@@ -126,10 +129,10 @@ tursoDescribe('4cd68c4e — FTS segments are bounded by an idle-point OPTIMIZE I
       );
       expect(a.ftsMaintenance.writesSinceOptimize).toBeLessThanOrEqual(2);
 
-      // Secondary (wide tolerance, loaded box): inserts against the merged
+      // Secondary (best-of-N, wide tolerance, loaded box): inserts against the merged
       // index are not slower than against the ~400-segment one.
-      const after = await medianInsertMs(a, 15);
-      console.log(`[4cd68c4e] median insert ms: before=${before.toFixed(2)} after=${after.toFixed(2)}`);
+      const after = await bestInsertMs(a, 30);
+      console.log(`[4cd68c4e] best-of-30 insert ms: before=${before.toFixed(2)} after=${after.toFixed(2)}`);
       expect(after).toBeLessThan(before * 1.5);
 
       // The index still answers queries after the merge.
