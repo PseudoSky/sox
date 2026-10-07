@@ -202,20 +202,37 @@ describe('skill install — header rendered from the manifest, SKILL.md prose-on
 
   it('refuses an ext that escapes the staging root instead of writing outside it — cf915fee', async () => {
     const srcPath = writeSkill('colon-skill', 'Use this when the manifest description wins');
-    const probes = () =>
-      fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('sox-escape-probe'));
-    const before = probes(); // scoped to what THIS run creates — a prior run must not decide it
-    await expect(
-      declarativeInstall(
-        { ext: '../sox-escape-probe', type: 'skill', hosts: ['claude'], srcPath },
-        'project',
-        workspace,
-        scopeRoot,
-      ),
-    ).rejects.toThrow();
-    // os.tmpdir() is writable, so only the containment guard — not a permission error —
-    // can explain the absence of a NEWLY escaped staging directory.
-    expect(probes()).toEqual(before);
+    // The stager roots its scratch dir at os.tmpdir() (`<tmp>/sox-render`), so an
+    // escaping `ext` lands as a sibling directly under os.tmpdir(). Point TMPDIR at
+    // a fresh private directory for this test: the escape target is then inspected
+    // in an (initially empty) dir the test owns, instead of readdir-ing the shared
+    // system tmpdir — which on a busy dev machine held 414,138 entries (~2s per
+    // readdirSync), so the two scans alone blew the 5s default timeout.
+    const realTmp = process.env.TMPDIR;
+    const sandboxTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-escape-sandbox-'));
+    process.env.TMPDIR = sandboxTmp;
+    try {
+      // The redirect took effect — otherwise the probes below would prove nothing.
+      expect(fs.realpathSync(os.tmpdir())).toBe(fs.realpathSync(sandboxTmp));
+      const probes = () =>
+        fs.readdirSync(sandboxTmp).filter((n) => n.startsWith('sox-escape-probe'));
+      expect(probes()).toEqual([]);
+      await expect(
+        declarativeInstall(
+          { ext: '../sox-escape-probe', type: 'skill', hosts: ['claude'], srcPath },
+          'project',
+          workspace,
+          scopeRoot,
+        ),
+      ).rejects.toThrow();
+      // The sandbox is writable, so only the containment guard — not a permission
+      // error — can explain the absence of an escaped staging directory.
+      expect(probes()).toEqual([]);
+    } finally {
+      if (realTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = realTmp;
+      fs.rmSync(sandboxTmp, { recursive: true, force: true });
+    }
   });
 });
 
