@@ -325,7 +325,13 @@ describe('TursoVectorBackend', () => {
 
       await probe.upsert(1, makeVec(8, 1), smallSpace);
       await probe.upsertVectors(
-        Array.from({ length: 500 }, (_, i) => ({ id: 1000 + i, vec: makeVec(8, i) })),
+        // 50 rows is enough to discriminate: the assertions below count
+        // statements/blob reads (a pure function of the code path, not of row
+        // count), and the NEGATIVE CONTROL below proves 50 rows makes an
+        // embedding-reading regression visible. 500 rows only added seeding
+        // time (~2.3-2.9s at load ~118 vs the 5s default timeout) — the
+        // observed cause of a 5000ms timeout under machine load.
+        Array.from({ length: 50 }, (_, i) => ({ id: 1000 + i, vec: makeVec(8, i) })),
         largeSpace,
       );
 
@@ -339,7 +345,7 @@ describe('TursoVectorBackend', () => {
       const largeStatements = rec.statements.length;
       const largeBlobReads = rec.blobReads().length;
 
-      // Bounded: the same single statement for a 1-row and a 500-row table.
+      // Bounded: the same single statement for a 1-row and a 50-row table.
       expect(smallStatements).toBe(1);
       expect(largeStatements).toBe(smallStatements);
       // No blob read in either case — the probe never projects `embedding`.
