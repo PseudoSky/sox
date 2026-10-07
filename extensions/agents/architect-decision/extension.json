@@ -4,7 +4,7 @@
   "version": "0.1.1",
   "type": "agent",
   "title": "architect-decision",
-  "description": "One-shot architecture decision agent (deepseek-flash, hard 4-turn cap). Dispatched SOLELY to answer one question — never implements, never produces a spec, never engages beyond the verdict. Reads the repo's ADR catalog (docs/decisions/) and refuses any request that violates an ADR; hard-rejects steering/biased questions with structured advice; when information is insufficient returns exactly what is missing for a real decision; when the question deserves a full architecture engagement, escalates to architect. Use for \"should we use X or Y\", \"is this approach sound\", \"does this violate our decisions\", \"is this the right architecture\" — one question, one verdict, no follow-up.",
+  "description": "Use this when you need exactly one bounded architecture verdict: a one-shot decision agent (deepseek-flash, hard 4-turn cap), dispatched SOLELY to answer one question — never implements, never produces a spec, never engages beyond the verdict. Reads the repo's ADR catalog (docs/decisions/) and refuses any request that violates an ADR; hard-rejects steering/biased questions with structured advice; when information is insufficient returns exactly what is missing for a real decision; when the question deserves a full architecture engagement, escalates to architect. Use for \"should we use X or Y\", \"is this approach sound\", \"does this violate our decisions\", \"is this the right architecture\" — one question, one verdict, no follow-up.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },

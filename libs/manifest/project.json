@@ -50,9 +50,21 @@
         "command": "vitest run scripts/validate-manifests.test.ts"
       },
       "cache": true,
+      "dependsOn": [
+        "build",
+        {
+          "projects": ["memory-cli", "memory-flush", "memory-server", "di-command"],
+          "target": "build"
+        }
+      ],
       "inputs": [
         "default",
-        "^production"
+        "^production",
+        "{workspaceRoot}/scripts/validate-manifests*.ts",
+        "{workspaceRoot}/scripts/__fixtures__/**/*",
+        "{workspaceRoot}/vitest.config.ts",
+        "{workspaceRoot}/extensions/**/{extension.json,package.json,README.md}",
+        "{workspaceRoot}/.extensions/**/*"
       ]
     },
     "check-registry": {
@@ -64,7 +76,8 @@
       "inputs": [
         "{workspaceRoot}/scripts/check-registry-sync.ts",
         "{workspaceRoot}/scripts/build-index.ts",
-        "{workspaceRoot}/extensions/**/*",
+        "{workspaceRoot}/extensions/**/{extension.json,package.json,README.md}",
+        "{workspaceRoot}/.extensions/**/*",
         "{workspaceRoot}/registry/index.json"
       ]
     },
