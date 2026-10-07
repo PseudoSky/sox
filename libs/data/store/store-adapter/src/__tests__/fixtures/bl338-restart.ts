@@ -50,7 +50,20 @@ async function main(): Promise<void> {
     // record below reflects the completed deep pass, exactly as a status call
     // made after it finished would.
     const deepRun = _activeDeepVerifyForTest(dbPath);
-    const deepState = deepRun !== null ? await deepRun.done : null;
+    // The verifier is deliberately fully unref'd (deep-verify.ts: "Never keep
+    // the opener alive for the verifier") — child, IPC channel, stderr pipe and
+    // wall-clock timer. Awaiting `done` therefore holds NOTHING open: whenever
+    // the verifier child is slower than the opener's other handles (CPU
+    // contention, or a deliberately slow child), the event loop drains and
+    // Node exits 0 with no output. A ref'd keepalive pins this one-shot
+    // process until the pass settles, however long the child takes.
+    const keepAlive = setInterval(() => undefined, 1_000);
+    let deepState: Awaited<NonNullable<typeof deepRun>['done']> | null = null;
+    try {
+      deepState = deepRun !== null ? await deepRun.done : null;
+    } finally {
+      clearInterval(keepAlive);
+    }
 
     const persisted = await readIntegrityResult(adapter);
 
