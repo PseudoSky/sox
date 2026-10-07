@@ -211,38 +211,51 @@ tursoDescribe('idle-flush — adapter-owned WAL durability', () => {
 
   it('production-shaped: N adapters open on one store, all idle — under the GATED default, TRUNCATE legitimately may never fire while peers are live, and this is measured honestly rather than tuned to pass', async () => {
     const dbPath = tempPath('n-adapters-idle');
-    // 300ms, not 60ms, and the reason is a measured race — NOT a tuned
-    // assertion (the outcome assertions below are unchanged and still
-    // untuned). Each adapter arms its idle-flush timer on its FIRST
-    // operation, and this arm performs five awaited operations during setup
-    // before checking the precondition. Whenever total setup exceeds
-    // `idleFlushMs`, the earliest adapter has already CORRECTLY completed
-    // `releaseIdleConnection()` and dropped its lease, so the precondition
-    // observes fewer than N live leases and fails — while nothing is
-    // actually wrong. Seen once in a full-suite run (2026-08-18) as
-    // `expected 2 to be 4` under CPU contention from a sibling spec, then
-    // reproduced deterministically by injecting a 120ms delay ahead of the
-    // precondition with IDLE_MS still 60. 300ms puts the whole setup
-    // comfortably inside one debounce window; the release behaviour under
-    // test is unaffected, since the arm below still waits 8 full cycles.
-    const IDLE_MS = 300;
+    // The precondition (N live leases) must not race the debounce. Each
+    // adapter arms its idle-flush timer on its FIRST operation, so with a
+    // short window any setup slower than `idleFlushMs` (CPU contention — seen
+    // as `expected 2 to be 4` at load avg ~100; reproduced deterministically
+    // by a 450ms delay before the precondition) lets the earliest adapter
+    // CORRECTLY release its lease before the precondition reads, failing the
+    // test while nothing is wrong. So setup runs with an effectively infinite
+    // window (no wall-clock dependence), the precondition is read while every
+    // timer is parked, and only then is the real window armed on all N.
+    const IDLE_MS = 60;
+    const PARKED_MS = 3_600_000;
     const N = 4;
 
+    type Retunable = { _idleFlushExplicitMs: number | null; _cancelIdleFlush(): void; _armIdleFlush(): void };
     const adapters = await Promise.all(
-      Array.from({ length: N }, () => TursoAdapterImpl.connect({ dbPath, idleFlushMs: IDLE_MS })),
+      Array.from({ length: N }, () => TursoAdapterImpl.connect({ dbPath, idleFlushMs: PARKED_MS })),
     );
-    await adapters[0]!.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
-    await adapters[0]!.executeRun('INSERT INTO t (v) VALUES (?)', ['shared']);
-    // (DEBT-003, lazy-connect) `connect()` no longer opens the driver or
-    // acquires a lease eagerly, and the idle-flush timer only self-arms
-    // after an adapter's first real operation — force every OTHER adapter
-    // open now (adapters[0] already opened via the exec/executeRun above) so
-    // all N genuinely hold a live lease and an armed idle-flush timer, which
-    // is the whole precondition this arm measures against.
-    await Promise.all(adapters.slice(1).map((a) => a.executeGet('SELECT 1')));
+    try {
+      await adapters[0]!.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+      await adapters[0]!.executeRun('INSERT INTO t (v) VALUES (?)', ['shared']);
+      // (DEBT-003, lazy-connect) `connect()` no longer opens the driver or
+      // acquires a lease eagerly, and the idle-flush timer only self-arms
+      // after an adapter's first real operation — force every OTHER adapter
+      // open now so all N hold a live lease and an armed (parked) timer.
+      await Promise.all(adapters.slice(1).map((a) => a.executeGet('SELECT 1')));
 
-    // All N stay live and idle. Precondition: N live lease entries.
-    expect(liveLeaseCount(dbPath)).toBe(N);
+      // All N live; no timer can have fired. Precondition: N live leases.
+      expect(liveLeaseCount(dbPath)).toBe(N);
+
+      // Arm the real window on every adapter, all at once.
+      for (const a of adapters) {
+        const r = a as unknown as Retunable;
+        r._cancelIdleFlush();
+        r._idleFlushExplicitMs = IDLE_MS;
+        r._armIdleFlush();
+      }
+
+      // Teeth: the adapter-owned idle flush must actually release at least
+      // one lease on its own. If idle-flush is broken/never armed, all N
+      // leases stay live and this waits out its deadline and fails.
+      await waitUntil(() => liveLeaseCount(dbPath) < N, 15_000);
+    } catch (err) {
+      await Promise.allSettled(adapters.map((x) => x.close()));
+      throw err;
+    }
 
     // Give every adapter's gated idle flush several full debounce cycles to
     // attempt a release. Under GATED, at most ONE of them can complete
