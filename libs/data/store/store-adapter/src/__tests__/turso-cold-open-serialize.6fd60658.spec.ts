@@ -73,6 +73,16 @@ interface ChildResult {
   stderr: string;
 }
 
+/**
+ * Per-CHILD hang bound (see tshm-init-race.spec.ts for the measurement): the
+ * suite spawns WAVES x WAVE_SIZE = 1536 `tsx` cold-start children, so its wall
+ * time scales linearly with machine load and a fixed whole-suite deadline
+ * (420_000ms, which timed out at load ~130) is a load-sensitive guess. A wedged
+ * open is detected per child instead: past this bound the child is SIGKILLed
+ * and counted as a nonzero exit ('HUNG' in stderr).
+ */
+const CHILD_HANG_BOUND_MS = 120_000;
+
 function spawnChild(dbPath: string): Promise<ChildResult> {
   return new Promise((done) => {
     const proc = spawn(process.execPath, ['--import', 'tsx', CHILD, dbPath], {
@@ -80,9 +90,16 @@ function spawnChild(dbPath: string): Promise<ChildResult> {
     });
     let stdout = '';
     let stderr = '';
+    const hangTimer = setTimeout(() => {
+      stderr += `HUNG: child exceeded ${CHILD_HANG_BOUND_MS}ms and was killed`;
+      proc.kill('SIGKILL');
+    }, CHILD_HANG_BOUND_MS);
     proc.stdout.on('data', (d) => (stdout += String(d)));
     proc.stderr.on('data', (d) => (stderr += String(d)));
-    proc.on('exit', (code, signal) => done({ code, signal, stdout, stderr }));
+    proc.on('exit', (code, signal) => {
+      clearTimeout(hangTimer);
+      done({ code, signal, stdout, stderr });
+    });
   });
 }
 
@@ -110,6 +127,9 @@ tursoDescribe('6fd60658 — concurrent multiprocess cold open of one turso store
           if (panic !== undefined && /wal\.rs:4288/.test(panic)) walPanics.push(detail);
           failures.push(detail);
         }
+        // Fail fast: any failure already fails both assertions, and a systemic
+        // hang must cost one hang bound, not WAVES of them.
+        if (failures.length > 0) break;
       }
 
       console.log(
@@ -120,7 +140,9 @@ tursoDescribe('6fd60658 — concurrent multiprocess cold open of one turso store
       expect(panics, `Rust panics during cold open:\n${panics.join('\n')}`).toEqual([]);
       expect(failures, `nonzero exits during cold open:\n${failures.join('\n')}`).toEqual([]);
     },
-    420_000,
+    // Bounded by construction: each wave ends within CHILD_HANG_BOUND_MS and the
+    // loop breaks on the first failure — not a load-sensitive wall-clock guess.
+    WAVES * CHILD_HANG_BOUND_MS,
   );
 });
 

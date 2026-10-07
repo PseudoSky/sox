@@ -105,6 +105,19 @@ interface ChildResult {
  * guess (blaming an upstream driver panic) is exactly what happened and cost
  * real time. A crash must name itself.
  */
+/**
+ * Per-CHILD hang bound. The suite's cost is N sequential races x two `tsx`
+ * cold-start children, i.e. wall time scales linearly with machine load: one
+ * child measured 0.96-1.41s at load average ~107, and the whole suite needed
+ * >180s at load ~130 (it timed out at 180s with every race still passing). A
+ * fixed whole-suite wall-clock budget therefore turns host load into a false
+ * red. A genuine hang is instead detected PER CHILD: a child that exceeds this
+ * bound is SIGKILLed and reported as a failed process (code=null, signal
+ * SIGKILL, 'HUNG' in stderr), so a wedged open still fails loudly while a
+ * merely-slow loaded host does not.
+ */
+const CHILD_HANG_BOUND_MS = 60_000;
+
 function spawnChild(dbPath: string): Promise<ChildResult> {
   return new Promise((resolvePromise) => {
     const proc = spawn(process.execPath, ['--import', 'tsx', CHILD, dbPath], {
@@ -112,13 +125,20 @@ function spawnChild(dbPath: string): Promise<ChildResult> {
     });
     let out = '';
     let err = '';
+    const hangTimer = setTimeout(() => {
+      err += `HUNG: child exceeded ${CHILD_HANG_BOUND_MS}ms and was killed`;
+      proc.kill('SIGKILL');
+    }, CHILD_HANG_BOUND_MS);
     proc.stdout.on('data', (d) => {
       out += String(d);
     });
     proc.stderr.on('data', (d) => {
       err += String(d);
     });
-    proc.on('exit', (code, signal) => resolvePromise({ code, signal, stdout: out, stderr: err }));
+    proc.on('exit', (code, signal) => {
+      clearTimeout(hangTimer);
+      resolvePromise({ code, signal, stdout: out, stderr: err });
+    });
   });
 }
 
@@ -131,11 +151,13 @@ async function raceOnce(dbPath: string): Promise<[ChildResult, ChildResult]> {
   return Promise.all([spawnChild(dbPath), spawnChild(dbPath)]);
 }
 
+const RACES_TOTAL = 150;
+
 tursoDescribe('BL-TSHM-INIT-RACE — concurrent cold-open of a turso store', () => {
   it(
     'N two-process races against a never-before-opened store: every process opens and writes successfully',
     async () => {
-      const RACES = 150;
+      const RACES = RACES_TOTAL;
       let totalProcesses = 0;
       let failures = 0;
       const failureDetails: string[] = [];
@@ -187,6 +209,9 @@ tursoDescribe('BL-TSHM-INIT-RACE — concurrent cold-open of a turso store', () 
             else crashDetails.push(detail);
           }
         }
+        // Fail fast: one failed process already fails assertion 1, and a
+        // systemic hang must cost one hang bound, not N of them.
+        if (failures > 0) break;
       }
 
       console.log(
@@ -229,9 +254,10 @@ tursoDescribe('BL-TSHM-INIT-RACE — concurrent cold-open of a turso store', () 
           `(the retry should absorb these; must be 0); other/signal deaths: ${crashDetails.length} (must be 0)`,
       );
     },
-    // 150 races × 2 tsx-cold-start children each, sequential to keep the host
-    // from being oversubscribed. Generous but bounded — never an unbounded
-    // wait.
-    180_000,
+    // Bounded by construction: every race ends within CHILD_HANG_BOUND_MS (each
+    // child is killed past it) and the loop breaks on the first failure, so this
+    // ceiling is only reachable by RACES x full-hang-bound successes — it is not
+    // a load-sensitive wall-clock guess (the old fixed 180_000 was).
+    RACES_TOTAL * CHILD_HANG_BOUND_MS,
   );
 });
