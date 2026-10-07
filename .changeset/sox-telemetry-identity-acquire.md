@@ -1,5 +1,5 @@
 ---
-"@adhd/sox-telemetry": minor
+"@adhd/sox-telemetry": patch
 ---
 
 Share process-identity span attributes and add an idempotent, ref-counted `acquireTelemetry` (621a11c5).
