@@ -169,12 +169,20 @@ describe('BUG-STOREADAPTER-QUIESCENCE-TOCTOU', () => {
     await peer.close();
   });
 
+  // Each attempt is a real turso open + exec + concurrent connect/close + close
+  // (off-thread driver), which costs wall time proportional to host load: the
+  // 25 attempts exceeded vitest's 30_000ms default (the store-adapter config's
+  // testTimeout) at load average ~100 and timed out with nothing failing. The
+  // test records a measurement (asserts >= 0), so its only failure mode is a
+  // hang; bound that per attempt instead of by a fixed whole-test guess.
+  const ATTEMPTS = 25;
+  const PER_ATTEMPT_CEILING_MS = 10_000;
+
   it('MEASURES the natural (uninjected) window by racing a peer against a real close', async () => {
     // No injection here. If the window is reachable WITHOUT widening it, that is
     // a materially stronger finding than the injected case above. If it is not
     // reachable across many attempts, that is evidence toward
     // measured-not-reachable — which is a legitimate outcome, not a failure.
-    const ATTEMPTS = 25;
     let racesObserved = 0;
 
     for (let i = 0; i < ATTEMPTS; i++) {
@@ -202,7 +210,7 @@ describe('BUG-STOREADAPTER-QUIESCENCE-TOCTOU', () => {
     // Recorded, not asserted as zero: this number is the evidence for whether
     // the residual is worth a lock. A non-zero value would escalate this item.
     expect(racesObserved).toBeGreaterThanOrEqual(0);
-  });
+  }, ATTEMPTS * PER_ATTEMPT_CEILING_MS);
 
   it('TWO-PROCESS: barrier-synchronized race between a real child peer and a real close', async () => {
     // The acceptance criterion for this item, done properly.
