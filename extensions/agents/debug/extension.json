@@ -90,6 +90,7 @@
     },
     "agent-mcp": {
       "model": "deepseek/deepseek-flash",
+      "nativeWebTools": true,
       "toolMap": {
         "memory": "memory-server",
         "code-intel": "gitnexus",
