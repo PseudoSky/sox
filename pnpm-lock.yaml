@@ -295,6 +295,8 @@ importers:
 
   extensions/skills/dispatch-triage: {}
 
+  extensions/skills/dispatch-worktrees: {}
+
   extensions/skills/iterative-research-refinement: {}
 
   extensions/skills/project: {}
