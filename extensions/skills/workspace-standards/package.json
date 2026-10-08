@@ -12,6 +12,6 @@
     "gates"
   ],
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs engine/tests/*.test.mjs"
   }
 }
