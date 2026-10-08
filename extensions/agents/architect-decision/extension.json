@@ -118,6 +118,16 @@
           ],
           "timeoutMs": 45000
         }
+      },
+      "nativeTooling": {
+        "shell": {
+          "allowCommands": [
+            "cat",
+            "ls",
+            "sox-git-ro"
+          ],
+          "timeoutMs": 60000
+        }
       }
     }
   },

@@ -302,6 +302,8 @@ importers:
 
   extensions/skills/ui-playbooks: {}
 
+  libs/agent-shell-wrappers: {}
+
   libs/authoring: {}
 
   libs/data/analysis/analysis:

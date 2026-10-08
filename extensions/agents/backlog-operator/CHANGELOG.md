@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.4
+
+- **The `backlog` MCP server is now mounted on the agent-mcp row.** `render.agent-mcp.mcpServers.backlog` was defined but never selected: the agent-mcp renderer selects servers only from the IR `agent.tools`, which held just `read`/`bash`/`question`/`skill`, so the operator rendered `mcpServers: {}` and fell back to the srt-sandboxed `adhd-backlog` CLI (lease EPERM on the store). `agent.tools` now declares `{ "logical": "backlog", "server": "backlog" }`, so the stdio backlog server (which runs outside srt) is mounted. `adhd-backlog` stays in the shell allowlist; memory, gitnexus and search remain unselected. Ticket 515a2b50.
+
 ## 0.6.3
 
 - `resolve` precondition: every AC is cited by a passing test; the `none applicable` declaration is removed (dispatcher 2.0.0, rule 20).

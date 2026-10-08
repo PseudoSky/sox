@@ -32,7 +32,11 @@
       "read",
       "bash",
       "question",
-      "skill"
+      "skill",
+      {
+        "logical": "backlog",
+        "server": "backlog"
+      }
     ],
     "permission": {
       "read": "allow",
@@ -64,7 +68,7 @@
   "render": {
     "claude": {
       "model": "haiku",
-      "version": "v0.6.3"
+      "version": "v0.6.4"
     },
     "opencode": {
       "model": "deepseek/deepseek-flash",
@@ -119,6 +123,21 @@
           ],
           "timeoutMs": 45000
         }
+      },
+      "nativeTooling": {
+        "shell": {
+          "allowCommands": [
+            "adhd-backlog",
+            "cat",
+            "head",
+            "ls",
+            "rg",
+            "sox-git-ro",
+            "tail",
+            "wc"
+          ],
+          "timeoutMs": 300000
+        }
       }
     }
   },
@@ -133,5 +152,5 @@
   "requires": {
     "tool_calling": true
   },
-  "version": "0.6.3"
+  "version": "0.6.4"
 }

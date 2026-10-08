@@ -1,0 +1,67 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "agent-shell-wrappers",
+  "projectType": "library",
+  "root": "libs/agent-shell-wrappers",
+  "sourceRoot": "libs/agent-shell-wrappers/src",
+  "tags": [
+    "type:lib",
+    "area:platform",
+    "group:contract"
+  ],
+  "targets": {
+    "build": {
+      "executor": "@adhd/sox-nx:atomic-tsc",
+      "outputs": [
+        "{workspaceRoot}/libs/agent-shell-wrappers/dist"
+      ],
+      "options": {
+        "main": "libs/agent-shell-wrappers/src/policy.ts",
+        "outputPath": "libs/agent-shell-wrappers/dist",
+        "tsConfig": "libs/agent-shell-wrappers/tsconfig.lib.json",
+        "assets": [],
+        "clean": true,
+        "rootDir": "libs/agent-shell-wrappers/src"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/agent-shell-wrappers/vitest.config.ts"
+      },
+      "cache": true,
+      "dependsOn": [
+        "build"
+      ],
+      "inputs": [
+        "default",
+        "{projectRoot}/bin/*"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/agent-shell-wrappers/**/*.ts"
+        ]
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p libs/agent-shell-wrappers/tsconfig.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    }
+  }
+}

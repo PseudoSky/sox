@@ -123,6 +123,18 @@
           ],
           "timeoutMs": 45000
         }
+      },
+      "nativeTooling": {
+        "shell": {
+          "allowCommands": [
+            "gx",
+            "nx",
+            "pnpm",
+            "rg",
+            "sox-git-ro"
+          ],
+          "timeoutMs": 300000
+        }
       }
     }
   },
