@@ -1,0 +1,15 @@
+{
+  "name": "@adhd/sox-extension-dispatch-worktrees",
+  "version": "1.0.0",
+  "description": "The dispatcher's worktree disposition playbook — stamp, classify read-only, dispose, retain.",
+  "private": true,
+  "license": "MIT",
+  "author": "sox",
+  "keywords": [
+    "dispatch",
+    "orchestrator",
+    "playbook",
+    "worktree",
+    "git"
+  ]
+}

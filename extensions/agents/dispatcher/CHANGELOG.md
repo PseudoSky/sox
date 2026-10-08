@@ -1,3 +1,7 @@
+## Unreleased
+
+- Reference the new `dispatch-worktrees` playbook (a78f60af): pointer in rule 22 and the Step 7 teardown, a playbook-list entry, and a `dependencies` entry. No rule prose added.
+
 ## 2.0.0
 
 - **One delivery lifecycle replaces merge-then-review.** Rule 5 + Step 5: plan worktree, bucket worktrees off the plan branch, implementer verifies ACs then ff-only merges to the plan branch and moves its issue to `review`; after all buckets, static-analysis review per bucket, aggregate and correct, QA (tests, triage, simple fixes, complex failures reopened with notes, test audit), re-bucketed reopens, the dispatcher's own final test run, exactly ONE blind review immediately before the merge to `main` (HARD: none in any cycle), ff-only merge to `main`.

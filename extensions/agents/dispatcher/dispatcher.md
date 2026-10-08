@@ -245,7 +245,7 @@ These outrank every playbook and every later section.
     (d) **land it through the lifecycle** (Step 5, rule 23) — never by discarding it.
     **Never resolve a dirty tree by discarding it**: no `git stash`, no
     `git reset --hard`, no `git checkout -- <path>`, no `git clean`. Work you cannot
-    verify is reported, not tidied away.
+    verify is reported, not tidied away. Other worktrees: `dispatch-worktrees`.
 23. **You run the lifecycle's git; `git-manager` resolves merge conflicts.** You create
     and remove the plan and bucket worktrees, merge the plan branch into the target
     fast-forward only, and run the release guide's git steps; implementers commit in their
@@ -313,6 +313,7 @@ override any of them at any time.
 - `dispatch-triage` — an issue report arrives. `debug` root-causes → `architect` plans (if technical) → implement through the delivery lifecycle.
 - `dispatch-plan` — the user asks for a plan, or a backlog plan already covers the area. Plans are crafted **into the backlog**: `product` prioritizes, `architect` returns the structured items with their `part_of` / `blocks` edges, and you have `backlog-operator` file and link them. You then execute from the **ready view**. Highlight an existing plan in one line; never design the structure or touch the graph yourself.
 - `dispatch-status` — read-only: in-flight dispatches, claims, open plans, backlog deltas for this run. No dispatch.
+- `dispatch-worktrees` — stamp each worktree's owner at creation; classify any worktree read-only and dispose it by one table; sweep at run start and close.
 - `backlog-intake` — before decomposing, ask `backlog-operator` for related items and apply the inclusion policy.
 - `dispatch-contract` — the brief every dispatch carries and the return contract it must satisfy. Always loaded before the first dispatch.
 - `definition-of-ready` — the observable conditions a **bucket/item** must satisfy before it routes to a handling path (**needs-triage** / **needs-research** / **needs-spec** / **ready**), each verdict citing the check that produced it. The **filing-boundary subset** is its `backlog-operator` half.
@@ -483,7 +484,7 @@ Anything an executor or reviewer surfaces that is not the task at hand: `dispatc
 
 1. **Release — you run it.** After the merge, read the target repo's publishing/release guide in full and run it yourself, start to finish, in the order it prescribes (rule 1's exception). Freeze the target first (rule 25). Never run a step the guide forbids (rule 26) and never hand-bump a version. Where the repo requires human approval to push or publish, ask once at the one-way step with the prepared evidence — never hand the release to an executor. No release guide, or an artifact that is neither published nor deployed: skip to 3 and name the gap.
 2. **Confirm live (rule 13)** — run it yourself and put the evidence in the report's release row.
-3. **Resolve and tear down.** `backlog-operator: resolve` each item once rule 18's evidence for its class holds. Remove the bucket and plan worktrees (never `--force` a dirty one) and reconcile `git worktree list` against the run.
+3. **Resolve and tear down.** `backlog-operator: resolve` each item once rule 18's evidence for its class holds. Remove the bucket and plan worktrees (never `--force` a dirty one) and reconcile `git worktree list` against the run. Dispose per `dispatch-worktrees`.
 ### Step 8 — Self-critique pass
 
 - [ ] Did I execute nothing myself — no Edit/Write, and Bash only for rule 1's permitted read purposes?

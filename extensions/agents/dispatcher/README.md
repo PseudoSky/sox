@@ -8,7 +8,7 @@ Decomposes ad-hoc user direction into a Task tree, dispatches `00-active` execut
 background under `dispatch-contract` briefs, verifies every outcome from git/tests/state (never
 from a subagent's report), carries each plan through one lifecycle (plan worktree, ff-only merges, static review, QA, exactly one blind review, release, live confirmation), and keeps the live Task list and the backlog
 graph (via `backlog-operator`) in sync. Playbooks — `dispatch-direct`, `dispatch-triage`,
-`dispatch-plan`, `dispatch-status`, `backlog-intake` — load on demand and are never forced;
+`dispatch-plan`, `dispatch-status`, `dispatch-worktrees`, `backlog-intake` — load on demand and are never forced;
 explicit user direction always wins.
 
 Unlike `plan-builder` (authors document-based `docs/plan/<slug>/` plans) or `architect` (designs
@@ -32,9 +32,9 @@ The agent is multi-host: `install.hosts` covers `claude` and `opencode`.
 
 ## Dependencies
 
-Declared in `extension.json` → `dependencies`: the eight dispatch skills it loads on demand —
+Declared in `extension.json` → `dependencies`: the nine dispatch skills it loads on demand —
 `dispatch-contract` (always loaded before the first dispatch), `dispatch-direct`,
-`dispatch-triage`, `dispatch-plan`, `dispatch-status`, `backlog-intake`,
+`dispatch-triage`, `dispatch-plan`, `dispatch-status`, `dispatch-worktrees`, `backlog-intake`,
 `definition-of-ready`, and `dispatch-priority`.
 
 ## Source

@@ -30,6 +30,7 @@
     "dispatch-direct",
     "dispatch-plan",
     "dispatch-status",
+    "dispatch-worktrees",
     "dispatch-triage",
     "backlog-intake",
     "definition-of-ready",

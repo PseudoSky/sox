@@ -1,0 +1,38 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "dispatch-worktrees",
+  "type": "skill",
+  "title": "dispatch-worktrees — the dispatcher's worktree disposition playbook",
+  "description": "Use this at run start, at every worktree creation, and at Step 7 teardown, or when asked what to do with leftover worktrees. The dispatcher's playbook for worktrees: stamp an owner at creation, classify every worktree read-only, give each exactly one disposition, and retain so nothing accumulates and nothing valuable is discarded. Load when creating a worktree (stamp), sweeping at run start, tearing down at close, or when a worktree holds unmerged or dirty work.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox",
+  "keywords": [
+    "dispatch",
+    "orchestrator",
+    "playbook",
+    "worktree",
+    "git"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {}
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  }
+}
