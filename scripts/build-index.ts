@@ -189,7 +189,7 @@ const CHECKSUM_IRRELEVANT_PREFIXES = [
   '.nx/', // nx cache
   '.cto/', // CTO-system agent runtime state (heartbeats, approvals) — written
            // by running agents, never packaged. A live heartbeat file was
-           // blocking registry:sync-index, which blocks the pre-commit hook,
+           // blocking build-index, which blocks the pre-commit hook,
            // which blocks commits repo-wide (2026-08-15).
   '.research-trace/', // dated research notes written by agents — never packaged.
 ];
@@ -649,7 +649,7 @@ export function buildIndex(opts: {
   // `--allow-dirty`) instead of refusing.
   const allowDirty = localSources ? true : allowDirtyOpt;
 
-  // BL-390: `registry:sync-index` must not bless a checksum computed from a
+  // BL-390: `build-index` must not bless a checksum computed from a
   // tree state no commit can reproduce. Refuse outright unless the caller
   // explicitly opts into a provisional run.
   const gitState = getGitState(root);

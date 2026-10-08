@@ -132,7 +132,7 @@ function initCliState(): void {
   committedRaw = fs.readFileSync(registryPath, 'utf8');
   committedRawEntries = JSON.parse(committedRaw) as unknown[];
 
-  // BL-390: a committed `provisional: true` entry means someone ran sync-index
+  // BL-390: a committed `provisional: true` entry means someone ran build-index
   // with `--allow-dirty` and its checksum was NOT built from committed source.
   // That is a legitimate escape hatch, not a drift failure — but it must not
   // pass silently, or the whole point of stamping it is lost.

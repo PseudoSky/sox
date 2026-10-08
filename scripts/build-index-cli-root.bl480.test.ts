@@ -209,8 +209,12 @@ describe('[BL-480 / 761c3f21] check-registry-sync.ts CLI: default root mirrors b
     fs.mkdirSync(path.join(dir, 'registry'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'registry', 'index.json'), '[]\n');
 
-    const { out } = await runBuildIndexFromWorktree(CHECK_SCRIPT, dir, gateArgs);
+    const { code, out } = await runBuildIndexFromWorktree(CHECK_SCRIPT, dir, gateArgs);
     expect(out).not.toContain(MISSING);
+    // The fixture has registry/index.json but no coverage baseline, so the gate got PAST the
+    // registry lookup (rooted at cwd) and stopped at the baseline check: exit 1.
+    expect(out).toContain('registry/published-coverage.json not found');
+    expect(code, out).toBe(1);
   }, 60_000);
 });
 
@@ -220,19 +224,27 @@ describe('[761c3f21] release-chain advice names no nonexistent or generator-for-
 
   it('761c3f21 AC3: no source in the release chain mentions the nonexistent `registry:sync-index`', () => {
     for (const rel of [
+      'scripts/build-index.ts',
       'scripts/check-registry-sync.ts',
       'scripts/install.ts',
       'apps/sox/scripts/registry-publish-gate.cjs',
     ]) {
-      expect(read(rel), rel).not.toContain('registry:sync-index');
+      const src = read(rel);
+      expect(src.length, `${rel} must be non-empty`).toBeGreaterThan(0);
+      expect(src, rel).not.toContain('registry:sync-index');
     }
   });
 
   it('761c3f21 AC3: the MISMATCH remediation points at the release flow / repin tool, never at a generator', () => {
     const src = read('scripts/check-registry-sync.ts');
     expect(src).toContain('tools/repin-registry-entry.mjs');
-    const advice = src.slice(src.indexOf('A MISMATCH means'), src.indexOf('return false;', src.indexOf('A MISMATCH means')));
-    expect(advice).toContain('A MISMATCH means');
+    const marker = 'A MISMATCH means';
+    const start = src.indexOf(marker);
+    expect(start, `marker "${marker}" must exist in check-registry-sync.ts`).not.toBe(-1);
+    const end = src.indexOf('return false;', start);
+    expect(end, 'a `return false;` must follow the MISMATCH advice').toBeGreaterThan(start);
+    const advice = src.slice(start, end);
+    expect(advice.length).toBeGreaterThan(marker.length);
     expect(advice).not.toMatch(/build-index|sync-index|release:prepared/);
   });
 
