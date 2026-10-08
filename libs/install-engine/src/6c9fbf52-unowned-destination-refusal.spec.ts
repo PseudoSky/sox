@@ -11,10 +11,14 @@
  *
  * ACs (6c9fbf52):
  *   AC1 refusal throws with the BUG-028 text: path, ext id, scope, exact remedy.
- *   AC2 pre-existing path byte-identical; no ownership/ledger entry; no staging left.
- *   AC3 both an agent id and a skill id; asserts file bytes AND the ownership index.
+ *   AC2 pre-existing path byte-identical; no ownership/ledger entry; no staging left
+ *       (os.tmpdir()/sox-render is untouched: the guard runs before the renderers).
+ *   AC3 an agent id, a skill id AND the hook path; asserts file bytes AND the ownership
+ *       index. The hook refusal additionally leaves the settings file byte-identical (the
+ *       guard runs before the settings merge, [inv:no-untracked-injection]).
  *   AC4 override is the explicit `--force` CLI flag only (never an env var, ADR-0013);
- *       the clobber is loud and says the previous content is gone.
+ *       the clobber is loud (emitted after the write) and says the previous content is
+ *       gone; uninstall after a forced overwrite removes the path and restores nothing.
  */
 
 import * as fs from 'node:fs';
@@ -26,6 +30,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { declarativeInstall, type InstallDescriptor } from './install.js';
 import { ledgerPathFor, ownershipPathFor } from './data-paths.js';
 import { OwnershipIndex } from './ownership.js';
+import { uninstallOwned } from './lifecycle.js';
 
 declare const __dirname: string;
 const hostRegistryPath = path.resolve(__dirname, '../../host-registry/dist/index.js');
@@ -53,15 +58,21 @@ let dataDir: string;
 let sandboxRoot: string;
 let prevHome: string | undefined;
 let prevSandbox: string | undefined;
+let prevTmpdir: string | undefined;
 
 beforeEach(() => {
-  base = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-6c9fbf52-'));
+  // realpath: macOS tmpdir is a symlink (/var -> /private/var) and the engine reports real paths.
+  base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sox-6c9fbf52-')));
   workspace = path.join(base, 'ws');
   dataDir = path.join(base, 'data');
   sandboxRoot = path.join(base, 'sandbox');
   for (const d of [workspace, dataDir, sandboxRoot]) fs.mkdirSync(d, { recursive: true });
   prevHome = process.env['SOX_ECOSYSTEM_HOME'];
   prevSandbox = process.env['SOX_SANDBOX_ROOT'];
+  prevTmpdir = process.env['TMPDIR'];
+  // Isolate os.tmpdir() so the renderers' sox-render staging dir is observable per test.
+  fs.mkdirSync(path.join(base, 'tmp'), { recursive: true });
+  process.env['TMPDIR'] = path.join(base, 'tmp');
   process.env['SOX_ECOSYSTEM_HOME'] = dataDir;
   process.env['SOX_SANDBOX_ROOT'] = sandboxRoot;
 });
@@ -72,6 +83,8 @@ afterEach(() => {
   else process.env['SOX_ECOSYSTEM_HOME'] = prevHome;
   if (prevSandbox === undefined) delete process.env['SOX_SANDBOX_ROOT'];
   else process.env['SOX_SANDBOX_ROOT'] = prevSandbox;
+  if (prevTmpdir === undefined) delete process.env['TMPDIR'];
+  else process.env['TMPDIR'] = prevTmpdir;
   try { fs.rmSync(base, { recursive: true, force: true }); } catch (e) {
     process.stderr.write(`6c9fbf52 spec cleanup failed: ${String(e)}\n`);
   }
@@ -86,6 +99,8 @@ interface Case {
   makeSrc: () => string;
   /** Plants the unowned pre-existing destination; returns its absolute path. */
   plant: (dest: string) => void;
+  /** Substrings that occur only in the planted (pre-existing) content. */
+  markers: string[];
 }
 
 function writeExt(type: 'agent' | 'skill', id: string): string {
@@ -94,7 +109,21 @@ function writeExt(type: 'agent' | 'skill', id: string): string {
   const entrypoint = type === 'agent' ? `${id}.md` : 'SKILL.md';
   fs.writeFileSync(
     path.join(dir, 'extension.json'),
-    JSON.stringify({ id, version: '0.1.0', type, title: id, description: `${id} ${type}`, entrypoint }, null, 2),
+    JSON.stringify(
+      {
+        id,
+        version: '0.1.0',
+        type,
+        title: id,
+        description: `${id} ${type}`,
+        entrypoint,
+        // A renderable IR makes the agent path stage through the renderer (sox-render),
+        // so the "no staging left" assertion can actually fail.
+        ...(type === 'agent' ? { agent: { description: `${id} agent` } } : {}),
+      },
+      null,
+      2,
+    ),
     'utf8',
   );
   fs.writeFileSync(
@@ -111,6 +140,7 @@ const CASES: Case[] = [
     id: 'refuse-agent',
     host: 'opencode',
     makeSrc: () => writeExt('agent', 'refuse-agent'),
+    markers: ['user-authored reviewer'],
     plant: (dest) => {
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, '---\ndescription: user-authored reviewer\n---\nedit: allow\n', 'utf8');
@@ -121,6 +151,7 @@ const CASES: Case[] = [
     id: 'refuse-skill',
     host: 'claude',
     makeSrc: () => writeExt('skill', 'refuse-skill'),
+    markers: ['hand-written skill', 'private notes'],
     plant: (dest) => {
       fs.mkdirSync(dest, { recursive: true });
       fs.writeFileSync(path.join(dest, 'SKILL.md'), '# my own hand-written skill\n', 'utf8');
@@ -167,6 +198,33 @@ function listing(root: string): string[] {
   return Object.keys(snapshot(root)).sort();
 }
 
+/** Plant the unowned destination, first proving it lies inside the sandbox (never real HOME). */
+function plantChecked(c: Case, dest: string): void {
+  expect(dest.startsWith(sandboxRoot + path.sep), `${dest} must be inside the sandbox ${sandboxRoot}`).toBe(true);
+  c.plant(dest);
+}
+
+/** Entries the renderers staged under os.tmpdir()/sox-render for this extension id. */
+function stagingFor(ext: string): string[] {
+  const dir = path.join(os.tmpdir(), 'sox-render');
+  return fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.startsWith(`${ext}-`)) : [];
+}
+
+/** Every file under the given roots whose bytes contain `needle`. */
+function filesContaining(roots: string[], needle: string): string[] {
+  const hits: string[] = [];
+  const walk = (abs: string): void => {
+    if (!fs.existsSync(abs)) return;
+    if (fs.statSync(abs).isDirectory()) {
+      for (const n of fs.readdirSync(abs)) walk(path.join(abs, n));
+    } else if (fs.readFileSync(abs, 'utf8').includes(needle)) {
+      hits.push(abs);
+    }
+  };
+  roots.forEach(walk);
+  return hits;
+}
+
 function ownedEntryFor(c: Case, dest: string): boolean {
   const idx = OwnershipIndex.loadFromFile(ownershipPathFor('user', workspace));
   return (
@@ -180,7 +238,7 @@ describe.each(CASES)('6c9fbf52 — unowned existing $label destination is refuse
   it(`6c9fbf52 AC1: throws the BUG-028 error naming path, ext id, scope and the exact remedy`, async () => {
     const srcPath = c.makeSrc();
     const dest = await resolveDest(c, srcPath);
-    c.plant(dest);
+    plantChecked(c, dest);
 
     let err: unknown;
     try {
@@ -206,7 +264,7 @@ describe.each(CASES)('6c9fbf52 — unowned existing $label destination is refuse
   it(`6c9fbf52 AC2+AC3: pre-existing bytes untouched, ownership index unchanged, no ledger entry, no staging left`, async () => {
     const srcPath = c.makeSrc();
     const dest = await resolveDest(c, srcPath);
-    c.plant(dest);
+    plantChecked(c, dest);
 
     const before = snapshot(dest);
     const parentBefore = listing(path.dirname(dest));
@@ -229,12 +287,15 @@ describe.each(CASES)('6c9fbf52 — unowned existing $label destination is refuse
     // AC2: no staging dir / temp sibling left in the host dir or the data root.
     expect(listing(path.dirname(dest))).toEqual(parentBefore);
     expect(listing(dataDir)).toEqual(dataBefore);
+    // AC2: no render staging either — the guard runs before the renderers stage into
+    // os.tmpdir()/sox-render/<ext>-...
+    expect(stagingFor(c.id), `${c.label}: refusal must leave no sox-render staging`).toEqual([]);
   });
 
   it(`6c9fbf52 AC4: --force (library option force:true) is the only override; it warns loudly and the old content is gone`, async () => {
     const srcPath = c.makeSrc();
     const dest = await resolveDest(c, srcPath);
-    c.plant(dest);
+    plantChecked(c, dest);
     const planted = snapshot(dest);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
@@ -259,6 +320,66 @@ describe.each(CASES)('6c9fbf52 — unowned existing $label destination is refuse
     const everything = [...listing(sandboxRoot), ...listing(dataDir)];
     expect(everything.some((p) => /\.(bak|orig|backup)$|\.staging-/.test(p))).toBe(false);
   });
+
+  it(`6c9fbf52 AC4: uninstall after a forced overwrite removes the path and does NOT restore the old content`, async () => {
+    const srcPath = c.makeSrc();
+    const dest = await resolveDest(c, srcPath);
+    plantChecked(c, dest);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    for (const m of c.markers) expect(filesContaining([dest], m).length).toBeGreaterThan(0);
+
+    await declarativeInstall(descriptorFor(c, srcPath), 'user', workspace, dataDir, { force: true });
+    expect(fs.existsSync(dest)).toBe(true);
+    for (const m of c.markers) expect(filesContaining([dest], m), `old content '${m}' replaced`).toEqual([]);
+
+    const result = await uninstallOwned({
+      ext: c.id,
+      scope: 'user',
+      dataDir,
+      workspaceRoot: workspace,
+      isProject: false,
+      ownership: OwnershipIndex.loadFromFile(ownershipPathFor('user', workspace)),
+    });
+
+    expect(result.full).toBe(true);
+    expect(fs.existsSync(dest), 'the clobbered path is gone after uninstall').toBe(false);
+    // Nothing restored the previous content anywhere (placement root or data root).
+    for (const m of c.markers) {
+      expect(filesContaining([sandboxRoot, dataDir], m), `old content '${m}' must not reappear`).toEqual([]);
+    }
+  });
+
+  it(`6c9fbf52 AC4: --force over byte-identical unowned content replaces nothing and the warning says it adopted the path`, async () => {
+    const srcPath = c.makeSrc();
+    const first = await declarativeInstall(descriptorFor(c, srcPath), 'user', workspace, dataDir);
+    const dest = first.find((r) => r.capability === 'file-drop')!.target;
+    // Drop ownership: the on-disk bytes are now identical to the extension's but unowned.
+    const idx = OwnershipIndex.loadFromFile(ownershipPathFor('user', workspace));
+    idx.remove(c.id, 'user');
+    idx.save();
+    const before = snapshot(dest);
+    await expect(
+      declarativeInstall(descriptorFor(c, srcPath), 'user', workspace, dataDir),
+    ).rejects.toThrow(/refusing to overwrite unowned file/);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const results = await declarativeInstall(descriptorFor(c, srcPath), 'user', workspace, dataDir, { force: true });
+    const fd = results.find((r) => r.capability === 'file-drop');
+    expect(fd?.applied, 'identical bytes: nothing replaced').toBe(false);
+    expect(snapshot(dest)).toEqual(before);
+    const warned = warn.mock.calls.map((a) => String(a[0])).join('\n');
+    expect(warned).toContain(dest);
+    expect(warned).toContain('adopted');
+    expect(warned).not.toContain('overwrote');
+    expect(fd?.hints?.some((h) => h.includes('adopted'))).toBe(true);
+    expect(ownedEntryFor(c, dest)).toBe(true);
+  });
+
+  it(`6c9fbf52 AC2 control: a successful install DOES stage under sox-render (the no-staging assertion can fail)`, async () => {
+    const srcPath = c.makeSrc();
+    await declarativeInstall(descriptorFor(c, srcPath), 'user', workspace, dataDir);
+    expect(stagingFor(c.id).length).toBeGreaterThan(0);
+  });
 });
 
 // ─── AC4 — no env-var override (ADR-0013) ─────────────────────────────────────
@@ -268,7 +389,7 @@ describe('6c9fbf52 AC4 — overriding the refusal is never driven by an environm
     const c = CASES[0]!;
     const srcPath = c.makeSrc();
     const dest = await resolveDest(c, srcPath);
-    c.plant(dest);
+    plantChecked(c, dest);
     const before = snapshot(dest);
     const saved = { a: process.env['SOX_FORCE'], b: process.env['SOX_INSTALL_FORCE'], c: process.env['FORCE'] };
     process.env['SOX_FORCE'] = '1';
@@ -300,5 +421,135 @@ describe('6c9fbf52 — control: guard does not block an extension re-installing 
     await expect(
       declarativeInstall(descriptorFor(c, srcPath), 'user', workspace, dataDir),
     ).resolves.toBeDefined();
+  });
+});
+
+// ─── Hook path: settings merge + hook-script drop ─────────────────────────────
+
+describe('6c9fbf52 — unowned existing hook-script destination is refused before ANY write', () => {
+  const HOOK_ID = 'refuse-hook';
+  const PLANTED = 'hand-rolled hook script\n';
+
+  function writeHookExt(): string {
+    const dir = path.join(workspace, 'extensions', 'hooks', HOOK_ID);
+    fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'extension.json'),
+      JSON.stringify({ id: HOOK_ID, version: '0.1.0', type: 'hook', title: HOOK_ID, description: 'hook' }, null, 2),
+      'utf8',
+    );
+    fs.writeFileSync(path.join(dir, 'scripts', 'run.sh'), '#!/bin/sh\necho from-extension\n', 'utf8');
+    return dir;
+  }
+
+  const descriptor = (srcPath: string): InstallDescriptor =>
+    ({
+      ext: HOOK_ID,
+      type: 'hook',
+      hosts: ['claude'],
+      srcPath,
+      configEntries: [{ matcher: 'SessionEnd', hooks: [{ type: 'command', command: 'true' }] }],
+    }) as InstallDescriptor;
+
+  const settingsPath = (): string => path.join(sandboxRoot, '.claude', 'settings.json');
+  const hookDest = (srcPath: string): string =>
+    path.join(sandboxRoot, '.claude', 'hooks', path.basename(srcPath));
+  const SETTINGS_BEFORE = `${JSON.stringify({ model: 'user-chosen', hooks: { PostToolUse: [] } }, null, 2)}\n`;
+
+  function plantHook(srcPath: string): string {
+    const dest = hookDest(srcPath);
+    expect(dest.startsWith(sandboxRoot + path.sep), `${dest} must be inside the sandbox`).toBe(true);
+    fs.mkdirSync(dest, { recursive: true });
+    fs.writeFileSync(path.join(dest, 'legacy.sh'), PLANTED, 'utf8');
+    fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+    fs.writeFileSync(settingsPath(), SETTINGS_BEFORE, 'utf8');
+    return dest;
+  }
+
+  it('AC1+AC2+AC3: throws BUG-028 naming path/ext/scope/remedy; settings, hook dir, ownership and ledger are byte-identical', async () => {
+    const srcPath = writeHookExt();
+    const dest = plantHook(srcPath);
+    const before = snapshot(dest);
+    const ownershipBefore = readIfExists(ownershipPathFor('user', workspace));
+    const ledgerBefore = readIfExists(ledgerPathFor('user', workspace));
+    const dataBefore = listing(dataDir);
+
+    let err: unknown;
+    try {
+      await declarativeInstall(descriptor(srcPath), 'user', workspace, dataDir);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    const msg = (err as Error).message;
+    expect(msg).toContain('refusing to overwrite unowned file');
+    expect(msg).toContain('BUG-028');
+    expect(msg).toContain(dest);
+    expect(msg).toContain(`extension '${HOOK_ID}'`);
+    expect(msg).toContain(`scope 'user'`);
+    expect(msg).toMatch(/move or rename/);
+    expect(msg).toContain('--force');
+
+    // "Nothing was changed": no settings entry was injected, so none is untracked.
+    expect(fs.readFileSync(settingsPath(), 'utf8')).toBe(SETTINGS_BEFORE);
+    expect(snapshot(dest)).toEqual(before);
+    expect(readIfExists(ownershipPathFor('user', workspace))).toBe(ownershipBefore);
+    expect(readIfExists(ledgerPathFor('user', workspace))).toBe(ledgerBefore);
+    expect(listing(dataDir)).toEqual(dataBefore);
+  });
+
+  it('AC4: --force replaces the unowned hook dir, merges the settings entry, owns both, warns after the write; uninstall restores nothing', async () => {
+    const srcPath = writeHookExt();
+    const dest = plantHook(srcPath);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const results = await declarativeInstall(descriptor(srcPath), 'user', workspace, dataDir, { force: true });
+
+    const fd = results.find((r) => r.capability === 'file-drop');
+    expect(fd?.target).toBe(dest);
+    expect(fd?.applied).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'legacy.sh'))).toBe(false);
+    expect(fs.readFileSync(path.join(dest, 'scripts', 'run.sh'), 'utf8')).toContain('from-extension');
+
+    const warned = warn.mock.calls.map((a) => String(a[0])).join('\n');
+    expect(warned).toContain('WARNING');
+    expect(warned).toContain('--force');
+    expect(warned).toContain(dest);
+    expect(warned).toMatch(/will NOT restore the previous content/);
+    // Like the file-drop branch, the warning also rides the result hints.
+    expect(fd?.hints?.some((h) => h.includes(dest) && h.includes('WARNING'))).toBe(true);
+
+    const settings = JSON.parse(fs.readFileSync(settingsPath(), 'utf8')) as Record<string, unknown>;
+    const arr = (settings['hooks'] as { PostToolUse: Array<{ matcher?: string }> }).PostToolUse;
+    expect(arr.map((h) => h.matcher)).toEqual(['SessionEnd']);
+    expect(settings['model']).toBe('user-chosen');
+
+    const idx = OwnershipIndex.loadFromFile(ownershipPathFor('user', workspace));
+    const entries = idx.get(HOOK_ID, 'user')?.entries ?? [];
+    expect(entries.some((e) => e.kind === 'file-drop' && e.path === dest)).toBe(true);
+    expect(entries.some((e) => e.kind === 'object-array-values')).toBe(true);
+
+    const un = await uninstallOwned({
+      ext: HOOK_ID,
+      scope: 'user',
+      dataDir,
+      workspaceRoot: workspace,
+      isProject: false,
+      ownership: idx,
+    });
+    expect(un.full).toBe(true);
+    expect(fs.existsSync(dest)).toBe(false);
+    expect(filesContaining([sandboxRoot, dataDir], 'hand-rolled hook script')).toEqual([]);
+    // The settings entry was reversed and the user's own keys survive.
+    const after = JSON.parse(fs.readFileSync(settingsPath(), 'utf8')) as Record<string, unknown>;
+    expect((after['hooks'] as { PostToolUse: unknown[] }).PostToolUse).toEqual([]);
+    expect(after['model']).toBe('user-chosen');
+  });
+
+  it('control: an OWNED hook destination re-installs without --force', async () => {
+    const srcPath = writeHookExt();
+    const first = await declarativeInstall(descriptor(srcPath), 'user', workspace, dataDir);
+    expect(first.find((r) => r.capability === 'file-drop')?.target).toBe(hookDest(srcPath));
+    await expect(declarativeInstall(descriptor(srcPath), 'user', workspace, dataDir)).resolves.toBeDefined();
   });
 });

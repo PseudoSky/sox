@@ -1962,16 +1962,47 @@ function unownedDestinationRefusal(destPath: string, ext: string, scope: string)
 }
 
 /**
- * 6c9fbf52: loud warning emitted when `--force` clobbers an unowned destination.
- * The previous content is gone: install records no backup, so uninstall removes the
- * path and never restores what was there before.
+ * 6c9fbf52: loud warning emitted once `--force` has taken over an unowned destination.
+ * Install records no backup, so uninstall removes the path and never restores what was
+ * there before. `replaced=false` means the destination already held byte-identical
+ * content: nothing was overwritten, but the path is now owned (and so deleted on uninstall).
  */
-function unownedDestinationForceWarning(destPath: string, ext: string, scope: string): string {
-  return (
-    `WARNING [declarative-install] --force: overwriting unowned path ${destPath} for extension ` +
-    `'${ext}' (scope '${scope}'). The previous content is permanently replaced and is not backed ` +
-    `up; \`uninstall ${ext}\` will delete this path and will NOT restore the previous content.`
-  );
+function unownedDestinationForceWarning(
+  destPath: string,
+  ext: string,
+  scope: string,
+  replaced: boolean,
+): string {
+  return replaced
+    ? `WARNING [declarative-install] --force: overwrote unowned path ${destPath} for extension ` +
+        `'${ext}' (scope '${scope}'). The previous content is permanently replaced and is not backed ` +
+        `up; \`uninstall ${ext}\` will delete this path and will NOT restore the previous content.`
+    : `WARNING [declarative-install] --force: adopted unowned path ${destPath} for extension ` +
+        `'${ext}' (scope '${scope}'). Its content already matched the extension, so nothing was ` +
+        `replaced; the path is now owned and \`uninstall ${ext}\` will delete it.`;
+}
+
+/**
+ * BUG-028 / 6c9fbf52: the unowned-destination guard, shared by every placement branch.
+ * Returns whether the destination is an existing path this extension does not own and the
+ * caller overrode the refusal with `--force` (the caller emits the warning AFTER its write
+ * succeeds). Throws the named refusal when unowned and not forced. Pure read: no filesystem
+ * or ownership mutation, so a refusal is side-effect-free provided it runs before any write.
+ */
+function guardUnownedDestination(
+  destPath: string,
+  ext: string,
+  scope: DataScope,
+  workspaceRoot: string,
+  force: boolean | undefined,
+): { forced: boolean } {
+  if (!fs.existsSync(destPath)) return { forced: false };
+  const ownedByThis = OwnershipIndex.loadFromFile(ownershipPathFor(scope, workspaceRoot))
+    .get(ext, scope)
+    ?.entries?.some((e) => e.kind === 'file-drop' && e.path === destPath);
+  if (ownedByThis) return { forced: false };
+  if (!force) throw new Error(unownedDestinationRefusal(destPath, ext, scope));
+  return { forced: true };
 }
 
 /**
@@ -2275,6 +2306,42 @@ export async function declarativeInstall(
         );
       }
 
+      // Determine the destination: if absTarget is a directory (or should be),
+      // place the file as <dir>/<basename>. If the surface path includes a filename
+      // extension (like CLAUDE.md), use absTarget directly.
+      // BL-566: for AGENT type the host discovers only a single top-level
+      // <id>.md file (opencode scans agents/*.md, not nested dirs), so the drop
+      // target is the entrypoint file at <absTarget>/<ext>.md — never a
+      // directory. Skills/commands/hooks keep the directory form (their hosts
+      // walk nested dirs).
+      let destPath: string;
+      const targetHasExt = path.extname(absTarget) !== '';
+      if (targetHasExt) {
+        destPath = absTarget;
+      } else if (descriptor.type === 'agent') {
+        // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: descriptor.ext is the CLI-supplied
+        // extension id — refuse before it can steer the real write target
+        // outside absTarget.
+        destPath = assertWithinBase(absTarget, path.join(absTarget, `${descriptor.ext}.md`));
+      } else {
+        destPath = path.join(absTarget, path.basename(descriptor.srcPath));
+      }
+
+      // Unowned-file guard (BUG-028 / 6c9fbf52): never clobber an existing path this
+      // extension does not own. `soxe install` must not silently overwrite a
+      // hand-authored / legacy host file (incident: researcher.md — a working
+      // opencode agent was replaced by a divergent extension copy and opencode
+      // rejected it). Runs BEFORE rendering: the renderers stage into
+      // os.tmpdir()/sox-render, so a refusal must precede them to leave no staging
+      // behind. The override is the explicit `--force` CLI flag only (ADR-0013).
+      const { forced: forcedClobber } = guardUnownedDestination(
+        destPath,
+        descriptor.ext,
+        scope,
+        workspaceRoot,
+        opts?.force,
+      );
+
       // Idempotent: copy only if hash differs.
       // BL-566: for agent type the hashed source is the entrypoint file (the
       // only thing that lands), not the whole extension directory — otherwise
@@ -2317,50 +2384,8 @@ export async function declarativeInstall(
 
       const srcHash = hashPathForInstall(contentPath);
 
-      // Determine the destination: if absTarget is a directory (or should be),
-      // place the file as <dir>/<basename>. If the surface path includes a filename
-      // extension (like CLAUDE.md), use absTarget directly.
-      // BL-566: for AGENT type the host discovers only a single top-level
-      // <id>.md file (opencode scans agents/*.md, not nested dirs), so the drop
-      // target is the entrypoint file at <absTarget>/<ext>.md — never a
-      // directory. Skills/commands/hooks keep the directory form (their hosts
-      // walk nested dirs).
-      let destPath: string;
-      const targetHasExt = path.extname(absTarget) !== '';
-      if (targetHasExt) {
-        destPath = absTarget;
-      } else if (descriptor.type === 'agent') {
-        // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: descriptor.ext is the CLI-supplied
-        // extension id — refuse before it can steer the real write target
-        // outside absTarget.
-        destPath = assertWithinBase(absTarget, path.join(absTarget, `${descriptor.ext}.md`));
-      } else {
-        destPath = path.join(absTarget, path.basename(descriptor.srcPath));
-      }
-
       const destHash = fs.existsSync(destPath) ? hashPathForInstall(destPath) : '';
       let applied = false;
-      let forceClobberWarning: string | undefined;
-      // Unowned-file guard (BUG-028): never clobber an existing file this
-      // extension does not own.
-      // `soxe install` must not silently overwrite a hand-authored / legacy host
-      // file (incident: researcher.md — a working opencode agent was replaced by a
-      // divergent extension copy and opencode rejected it). If the destination
-      // exists AND is not already owned by THIS extension's record, refuse unless
-      // the caller explicitly passes force=true.
-      if (fs.existsSync(destPath)) {
-        const ownershipIdx = OwnershipIndex.loadFromFile(ownershipPathFor(scope, workspaceRoot));
-        const ownedByThis = ownershipIdx
-          .get(descriptor.ext, scope)
-          ?.entries?.some((e) => e.kind === 'file-drop' && e.path === destPath);
-        if (!ownedByThis) {
-          if (!opts?.force) {
-            throw new Error(unownedDestinationRefusal(destPath, descriptor.ext, scope));
-          }
-          forceClobberWarning = unownedDestinationForceWarning(destPath, descriptor.ext, scope);
-          console.warn(forceClobberWarning);
-        }
-      }
       if (srcHash !== destHash) {
         if (descriptor.type === 'agent') {
           // BL-566 + [def:agent-renderer]: copy the (possibly rendered) entrypoint
@@ -2401,8 +2426,12 @@ export async function declarativeInstall(
       if (surface.postInstallHint) {
         fdResult.hints = [surface.postInstallHint];
       }
-      if (forceClobberWarning !== undefined) {
-        fdResult.hints = [...(fdResult.hints ?? []), forceClobberWarning];
+      if (forcedClobber) {
+        // Emitted only now that the write has succeeded; `applied` says whether
+        // anything was actually replaced (identical bytes are adopted, not replaced).
+        const forceWarning = unownedDestinationForceWarning(destPath, descriptor.ext, scope, applied);
+        console.warn(forceWarning);
+        fdResult.hints = [...(fdResult.hints ?? []), forceWarning];
       }
       results.push(fdResult);
       // [inv:no-untracked-injection]: the placed file/dir is owned.
@@ -2624,6 +2653,24 @@ export async function declarativeInstall(
       const resolvedKeyPath = descriptor.configKeyPath ?? `hooks.PostToolUse`;
       const identityField = descriptor.configIdentityField ?? '_sox';
       const identityValue = descriptor.configIdentityValue ?? descriptor.ext;
+      // Hook-script destination: resolve it and run the BUG-028 / 6c9fbf52
+      // unowned-destination guard BEFORE the settings merge below. The merge writes
+      // the settings entry; refusing after it would leave an entry that is never
+      // recorded ([inv:no-untracked-injection]) and contradict "Nothing was changed".
+      // Mirroring REMOVES destination entries absent from the source, so a directory
+      // this extension does not own is refused, never deleted.
+      let hookPlan: { hookDestPath: string; forced: boolean } | undefined;
+      if (descriptor.type === 'hook' && descriptor.srcPath) {
+        const hookScriptRawTarget = hostMod.surfaces['hook-script']?.paths[scope];
+        if (hookScriptRawTarget) {
+          const hookScriptAbsTarget = path.isAbsolute(hookScriptRawTarget)
+            ? _expandHome(hookScriptRawTarget)
+            : path.join(workspaceRoot, hookScriptRawTarget);
+          const hookDestPath = path.join(hookScriptAbsTarget, path.basename(descriptor.srcPath));
+          const { forced } = guardUnownedDestination(hookDestPath, descriptor.ext, scope, workspaceRoot, opts?.force);
+          hookPlan = { hookDestPath, forced };
+        }
+      }
       const { apply: oamApply } = await import('./capabilities/object-array-merge.js');
       await oamApply({
         host: hostName,
@@ -2661,63 +2708,51 @@ export async function declarativeInstall(
 
       // Secondary surface: hook-script file-drop for type:hook extensions.
       // The hook script is dropped to ~/.claude/hooks/<id>/ using the existing
-      // hook-script surface, while the settings entry was handled above.
-      if (descriptor.type === 'hook' && descriptor.srcPath) {
-        const hookScriptSurface = hostMod.surfaces['hook-script'];
-        if (hookScriptSurface) {
-          const hookScriptRawTarget = hookScriptSurface.paths[scope];
-          if (hookScriptRawTarget) {
-            const hookScriptAbsTarget = path.isAbsolute(hookScriptRawTarget)
-              ? _expandHome(hookScriptRawTarget)
-              : path.join(workspaceRoot, hookScriptRawTarget);
-            const srcBasename = path.basename(descriptor.srcPath);
-            const hookDestPath = path.join(hookScriptAbsTarget, srcBasename);
-            // Unowned-file guard (BUG-028): mirroring REMOVES destination entries
-            // absent from the source, so a directory this extension does not own
-            // must be refused — never deleted — exactly like the primary file-drop
-            // branch above.
-            if (fs.existsSync(hookDestPath)) {
-              const hookOwnershipIdx = OwnershipIndex.loadFromFile(ownershipPathFor(scope, workspaceRoot));
-              const hookOwnedByThis = hookOwnershipIdx
-                .get(descriptor.ext, scope)
-                ?.entries?.some((e) => e.kind === 'file-drop' && e.path === hookDestPath);
-              if (!hookOwnedByThis) {
-                if (!opts?.force) {
-                  throw new Error(unownedDestinationRefusal(hookDestPath, descriptor.ext, scope));
-                }
-                console.warn(unownedDestinationForceWarning(hookDestPath, descriptor.ext, scope));
-              }
-            }
-            const hookSrcHash = hashPathForInstall(descriptor.srcPath);
-            const hookDestHash = fs.existsSync(hookDestPath) ? hashPathForInstall(hookDestPath) : '';
-            let hookApplied = false;
-            if (hookSrcHash !== hookDestHash) {
-              // mirrorPathSync (1b42e982): a merge never deletes, so a file removed
-              // from the hook source would survive; mirror the destination exactly.
-              mirrorPathSync(descriptor.srcPath, hookDestPath);
-              hookApplied = true;
-            }
-            ownedEntries.push({ kind: 'file-drop', path: hookDestPath, host: hostName });
-            // Record in ledger for reversal
-            const hookScriptLedgerFilePath = isProject
-              ? path.relative(workspaceRoot, hookDestPath)
-              : hookDestPath;
-            ledger.record({
-              ext: descriptor.ext,
-              host: hostName,
-              scope,
-              action: { cap: 'file-drop', file: hookScriptLedgerFilePath, keyPath: '', appliedHash: hashPathForInstall(hookDestPath) },
-            });
-            // Also push a result entry so the CLI knows about the file-drop
-            results.push({
-              host: hostName,
-              scope,
-              capability: 'file-drop',
-              target: hookDestPath,
-              applied: hookApplied,
-            });
-          }
+      // hook-script surface, while the settings entry was handled above. The
+      // unowned-destination guard for this drop already ran (hookPlan, above the
+      // settings merge) so a refusal left nothing behind.
+      if (hookPlan !== undefined && descriptor.srcPath) {
+        const { hookDestPath, forced: hookForced } = hookPlan;
+        const hookSrcHash = hashPathForInstall(descriptor.srcPath);
+        const hookDestHash = fs.existsSync(hookDestPath) ? hashPathForInstall(hookDestPath) : '';
+        let hookApplied = false;
+        if (hookSrcHash !== hookDestHash) {
+          // mirrorPathSync (1b42e982): a merge never deletes, so a file removed
+          // from the hook source would survive; mirror the destination exactly.
+          mirrorPathSync(descriptor.srcPath, hookDestPath);
+          hookApplied = true;
         }
+        ownedEntries.push({ kind: 'file-drop', path: hookDestPath, host: hostName });
+        // Record in ledger for reversal
+        const hookScriptLedgerFilePath = isProject
+          ? path.relative(workspaceRoot, hookDestPath)
+          : hookDestPath;
+        ledger.record({
+          ext: descriptor.ext,
+          host: hostName,
+          scope,
+          action: { cap: 'file-drop', file: hookScriptLedgerFilePath, keyPath: '', appliedHash: hashPathForInstall(hookDestPath) },
+        });
+        // Also push a result entry so the CLI knows about the file-drop
+        const hookResult: DeclarativeInstallResult = {
+          host: hostName,
+          scope,
+          capability: 'file-drop',
+          target: hookDestPath,
+          applied: hookApplied,
+        };
+        if (hookForced) {
+          // Emitted only now that the write has succeeded (see file-drop branch).
+          const hookForceWarning = unownedDestinationForceWarning(
+            hookDestPath,
+            descriptor.ext,
+            scope,
+            hookApplied,
+          );
+          console.warn(hookForceWarning);
+          hookResult.hints = [hookForceWarning];
+        }
+        results.push(hookResult);
       }
     }
   }
