@@ -313,3 +313,31 @@ test('validate-fixtures AC1 no synthetic extension.json under the skill fixtures
   const agents = loadAgents(path.join(SKILL_ROOT, 'fixtures/routing/agents-ok'));
   assert.ok(agents.length > 0, 'fixture readers still load extension.fixture.json');
 });
+
+test('9024e9ac T14.AC10 loadAgents reports a null / non-object manifest as a named finding instead of throwing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-unit-'));
+  const stderr = process.stderr.write.bind(process.stderr);
+  process.stderr.write = () => true;
+  try {
+    for (const [name, body] of [['nul', 'null'], ['arr', '[1]'], ['num', '7']]) {
+      fs.mkdirSync(path.join(dir, name));
+      fs.writeFileSync(path.join(dir, name, 'extension.json'), body);
+    }
+    const agents = loadAgents(dir);
+    assert.deepEqual(agents.map((a) => a.agent), ['arr', 'nul', 'num']);
+    const r = reviewRouting({ agents, obligations: new Set(['AU.1']) });
+    assert.deepEqual(r.findings.map((f) => [f.agent, f.id]), [['arr', 'malformed-manifest'], ['nul', 'malformed-manifest'], ['num', 'malformed-manifest']]);
+    assert.ok(r.findings.find((f) => f.agent === 'nul').detail.includes('null'));
+  } finally {
+    process.stderr.write = stderr;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('9024e9ac T14.AC3 --mode combined with target "all" is E_USAGE, not silently ignored', () => {
+  const r = resolveVerb({ verb: 'review', target: 'all', mode: 'retention-audit' });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'E_USAGE');
+  assert.equal(r.error.exit, 64);
+  assert.equal(resolveVerb({ verb: 'review', target: 'all' }).ok, true, 'no mode: unchanged');
+});

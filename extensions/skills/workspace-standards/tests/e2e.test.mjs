@@ -57,6 +57,7 @@ describe('9024e9ac T14 e2e on one scaffold', () => {
       [['run'], 64, 'E_USAGE'],
       [['run', 'testing', '--mode'], 64, 'E_USAGE'],
       [['run', 'testing', '--root'], 64, 'E_USAGE'],
+      [['review', 'all', '--mode', 'retention-audit'], 64, 'E_USAGE'],
     ];
     for (const [args, status, code] of cases) {
       const r = run('ws.mjs', args);
@@ -107,6 +108,28 @@ describe('9024e9ac T14 e2e on one scaffold', () => {
       assert.equal(missing, dirs - JSON.parse(real.stdout).agents.filter((a) => a.covered.length > 0).length);
     }
     assert.equal(run('review-routing.mjs', ['--agents-dir', fx('agents-ok')]).status, 64);
+    // A flag whose value is missing must not swallow the next flag as its value.
+    for (const argv of [['--agents-dir', '--roles', roles], ['--agents-dir', fx('agents-ok'), '--roles'], ['--roles', '--agents-dir', fx('agents-ok')]]) {
+      const r = run('review-routing.mjs', argv);
+      assert.equal(r.status, 64, argv.join(' '));
+      assert.equal(JSON.parse(r.stderr).error.code, 'E_USAGE');
+      assert.equal(r.stdout, '');
+    }
+  });
+
+  test('9024e9ac T14.AC10 review-routing: a null / non-object manifest is a named per-file finding, never E_INTERNAL', () => {
+    const dir = path.join(scaffold, '..', 'agents-nonobject');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const [name, body] of [['nullmf', 'null'], ['arrmf', '[]'], ['strmf', '"x"'], ['good', JSON.stringify({ id: 'good', type: 'agent', capabilities: ['roles-covered:AU.1'] })]]) {
+      fs.mkdirSync(path.join(dir, name), { recursive: true });
+      fs.writeFileSync(path.join(dir, name, 'extension.json'), body);
+    }
+    const roles = path.join(scaffold, 'fixtures/routing/roles-no-hints.md');
+    const r = run('review-routing.mjs', ['--agents-dir', dir, '--roles', roles]);
+    assert.equal(r.status, 1, r.stderr);
+    assert.equal(r.stderr.includes('E_INTERNAL'), false);
+    const rep = JSON.parse(r.stdout);
+    assert.deepEqual(rep.findings.filter((f) => f.id === 'malformed-manifest').map((f) => f.agent).sort(), ['arrmf', 'nullmf', 'strmf']);
   });
 
   test('9024e9ac T14.AC4 T14.AC5 T14.AC6 T14.AC7 conformance against the real policy exits 0', () => {

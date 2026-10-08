@@ -11,6 +11,9 @@ export const TOOL_VOCAB = ['read', 'search', 'shell', 'edit', 'backlog'];
 export const OBLIGATION_ID = /^[A-Z]{2}\.[0-9]+$/;
 export const ROLES_COVERED_PREFIX = 'roles-covered:';
 
+/** True for a plain JSON object (not null, not an array). */
+export const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
 /** Pull `--name <value>` out of args. A value-taking flag with no value is a named usage error. */
 export function takeOption(args, name) {
   const i = args.indexOf(name);
@@ -76,6 +79,7 @@ export function resolveVerb({ root = SKILL_ROOT, verb, target, mode } = {}) {
   const registry = loadRegistry(root);
   const targets = listTargets(registry);
   if (target === 'all') {
+    if (mode) return fail(ERR.USAGE, `--mode "${mode}" selects one target's sub-playbook and cannot be combined with "all"; name a target`);
     if (verb === 'run') return fail(ERR.UNSUPPORTED_VERB, '"run" takes one target; "all" is valid for review and apply only');
     const items = targets.map((t) => ({
       target: t.id,
@@ -301,7 +305,12 @@ export function coveredIds(manifest) {
 export function reviewRouting({ agents, obligations, roles = null }) {
   const findings = [];
   const report = [];
-  for (const { agent, manifest, loadError } of agents) {
+  for (const { agent, manifest, loadError, shapeError } of agents) {
+    if (shapeError) {
+      report.push({ agent, covered: [] });
+      findings.push({ agent, id: 'malformed-manifest', detail: `extension manifest is unusable: ${shapeError}` });
+      continue;
+    }
     if (loadError) {
       report.push({ agent, covered: [] });
       findings.push({ agent, id: 'unreadable-manifest', detail: `extension.json is not valid JSON: ${loadError}` });
@@ -351,6 +360,12 @@ export function loadAgents(agentsDir) {
     } catch (err) {
       trace(`parse ${mf}`, err);
       out.push({ agent: d.name, manifest: {}, loadError: err.message });
+      continue;
+    }
+    if (!isObj(manifest)) {
+      const got = manifest === null ? 'null' : Array.isArray(manifest) ? 'an array' : typeof manifest;
+      trace(`shape ${mf}`, `manifest is ${got}, not a JSON object`);
+      out.push({ agent: d.name, manifest: {}, shapeError: `manifest is ${got}, not a JSON object` });
       continue;
     }
     if (manifest.type && manifest.type !== 'agent') continue;
