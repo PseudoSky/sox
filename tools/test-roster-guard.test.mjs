@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DISPATCHER_REL, AGENTS_MD_REL, GuardError, parseDispatcherRoutes, parseAgentsMdTable,
-  makeSource, checkRoster, formatReport, main,
+  makeSource, checkRoster, checkRoles, ROLES_REL, formatReport, main,
 } from './test-roster-guard.mjs';
 
 const TOOLS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -236,4 +236,115 @@ test('3fe895f3 T10.AC4: the suite is registered as an nx target that the default
   const project = JSON.parse(fs.readFileSync(path.join(TOOLS_DIR, '..', 'project.json'), 'utf8'));
   assert.equal(project.targets['roster-guard-test']?.options?.command, 'node tools/test-roster-guard.test.mjs');
   assert.ok(project.targets.lint.dependsOn.includes('roster-guard-test'), 'lint must depend on roster-guard-test');
+});
+
+// ---------- ff15d348 (T10b): role-resolution guard ----------
+
+const roleBlock = ({ name, prefix, tools, noHolder }) => [
+  `## role: ${name}`,
+  `- prefix: ${prefix}`,
+  `- ${prefix}.1: Do the ${name} thing [§1]`,
+  `- ${prefix}.2: Do the other ${name} thing [§2]`,
+  `- tools: ${tools}`,
+  '- distinct-from:',
+  '- hints:',
+  '- independence: none stated.',
+  `- no-holder: ${noHolder}`,
+  '',
+].join('\n');
+const UNBOUND = 'unbound; review debt on the affected tests; deep-blocks: no';
+const rolesMd = (...blocks) => `# Roles\n\n${blocks.join('\n')}`;
+const agentManifest = (id, tools, covered) => JSON.stringify({
+  id, type: 'agent', agent: { tools }, capabilities: covered.map((c) => `roles-covered:${c}`),
+});
+const rolesRepo = (roles, agents) => ({
+  [ROLES_REL]: roles,
+  ...Object.fromEntries(Object.entries(agents).map(([id, [tools, covered]]) => [`extensions/agents/${id}/extension.json`, agentManifest(id, tools, covered)])),
+});
+const rolesOf = (files) => checkRoles(makeSource({ root: '/', fsApi: fakeRepo(files).fsApi }));
+const outcomes = (r) => Object.fromEntries(r.results.map((x) => [x.role, x.outcome]));
+
+test('ff15d348 AC1: a role with a closest eligible agent by roles-covered resolves and names the holder', () => {
+  const files = rolesRepo(rolesMd(roleBlock({ name: 'alpha', prefix: 'AA', tools: 'read, search', noHolder: 'escalate; deep-blocks: no' })), { aud: [['read', 'grep'], ['AA.1']] });
+  const r = rolesOf(files);
+  assert.equal(r.state, 'checked');
+  assert.deepEqual(r.results.map((x) => [x.role, x.outcome, x.holder, x.covered]), [['alpha', 'resolved', 'aud', ['AA.1']]]);
+  assert.deepEqual(r.unresolved, []);
+});
+
+test('ff15d348 AC1: a role no agent resolves but that declares itself unbound is accepted', () => {
+  const files = rolesRepo(rolesMd(roleBlock({ name: 'beta', prefix: 'BB', tools: 'read', noHolder: UNBOUND })), { aud: [['read'], ['AA.1']] });
+  const r = rolesOf(files);
+  assert.deepEqual(outcomes(r), { beta: 'unbound' });
+  assert.deepEqual(r.unresolved, []);
+});
+
+test('ff15d348 AC1: a role that resolves to no agent and is not declared unbound is unresolved, and main exits 1', () => {
+  const files = {
+    ...roster(['aud'], 'QA → `aud`'),
+    ...rolesRepo(rolesMd(roleBlock({ name: 'gamma', prefix: 'GG', tools: 'read', noHolder: 'escalate to the owner; deep-blocks: no' })), { aud: [['read'], ['AA.1']] }),
+  };
+  files['extensions/agents/aud/extension.json'] = agentManifest('aud', ['read'], ['AA.1']);
+  assert.deepEqual(rolesOf(files).unresolved.map((x) => x.role), ['gamma']);
+  const r = runMain(files, ['--ref', 'r']);
+  assert.equal(r.code, 1, `${r.out}\n${r.err}`);
+  assert.match(r.out, /UNRESOLVED ROLE: gamma /);
+  assert.match(r.out, /FAIL: 1 role\(s\)/);
+});
+
+test('ff15d348 AC1: one fixture roster proves all three outcomes (resolved, unbound, neither) and exit 0 once the missing agent is added', () => {
+  const roles = rolesMd(
+    roleBlock({ name: 'alpha', prefix: 'AA', tools: 'read', noHolder: 'escalate; deep-blocks: no' }),
+    roleBlock({ name: 'beta', prefix: 'BB', tools: 'read', noHolder: UNBOUND }),
+    roleBlock({ name: 'gamma', prefix: 'GG', tools: 'read', noHolder: 'escalate; deep-blocks: no' }),
+  );
+  const base = { ...roster(['one'], 'x → `one`'), ...rolesRepo(roles, { one: [['read'], ['AA.1']] }) };
+  assert.deepEqual(outcomes(rolesOf(base)), { alpha: 'resolved', beta: 'unbound', gamma: 'unresolved' });
+  assert.equal(runMain(base, ['--ref', 'r']).code, 1);
+  const fixed = {
+    ...base,
+    'extensions/agents/gm/extension.json': agentManifest('gm', ['read'], ['GG.2']),
+  };
+  assert.deepEqual(outcomes(rolesOf(fixed)), { alpha: 'resolved', beta: 'unbound', gamma: 'resolved' });
+  const ok = runMain({ ...fixed, ...roster(['one', 'gm'], 'x → `one`; y → `gm`') , ...rolesRepo(roles, { one: [['read'], ['AA.1']], gm: [['read'], ['GG.2']] }) }, ['--ref', 'r']);
+  assert.equal(ok.code, 0, `${ok.out}\n${ok.err}`);
+  assert.match(ok.out, /role alpha: resolved -> one/);
+});
+
+test('ff15d348 AC1: an agent that covers the role but lacks a required tool is ineligible; an agent covering nothing is not a holder', () => {
+  const roles = rolesMd(roleBlock({ name: 'shelly', prefix: 'SH', tools: 'read, shell, edit, backlog', noHolder: 'escalate; deep-blocks: no' }));
+  const noTool = rolesRepo(roles, { weak: [['read', 'bash', 'edit'], ['SH.1']], idle: [['read', 'bash', 'edit', { logical: 'backlog', server: 'backlog' }], []] });
+  assert.deepEqual(outcomes(rolesOf(noTool)), { shelly: 'unresolved' });
+  const full = rolesRepo(roles, { weak: [['read', 'bash', 'edit'], ['SH.1']], strong: [['read', 'bash', 'write', { logical: 'backlog', server: 'backlog' }], ['SH.2']] });
+  const r = rolesOf(full);
+  assert.deepEqual(r.results.map((x) => [x.holder, x.covered]), [['strong', ['SH.2']]]);
+});
+
+test('ff15d348 AC1: closeness is the count of the role obligation ids covered; hints, then name, break ties only', () => {
+  const roles = rolesMd(roleBlock({ name: 'alpha', prefix: 'AA', tools: 'read', noHolder: UNBOUND })).replace('- hints:', '- hints: zed');
+  const files = rolesRepo(roles, { aaa: [['read'], ['AA.1']], bbb: [['read'], ['AA.1', 'AA.2']], zed: [['read'], ['AA.1']] });
+  assert.equal(rolesOf(files).results[0].holder, 'bbb');
+  const tie = rolesRepo(roles, { aaa: [['read'], ['AA.1']], zed: [['read'], ['AA.1']] });
+  assert.equal(rolesOf(tie).results[0].holder, 'zed');
+  const plain = rolesRepo(rolesMd(roleBlock({ name: 'alpha', prefix: 'AA', tools: 'read', noHolder: UNBOUND })), { zzz: [['read'], ['AA.1']], aaa: [['read'], ['AA.1']] });
+  assert.equal(rolesOf(plain).results[0].holder, 'aaa');
+});
+
+test('ff15d348 AC1: a repo/ref with no roles.md says so and checks no roles; invalid roles.md cannot run (exit 2)', () => {
+  const none = rolesOf(roster(['qa'], 'QA → `qa`'));
+  assert.equal(none.state, 'absent');
+  assert.deepEqual(none.unresolved, []);
+  assert.match(formatReport({ ...checkRoster(makeSource({ root: '/', fsApi: fakeRepo(roster(['qa'], 'QA → `qa`')).fsApi })) }), /roles: .*not present/);
+  const bad = { ...roster(['qa'], 'QA → `qa`'), [ROLES_REL]: '# Roles\n\nno sections\n' };
+  const r = runMain(bad, ['--ref', 'r']);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /roles\.md/);
+});
+
+test('ff15d348 AC2: the real roster (working tree) has no unresolved role', () => {
+  const root = path.resolve(TOOLS_DIR, '..');
+  const r = checkRoles(makeSource({ root }));
+  assert.equal(r.state, 'checked');
+  assert.ok(r.results.length >= 13, `expected the 13 testing-standard roles, got ${r.results.length}`);
+  assert.deepEqual(r.unresolved.map((x) => x.role), []);
 });
