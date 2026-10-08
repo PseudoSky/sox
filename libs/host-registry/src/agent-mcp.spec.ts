@@ -291,6 +291,91 @@ describe('agent-mcp — real review manifest golden render (cac771f8)', () => {
       expect(payload.nativeWebTools).toBeUndefined();
       expect(report.lost).toEqual([]);
     });
+
+    // `tools` unspecified (irToolNames() === null): every web tool counts as available unless denied.
+    const noTools = (permission: Record<string, string>, override: AgentOverride | undefined = manifest.render['agent-mcp']) => {
+      const { tools: _tools, ...rest } = manifest.agent;
+      void _tools;
+      return renderReview({ ...rest, permission } as AgentIr, override);
+    };
+
+    it('e00c47bb AC2 tools unspecified + BOTH denied => nativeWebTools:false, nothing lost (never the provider default)', () => {
+      const { payload, report } = noTools({ webfetch: 'deny', websearch: 'deny' });
+      expect(payload.nativeWebTools).toBe(false);
+      expect(report.lost).toEqual([]);
+    });
+
+    it('e00c47bb AC1 tools unspecified + a single deny reports the loss and fails closed (sibling counts as available)', () => {
+      const f = noTools({ webfetch: 'deny' });
+      expect(f.payload.nativeWebTools).toBe(false);
+      expect(f.report.lost).toMatchObject([{ source: 'webfetch', action: 'deny', disposition: 'dropped' }]);
+      const s = noTools({ websearch: 'deny' });
+      expect(s.payload.nativeWebTools).toBe(false);
+      expect(s.report.lost).toMatchObject([{ source: 'websearch', action: 'deny', disposition: 'dropped' }]);
+    });
+
+    it('e00c47bb AC2 tools unspecified + nothing denied => provider default, nothing lost', () => {
+      const { payload, report } = noTools({ webfetch: 'allow', websearch: 'allow' });
+      expect(payload.nativeWebTools).toBeUndefined();
+      expect(report.lost).toEqual([]);
+    });
+
+    // A deny whose sibling is UNLISTED is the all-off branch: the sibling was never available, so nothing is lost.
+    const unlistedSibling = (denied: 'webfetch' | 'websearch') => {
+      const permission: Record<string, string> = { ...(manifest.agent.permission as Record<string, string>) };
+      delete permission['webfetch'];
+      delete permission['websearch'];
+      permission[denied] = 'deny';
+      return renderReview({ ...manifest.agent, tools: [...(manifest.agent.tools ?? []), denied], permission } as AgentIr);
+    };
+
+    it('e00c47bb AC2 single deny with the sibling UNLISTED => nativeWebTools:false and report.lost empty (documented all-off branch)', () => {
+      for (const denied of ['webfetch', 'websearch'] as const) {
+        const { payload, report } = unlistedSibling(denied);
+        expect(payload.nativeWebTools).toBe(false);
+        expect(report.lost).toEqual([]);
+      }
+    });
+
+    it('e00c47bb AC1 override nativeWebTools:false + partial deny: web off, deny ENFORCED, recorded as covered-by-override', () => {
+      const { payload, report } = web({ webfetch: 'deny', websearch: 'allow' }, { ...manifest.render['agent-mcp'], nativeWebTools: false } as AgentOverride);
+      expect(payload.nativeWebTools).toBe(false);
+      expect(report.lost).toHaveLength(1);
+      expect(report.lost[0]).toMatchObject({ source: 'webfetch', disposition: 'covered-by-override' });
+      expect(report.lost[0]?.reason).toMatch(/webfetch deny is enforced/);
+      expect(report.lost[0]?.reason).not.toMatch(/not enforced/);
+    });
+
+    it('e00c47bb AC1 reason text matches the case: override:true and acceptLoss say "not enforced"; the default says fail-closed', () => {
+      const base = manifest.render['agent-mcp'];
+      const on = web({ webfetch: 'deny', websearch: 'allow' }, { ...base, nativeWebTools: true } as AgentOverride).report.lost[0]?.reason;
+      expect(on).toMatch(/nativeWebTools:true enables web, so the webfetch deny is not enforced/);
+      const accepted = web({ webfetch: 'deny', websearch: 'allow' }, { ...base, acceptLoss: true } as AgentOverride).report.lost[0]?.reason;
+      expect(accepted).toMatch(/acceptLoss keeps web at the provider default, so the webfetch deny is not enforced/);
+      const dflt = web({ webfetch: 'deny', websearch: 'allow' }).report.lost[0]?.reason;
+      expect(dflt).toMatch(/fail-closed/);
+      expect(dflt).not.toMatch(/not enforced/);
+    });
+
+    it('e00c47bb AC1 acceptLoss + override:false => the override wins (web off) and the entry is covered-by-override', () => {
+      const { payload, report } = web({ webfetch: 'deny', websearch: 'allow' }, { ...manifest.render['agent-mcp'], acceptLoss: true, nativeWebTools: false } as AgentOverride);
+      expect(payload.nativeWebTools).toBe(false);
+      expect(report.lost).toMatchObject([{ source: 'webfetch', disposition: 'covered-by-override' }]);
+    });
+
+    it('e00c47bb AC1 acceptLoss with both tools denied is a no-op: web off, nothing lost', () => {
+      const { payload, report } = web({ webfetch: 'deny', websearch: 'deny' }, { ...manifest.render['agent-mcp'], acceptLoss: true } as AgentOverride);
+      expect(payload.nativeWebTools).toBe(false);
+      expect(report.lost).toEqual([]);
+    });
+  });
+
+  it('e00c47bb AC3 the fidelity spec carries the migration note and separates the manifest acceptLoss key from the CLI flag', () => {
+    const doc = fs.readFileSync(path.resolve(__dirname, '../../../docs/spec/agent-mcp-renderer-fidelity.md'), 'utf8');
+    expect(doc).toMatch(/Migration: single-tool web deny/);
+    expect(doc).toMatch(/render\.agent-mcp\.acceptLoss/);
+    expect(doc).toMatch(/reconcile --accept-loss/);
+    expect(doc).toMatch(/DIFFERENT from/);
   });
 
   it('e00c47bb AC3 the fidelity spec documents the single-tool web deny disposition', () => {
