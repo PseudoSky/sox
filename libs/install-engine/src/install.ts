@@ -1947,6 +1947,34 @@ export interface DeclarativeInstallResult {
 }
 
 /**
+ * BUG-028 / 6c9fbf52: refusal text for an existing destination this extension does not own.
+ * Names the path, extension id, scope, and the exact remedies (move/rename the file, or
+ * re-run with the explicit `--force` CLI flag — never an env var, ADR-0013).
+ */
+function unownedDestinationRefusal(destPath: string, ext: string, scope: string): string {
+  return (
+    `[declarative-install] refusing to overwrite unowned file at ${destPath} (BUG-028). ` +
+    `This path exists but is not owned by extension '${ext}' in scope '${scope}'; ` +
+    `it may be a hand-authored or legacy host file. Nothing was changed. ` +
+    `To proceed, either move or rename ${destPath} out of the way and re-run the install, ` +
+    `or re-run with --force to overwrite it deliberately (the existing content is NOT backed up).`
+  );
+}
+
+/**
+ * 6c9fbf52: loud warning emitted when `--force` clobbers an unowned destination.
+ * The previous content is gone: install records no backup, so uninstall removes the
+ * path and never restores what was there before.
+ */
+function unownedDestinationForceWarning(destPath: string, ext: string, scope: string): string {
+  return (
+    `WARNING [declarative-install] --force: overwriting unowned path ${destPath} for extension ` +
+    `'${ext}' (scope '${scope}'). The previous content is permanently replaced and is not backed ` +
+    `up; \`uninstall ${ext}\` will delete this path and will NOT restore the previous content.`
+  );
+}
+
+/**
  * declarativeInstall — place extension content at the host's discovery path.
  *
  * This is the descriptor-driven install entrypoint ([install-lifecycle.3]).
@@ -2312,6 +2340,7 @@ export async function declarativeInstall(
 
       const destHash = fs.existsSync(destPath) ? hashPathForInstall(destPath) : '';
       let applied = false;
+      let forceClobberWarning: string | undefined;
       // Unowned-file guard (BUG-028): never clobber an existing file this
       // extension does not own.
       // `soxe install` must not silently overwrite a hand-authored / legacy host
@@ -2319,18 +2348,17 @@ export async function declarativeInstall(
       // divergent extension copy and opencode rejected it). If the destination
       // exists AND is not already owned by THIS extension's record, refuse unless
       // the caller explicitly passes force=true.
-      if (fs.existsSync(destPath) && !opts?.force) {
+      if (fs.existsSync(destPath)) {
         const ownershipIdx = OwnershipIndex.loadFromFile(ownershipPathFor(scope, workspaceRoot));
         const ownedByThis = ownershipIdx
           .get(descriptor.ext, scope)
           ?.entries?.some((e) => e.kind === 'file-drop' && e.path === destPath);
         if (!ownedByThis) {
-          throw new Error(
-            `[declarative-install] refusing to overwrite unowned file at ${destPath} (BUG-028). ` +
-              `This file exists but is not owned by extension '${descriptor.ext}' in scope '${scope}'. ` +
-              `It may be a hand-authored or legacy host file. Uninstall it first if it is a stale ` +
-              `extension install, or pass force=true to overwrite deliberately.`,
-          );
+          if (!opts?.force) {
+            throw new Error(unownedDestinationRefusal(destPath, descriptor.ext, scope));
+          }
+          forceClobberWarning = unownedDestinationForceWarning(destPath, descriptor.ext, scope);
+          console.warn(forceClobberWarning);
         }
       }
       if (srcHash !== destHash) {
@@ -2372,6 +2400,9 @@ export async function declarativeInstall(
       const fdResult: DeclarativeInstallResult = { host: hostName, scope, capability: 'file-drop', target: destPath, applied };
       if (surface.postInstallHint) {
         fdResult.hints = [surface.postInstallHint];
+      }
+      if (forceClobberWarning !== undefined) {
+        fdResult.hints = [...(fdResult.hints ?? []), forceClobberWarning];
       }
       results.push(fdResult);
       // [inv:no-untracked-injection]: the placed file/dir is owned.
@@ -2645,18 +2676,16 @@ export async function declarativeInstall(
             // absent from the source, so a directory this extension does not own
             // must be refused — never deleted — exactly like the primary file-drop
             // branch above.
-            if (fs.existsSync(hookDestPath) && !opts?.force) {
+            if (fs.existsSync(hookDestPath)) {
               const hookOwnershipIdx = OwnershipIndex.loadFromFile(ownershipPathFor(scope, workspaceRoot));
               const hookOwnedByThis = hookOwnershipIdx
                 .get(descriptor.ext, scope)
                 ?.entries?.some((e) => e.kind === 'file-drop' && e.path === hookDestPath);
               if (!hookOwnedByThis) {
-                throw new Error(
-                  `[declarative-install] refusing to overwrite unowned file at ${hookDestPath} (BUG-028). ` +
-                    `This file exists but is not owned by extension '${descriptor.ext}' in scope '${scope}'. ` +
-                    `It may be a hand-authored or legacy host file. Uninstall it first if it is a stale ` +
-                    `extension install, or pass force=true to overwrite deliberately.`,
-                );
+                if (!opts?.force) {
+                  throw new Error(unownedDestinationRefusal(hookDestPath, descriptor.ext, scope));
+                }
+                console.warn(unownedDestinationForceWarning(hookDestPath, descriptor.ext, scope));
               }
             }
             const hookSrcHash = hashPathForInstall(descriptor.srcPath);
