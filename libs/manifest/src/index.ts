@@ -298,6 +298,14 @@ const AGENT_MCP_RENDER_KEYS = new Set([
   'nativeTooling', 'toolAdvertisement', 'sanitization', 'nativeWebTools', 'acceptLoss',
 ]);
 
+/** The closed set of `agent` IR keys (an unknown key is a typo, never silently ignored). */
+const AGENT_IR_KEYS = new Set([
+  'name', 'description', 'model', 'mode', 'temperature', 'steps', 'tools', 'permission',
+]);
+
+/** The closed set of keys a symbolic `agent.tools` entry accepts. */
+const AGENT_IR_TOOL_REF_KEYS = new Set(['logical', 'server']);
+
 /** Keys each provider variant accepts (mirrors the server's strict provider union). */
 const AGENT_MCP_PROVIDER_KEYS: Record<string, readonly string[]> = {
   anthropic: ['type', 'model', 'env', 'temperature', 'maxTokens', 'timeoutMs', 'retryConfig', 'models', 'billingScope', 'tripwire'],
@@ -898,6 +906,17 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
       errors.push(`agent must be an object`);
     } else {
       const a = agent as Record<string, unknown>;
+      // Fail closed on unknown keys. The JSON schema declares additionalProperties:false
+      // but is never executed, so this is the enforcement (6fd94192). A host-agnostic
+      // concern such as roles-covered belongs in `capabilities`, not in the agent IR.
+      for (const k of Object.keys(a)) {
+        if (!AGENT_IR_KEYS.has(k)) {
+          errors.push(`agent.${k} is not a recognized agent key (allowed: ${[...AGENT_IR_KEYS].join(', ')})`);
+        }
+      }
+      if (a['steps'] !== undefined && (typeof a['steps'] !== 'number' || !Number.isFinite(a['steps']))) {
+        errors.push(`agent.steps must be a number when present`);
+      }
       for (const k of ['name', 'description', 'model', 'mode']) {
         const v = a[k];
         if (v !== undefined && typeof v !== 'string') {
@@ -916,6 +935,11 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
             if (typeof t === 'string') continue;
             if (typeof t === 'object' && t !== null && !Array.isArray(t)) {
               const o = t as Record<string, unknown>;
+              for (const k of Object.keys(o)) {
+                if (!AGENT_IR_TOOL_REF_KEYS.has(k)) {
+                  errors.push(`agent.tools[].${k} is not a recognized symbolic tool key (allowed: logical, server)`);
+                }
+              }
               if (typeof o['logical'] !== 'string' || typeof o['server'] !== 'string') {
                 errors.push(`agent.tools symbolic entries require string "logical" and "server"`);
               }
@@ -1216,6 +1240,7 @@ export const ManifestSchema: Record<string, unknown> = {
         handler: { type: 'string' },
         input_schema: { type: 'object', additionalProperties: true },
         output_schema: { type: 'object', additionalProperties: true },
+        description: { type: 'string' },
       },
     },
     tools: {
@@ -1319,6 +1344,7 @@ export const ManifestSchema: Record<string, unknown> = {
         model: { type: 'string' },
         temperature: { type: 'number' },
         mode: { type: 'string' },
+        steps: { type: 'number' },
         tools: {
           type: 'array',
           items: {

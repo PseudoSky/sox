@@ -11,6 +11,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { isManifest, ManifestSchema, validate } from './index.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1376,3 +1378,153 @@ describe('[service-type] service as a first-class manifest type', () => {
   });
 });
 
+
+// ─── agent IR closed-key check (6fd94192) ───────────────────────────────────
+
+/** `git show a6a4bad5:extensions/agents/review/extension.json` — carries the invalid `agent."roles-covered"`. */
+const REVIEW_MANIFEST_A6A4BAD5 = String.raw`
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "review",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "review",
+  "description": "Use when a change needs an independent read-only review: static mode judges tier and fidelity-gap validity, teeth, and structure coupling (G9, R3, R4, G12) and correctness, returning findings by severity with file:line evidence; blind mode accepts only a diff and the word Review (at Deep rigor also the specification and tests, never the implementer's reasoning). Has no edit, write, or shell tools. Triggers: \"review this diff\", \"static review\", \"blind review\", \"is this test valid\".",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "review",
+    "code-review",
+    "static-review",
+    "blind-review",
+    "read-only",
+    "test-review"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "review.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "review",
+    "description": "Read-only reviewer with static and blind modes. Returns findings by severity with file:line evidence; blind mode accepts only a diff and the word Review. Cannot edit, write, or run commands.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.1,
+    "tools": [
+      "read",
+      "glob",
+      "grep"
+    ],
+    "roles-covered": [
+      "static-reviewer:G9",
+      "static-reviewer:R3",
+      "static-reviewer:R4",
+      "static-reviewer:G12",
+      "static-reviewer:6.2",
+      "static-reviewer:6.5"
+    ],
+    "permission": {
+      "read": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "edit": "deny",
+      "write": "deny",
+      "bash": "deny",
+      "webfetch": "deny",
+      "websearch": "deny",
+      "task": "deny",
+      "skill": "deny",
+      "question": "deny"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v0.1.0",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ]
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.1
+    },
+    "agent-mcp": {
+      "model": "deepseek/deepseek-flash",
+      "toolMap": {},
+      "mcpServers": {}
+    }
+  },
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode",
+      "agent-mcp"
+    ]
+  }
+}`;
+
+declare const __dirname: string;
+
+describe('agent IR closed-key check (6fd94192)', () => {
+  const agentManifest = (agent: Record<string, unknown>): Record<string, unknown> =>
+    minimal('agent', { agent });
+
+  it('6fd94192 AC1: rejects the a6a4bad5 review manifest, naming agent.roles-covered', () => {
+    const result = validate(JSON.parse(REVIEW_MANIFEST_A6A4BAD5));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('agent.roles-covered'))).toBe(true);
+  });
+
+  it('6fd94192 AC2: accepts every current extensions/agents/*/extension.json', () => {
+    const root = join(__dirname, '..', '..', '..', 'extensions', 'agents');
+    const manifests = readdirSync(root)
+      .map((d) => join(root, d, 'extension.json'))
+      .filter((p) => existsSync(p));
+    expect(manifests.length).toBeGreaterThanOrEqual(20);
+    for (const p of manifests) {
+      const result = validate(JSON.parse(readFileSync(p, 'utf8')));
+      expect({ p, errors: result.errors }).toEqual({ p, errors: [] });
+    }
+  });
+
+  it('6fd94192 AC4: an unknown agent.* key fails closed, naming the key path', () => {
+    const errs = errors(agentManifest({ name: 'x', bogus: 1 }));
+    expect(errs.some((e) => e.includes('agent.bogus'))).toBe(true);
+  });
+
+  it('6fd94192 AC4: an unknown key inside a symbolic agent.tools entry fails closed', () => {
+    const errs = errors(
+      agentManifest({ tools: [{ logical: 'memory', server: 'memory-server', extra: true }] }),
+    );
+    expect(errs.some((e) => e.includes('agent.tools[].extra'))).toBe(true);
+  });
+
+  it('6fd94192 AC4: every documented agent key is accepted (no false positives)', () => {
+    const errs = errors(
+      agentManifest({
+        name: 'x', description: 'd', model: 'sonnet', mode: 'subagent', temperature: 0.1,
+        steps: 20, tools: ['Read', { logical: 'memory', server: 'memory-server' }],
+        permission: { edit: 'deny' },
+      }),
+    );
+    expect(errs).toEqual([]);
+  });
+
+  it('6fd94192: agent.steps must be a number', () => {
+    expect(errors(agentManifest({ steps: '20' })).some((e) => e.includes('agent.steps'))).toBe(true);
+  });
+});

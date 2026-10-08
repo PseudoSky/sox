@@ -263,6 +263,9 @@
         "output_schema": {
           "type": "object",
           "additionalProperties": true
+        },
+        "description": {
+          "type": "string"
         }
       }
     },
@@ -481,6 +484,9 @@
         },
         "mode": {
           "type": "string"
+        },
+        "steps": {
+          "type": "number"
         },
         "tools": {
           "type": "array",
