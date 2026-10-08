@@ -26,6 +26,7 @@
       "cache": true,
       "inputs": [
         "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/package.json",
         "{projectRoot}/tsconfig.lib.json"
       ]
     },

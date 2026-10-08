@@ -13,6 +13,12 @@
   ],
   "main": "./dist/policy.js",
   "types": "./dist/policy.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/policy.d.ts",
+      "default": "./dist/policy.js"
+    }
+  },
   "bin": {
     "sox-git-ro": "bin/sox-git",
     "sox-git-impl": "bin/sox-git",
