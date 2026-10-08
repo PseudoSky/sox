@@ -38,7 +38,21 @@ import { atomicWriteFileSync, withReconciledRetry } from './atomic-write.js';
  * breaking step; optional + backfill is the additive migration the spec's
  * Migration §3 names.
  */
-export type OwnedEntry =
+export type OwnedEntry = OwnedEntryShape & {
+  /**
+   * e46db6ed: the host (claude/opencode/agent-mcp/...) whose install placed this
+   * entry, stamped at install. `uninstall --host H` reverses only entries
+   * attributed to H. OPTIONAL and additive (OwnershipRecord stays version 1):
+   * host-independent entries (materialize, os-unit, lockfile-key, registry-record)
+   * never carry one, and entries written before this field existed are "legacy
+   * host-less" — attributed only by exact path/file match against a host's ledger
+   * (see `planOwnedUninstall`). Not part of the dedupe key: a re-install replaces
+   * a legacy entry with the stamped one.
+   */
+  host?: string;
+};
+
+type OwnedEntryShape =
   | { kind: 'file-drop'; path: string; contentHash?: string }
   | { kind: 'materialize'; path: string; contentHash?: string }
   | { kind: 'config-key'; file: string; keyPath: string; appliedHash?: string }
@@ -62,7 +76,10 @@ export type OwnedEntry =
 export interface OwnershipRecord {
   extId: string;
   scope: string;
-  /** Owning host (claude/codex) — informational; entries carry their own targets. */
+  /**
+   * Last-writer-wins host of the most recent install — INFORMATIONAL ONLY. It is
+   * never used to attribute an entry to a host (e46db6ed): use `OwnedEntry.host`.
+   */
   host?: string;
   /** Bundle this extension was installed as part of, if any (ADR-0004 store grouping). */
   bundleId?: string;

@@ -20,7 +20,16 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { diff, diffAll } from './diff.js';
 import { Ledger } from './ledger.js';
-import { ReverseAbortError, uninstall, update } from './lifecycle.js';
+import type { AgentCatalogClient } from './capabilities/agent-catalog.js';
+import {
+  AmbiguousLegacyUninstallError,
+  HostNotInstalledError,
+  ReverseAbortError,
+  uninstall,
+  uninstallOwned,
+  update,
+} from './lifecycle.js';
+import { OwnershipIndex, type OwnedEntry } from './ownership.js';
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
 
@@ -439,5 +448,327 @@ describe('update file-drop', () => {
     });
 
     expect(result.kind).toBe('none');
+  });
+});
+
+// ─── e46db6ed — host-attributed uninstall (uninstallOwned / planOwnedUninstall) ──────
+//
+// Unit scope: Ledger + OwnershipIndex on a temp dir, an injected fake catalog client.
+// No process is spawned and nothing touches the network or the real data root.
+
+describe('e46db6ed — uninstall --host H reverses only H', () => {
+  type Kind = 'skill' | 'agent';
+  let ws: string; // workspace root (project scope) / fake HOME (user scope)
+  let dataDir: string;
+  let deletes: string[];
+  let client: AgentCatalogClient;
+
+  beforeEach(() => {
+    ws = path.join(tmpDir, 'ws');
+    dataDir = path.join(ws, '.sox');
+    fs.mkdirSync(dataDir, { recursive: true });
+    deletes = [];
+    client = {
+      upsert: async () => {
+        throw new Error('upsert must not be called by uninstall');
+      },
+      read: async () => null,
+      delete: async (name: string) => {
+        deletes.push(name);
+      },
+    };
+  });
+
+  const ownFile = (): string => path.join(dataDir, 'ownership.json');
+  const hostPath = (host: string, ext: string, kind: Kind): string =>
+    kind === 'agent'
+      ? path.join(ws, `.${host}`, 'agents', `${ext}.md`)
+      : path.join(ws, `.${host}`, 'skills', ext, 'SKILL.md');
+
+  /**
+   * Seed what a real install of `ext` on `hosts` leaves behind: the placed file, a
+   * ledger file-drop action (repo-relative at project scope), and a host-stamped
+   * ownership entry. `agent-mcp` gets a catalog row instead of a file.
+   */
+  function seed(opts: {
+    ext: string;
+    hosts: string[];
+    scope: 'project' | 'user';
+    kind?: Kind;
+    stamp?: boolean;
+    extra?: OwnedEntry[];
+  }): void {
+    const kind = opts.kind ?? 'skill';
+    const isProject = opts.scope === 'project';
+    const ledger = Ledger.load(dataDir, { isProject });
+    const own = OwnershipIndex.loadFromFile(ownFile());
+    for (const host of opts.hosts) {
+      if (host === 'agent-mcp') {
+        ledger.record({
+          ext: opts.ext,
+          host,
+          scope: opts.scope,
+          action: { cap: 'agent-catalog', file: 'agent-mcp:catalog', keyPath: '', meta: { rowName: `${opts.ext}-row` } },
+        });
+        own.addEntries(opts.ext, opts.scope, [
+          { kind: 'agent-catalog', name: opts.ext, ...(opts.stamp === false ? {} : { host }) },
+        ], { host });
+        continue;
+      }
+      const p = hostPath(host, opts.ext, kind);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, `${host} ${opts.ext}\n`);
+      ledger.record({
+        ext: opts.ext,
+        host,
+        scope: opts.scope,
+        action: { cap: 'file-drop', file: isProject ? path.relative(ws, p) : p, keyPath: '', appliedHash: 'sha256:x' },
+      });
+      own.addEntries(opts.ext, opts.scope, [
+        { kind: 'file-drop', path: p, ...(opts.stamp === false ? {} : { host }) },
+      ], { host });
+    }
+    if (opts.extra) own.addEntries(opts.ext, opts.scope, opts.extra);
+    ledger.save();
+    own.save();
+  }
+
+  const run = (ext: string, scope: 'project' | 'user', host?: string) =>
+    uninstallOwned({
+      ext,
+      scope,
+      dataDir,
+      workspaceRoot: ws,
+      isProject: scope === 'project',
+      ownership: OwnershipIndex.loadFromFile(ownFile()),
+      catalogClient: client,
+      ...(host !== undefined ? { host } : {}),
+    });
+
+  const ledgerHostsOf = (ext: string): string[] =>
+    Ledger.load(dataDir).entries().filter((e) => e.ext === ext).map((e) => e.host).sort();
+  const record = (ext: string, scope: string) => OwnershipIndex.loadFromFile(ownFile()).get(ext, scope);
+
+  it('e46db6ed AC1 — project agent on claude,opencode,agent-mcp: one catalog delete, nothing left', async () => {
+    seed({ ext: 'reviewer', hosts: ['claude', 'opencode', 'agent-mcp'], scope: 'project', kind: 'agent' });
+    const paths = [hostPath('claude', 'reviewer', 'agent'), hostPath('opencode', 'reviewer', 'agent')];
+    for (const p of paths) expect(fs.existsSync(p)).toBe(true);
+
+    const r = await run('reviewer', 'project');
+
+    expect(deletes).toEqual(['reviewer-row']);
+    expect(ledgerHostsOf('reviewer')).toEqual([]);
+    expect(record('reviewer', 'project')).toBeUndefined();
+    for (const p of paths) expect(fs.existsSync(p)).toBe(false);
+    expect(r.full).toBe(true);
+  });
+
+  it('e46db6ed AC2 — a repeat uninstall finds nothing and deletes no catalog row again', async () => {
+    seed({ ext: 'reviewer', hosts: ['claude', 'opencode', 'agent-mcp'], scope: 'project', kind: 'agent' });
+    await run('reviewer', 'project');
+    deletes.length = 0;
+
+    const again = await run('reviewer', 'project');
+
+    expect(deletes).toEqual([]);
+    expect(again.hostsRemoved).toEqual([]);
+    expect(again.removedPaths).toEqual([]);
+  });
+
+  it('e46db6ed AC3 — skill on claude+opencode: --host opencode removes only opencode', async () => {
+    seed({ ext: 'tui', hosts: ['claude', 'opencode'], scope: 'user' });
+    const claudeP = hostPath('claude', 'tui', 'skill');
+    const openP = hostPath('opencode', 'tui', 'skill');
+
+    const r = await run('tui', 'user', 'opencode');
+
+    expect(fs.existsSync(openP)).toBe(false);
+    expect(fs.existsSync(claudeP)).toBe(true);
+    expect(ledgerHostsOf('tui')).toEqual(['claude']);
+    const rec = record('tui', 'user');
+    expect(rec?.entries.map((e) => (e.kind === 'file-drop' ? e.path : ''))).toEqual([claudeP]);
+    expect(r.hostsRemoved).toEqual(['opencode']);
+    expect(r.full).toBe(false);
+    expect(r.remainingHosts).toEqual(['claude']);
+  });
+
+  it('e46db6ed AC4 — the last --host takes the ownership record and ledger with it', async () => {
+    seed({ ext: 'tui', hosts: ['claude', 'opencode'], scope: 'user' });
+    await run('tui', 'user', 'opencode');
+    expect(fs.existsSync(hostPath('claude', 'tui', 'skill'))).toBe(true);
+    expect(record('tui', 'user')).toBeDefined();
+
+    const r = await run('tui', 'user', 'claude');
+
+    expect(fs.existsSync(hostPath('claude', 'tui', 'skill'))).toBe(false);
+    expect(ledgerHostsOf('tui')).toEqual([]);
+    expect(record('tui', 'user')).toBeUndefined();
+    expect(r.full).toBe(true);
+    expect(r.remainingHosts).toEqual([]);
+  });
+
+  it('e46db6ed AC5 — --host never installed throws and touches nothing', async () => {
+    seed({ ext: 'tui', hosts: ['claude', 'opencode'], scope: 'user' });
+    const before = [fs.readFileSync(ownFile(), 'utf8'), fs.readFileSync(path.join(dataDir, 'ledger.json'), 'utf8')];
+
+    await expect(run('tui', 'user', 'codex')).rejects.toBeInstanceOf(HostNotInstalledError);
+
+    expect(fs.readFileSync(ownFile(), 'utf8')).toBe(before[0]);
+    expect(fs.readFileSync(path.join(dataDir, 'ledger.json'), 'utf8')).toBe(before[1]);
+    expect(fs.existsSync(hostPath('claude', 'tui', 'skill'))).toBe(true);
+    expect(fs.existsSync(hostPath('opencode', 'tui', 'skill'))).toBe(true);
+    expect(deletes).toEqual([]);
+  });
+
+  it('e46db6ed AC6 — no --host removes every host and reports them all', async () => {
+    seed({ ext: 'tui', hosts: ['claude', 'opencode', 'agent-mcp'], scope: 'user' });
+
+    const r = await run('tui', 'user');
+
+    expect(r.hostsRemoved).toEqual(['agent-mcp', 'claude', 'opencode']);
+    expect(r.full).toBe(true);
+    expect(deletes).toEqual(['tui-row']);
+  });
+
+  it.each([
+    ['claude', 'opencode'],
+    ['opencode', 'claude'],
+  ])('e46db6ed AC7 — install %s then %s: per-host removals preserve foreign keys, record goes last', async (first, second) => {
+    // A shared host config per host, each with a foreign key beside sox's.
+    const cfg = (h: string): string => path.join(ws, `.${h}`, 'settings.json');
+    const entries: OwnedEntry[] = [];
+    const ledger = Ledger.load(dataDir);
+    for (const h of [first, second]) {
+      fs.mkdirSync(path.dirname(cfg(h)), { recursive: true });
+      fs.writeFileSync(cfg(h), JSON.stringify({ foreign: h, mcpServers: { svc: { command: 'x' } } }));
+      ledger.record({
+        ext: 'svc',
+        host: h,
+        scope: 'user',
+        action: { cap: 'config-merge', file: cfg(h), keyPath: 'mcpServers.svc', appliedHash: 'sha256:x' },
+      });
+      entries.push({ kind: 'config-key', file: cfg(h), keyPath: 'mcpServers.svc', host: h });
+    }
+    ledger.save();
+    const own = OwnershipIndex.loadFromFile(ownFile());
+    // Install order decides the (informational) record-level host; it must not matter.
+    own.addEntries('svc', 'user', [entries[0]!], { host: first });
+    own.addEntries('svc', 'user', [entries[1]!], { host: second });
+    own.save();
+    const read = (h: string): Record<string, unknown> => JSON.parse(fs.readFileSync(cfg(h), 'utf8')) as Record<string, unknown>;
+
+    const r1 = await run('svc', 'user', 'claude');
+    expect(r1.full).toBe(false);
+    expect(read('claude')).toEqual({ foreign: 'claude', mcpServers: {} });
+    expect(read('opencode')).toEqual({ foreign: 'opencode', mcpServers: { svc: { command: 'x' } } });
+    expect(record('svc', 'user')).toBeDefined();
+
+    const r2 = await run('svc', 'user', 'opencode');
+    expect(r2.full).toBe(true);
+    expect(read('opencode')).toEqual({ foreign: 'opencode', mcpServers: {} });
+    expect(record('svc', 'user')).toBeUndefined();
+    expect(ledgerHostsOf('svc')).toEqual([]);
+  });
+
+  it('e46db6ed AC7 — a stale last-writer record host is never used for attribution', async () => {
+    seed({ ext: 'tui', hosts: ['claude', 'opencode'], scope: 'user' });
+    // addEntries left record.host = 'opencode' (last writer). Removing claude must not read it.
+    expect(record('tui', 'user')?.host).toBe('opencode');
+
+    await run('tui', 'user', 'claude');
+
+    expect(fs.existsSync(hostPath('claude', 'tui', 'skill'))).toBe(false);
+    expect(fs.existsSync(hostPath('opencode', 'tui', 'skill'))).toBe(true);
+  });
+
+  it('e46db6ed AC8 — legacy host-less record: --host attributes by exact ledger path, never another host', async () => {
+    seed({ ext: 'tui', hosts: ['claude', 'opencode'], scope: 'project', stamp: false });
+    expect(record('tui', 'project')?.entries.every((e) => e.kind !== 'file-drop' || e.host === undefined)).toBe(true);
+
+    const r = await run('tui', 'project', 'claude');
+
+    expect(fs.existsSync(hostPath('claude', 'tui', 'skill'))).toBe(false);
+    expect(fs.existsSync(hostPath('opencode', 'tui', 'skill'))).toBe(true);
+    expect(r.full).toBe(false);
+    expect(ledgerHostsOf('tui')).toEqual(['opencode']);
+    expect(record('tui', 'project')?.entries).toHaveLength(1);
+  });
+
+  it('e46db6ed AC8 — legacy entry no ledger claims: refuse, name the all-hosts form, touch nothing', async () => {
+    seed({
+      ext: 'tui',
+      hosts: ['claude', 'opencode'],
+      scope: 'user',
+      stamp: false,
+      extra: [{ kind: 'file-drop', path: path.join(ws, 'mystery', 'tui') }],
+    });
+    fs.mkdirSync(path.join(ws, 'mystery'), { recursive: true });
+    fs.writeFileSync(path.join(ws, 'mystery', 'tui'), 'x');
+    const before = fs.readFileSync(ownFile(), 'utf8');
+
+    const err = await run('tui', 'user', 'claude').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AmbiguousLegacyUninstallError);
+    expect((err as Error).message).toContain('soxe uninstall tui -s user');
+    expect(fs.readFileSync(ownFile(), 'utf8')).toBe(before);
+    expect(fs.existsSync(hostPath('claude', 'tui', 'skill'))).toBe(true);
+    expect(fs.existsSync(path.join(ws, 'mystery', 'tui'))).toBe(true);
+
+    // The named all-hosts form works and removes the unattributed entry too.
+    const all = await run('tui', 'user');
+    expect(all.full).toBe(true);
+    expect(fs.existsSync(path.join(ws, 'mystery', 'tui'))).toBe(false);
+  });
+
+  it('host-independent entries (materialize, propagation) wait for the last host; os-unit hook runs once, last', async () => {
+    const store = path.join(ws, 'ext', 'svc');
+    fs.mkdirSync(store, { recursive: true });
+    fs.writeFileSync(path.join(store, 'index.js'), '1');
+    seed({
+      ext: 'svc',
+      hosts: ['claude', 'opencode'],
+      scope: 'user',
+      extra: [
+        { kind: 'materialize', path: store },
+        { kind: 'config-key', file: path.join(ws, 'proj', '.mcp.json'), keyPath: 'mcpServers.svc' },
+        { kind: 'os-unit', label: 'svc.unit', unitPath: '/x/svc.plist', supervisor: 'launchd', appliedHash: 'h' },
+      ],
+    });
+    const seen: string[][] = [];
+    const withHook = (host?: string) =>
+      uninstallOwned({
+        ext: 'svc',
+        scope: 'user',
+        dataDir,
+        workspaceRoot: ws,
+        isProject: false,
+        ownership: OwnershipIndex.loadFromFile(ownFile()),
+        catalogClient: client,
+        reverseHostIndependent: async (es) => {
+          seen.push(es.map((e) => e.kind));
+        },
+        ...(host !== undefined ? { host } : {}),
+      });
+
+    await withHook('claude');
+    expect(fs.existsSync(store)).toBe(true);
+    expect(seen).toEqual([]);
+    expect(record('svc', 'user')?.entries.map((e) => e.kind).sort()).toEqual(
+      ['config-key', 'file-drop', 'materialize', 'os-unit'],
+    );
+
+    await withHook('opencode');
+    expect(fs.existsSync(store)).toBe(false);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('os-unit');
+    expect(record('svc', 'user')).toBeUndefined();
+  });
+
+  it('install stamps OwnedEntry.host and a re-install replaces a legacy host-less entry', () => {
+    const own = OwnershipIndex.loadFromFile(ownFile());
+    own.addEntries('tui', 'user', [{ kind: 'file-drop', path: '/p' }]);
+    own.addEntries('tui', 'user', [{ kind: 'file-drop', path: '/p', host: 'claude' }]);
+    own.save();
+    expect(record('tui', 'user')?.entries).toEqual([{ kind: 'file-drop', path: '/p', host: 'claude' }]);
   });
 });

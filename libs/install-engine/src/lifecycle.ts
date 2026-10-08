@@ -23,6 +23,8 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Ledger, LedgerAction } from './ledger.js';
+import { OwnershipIndex, type OwnedEntry } from './ownership.js';
+import type { AgentCatalogClient } from './capabilities/agent-catalog.js';
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
 
@@ -65,6 +67,11 @@ export interface LifecycleCtx {
   isProject?: boolean;
   /** Optional pre-loaded ledger (for test injection). */
   ledger?: Ledger;
+  /**
+   * Optional agent-catalog client (for test injection). Defaults to the MCP-over-stdio
+   * client that spawns the agent-mcp server. Threaded to `agent-catalog` reversal only.
+   */
+  catalogClient?: AgentCatalogClient;
 }
 
 export interface UpdateCtx extends LifecycleCtx {
@@ -284,6 +291,7 @@ async function reverseAction(action: LedgerAction, ctx: LifecycleCtx): Promise<v
       await agentCatalogReverse({
         ext: ctx.ext,
         ...(typeof rowName === 'string' && rowName !== '' ? { name: rowName } : {}),
+        ...(ctx.catalogClient !== undefined ? { client: ctx.catalogClient } : {}),
       });
       break;
     }
@@ -370,6 +378,343 @@ async function reverseAction(action: LedgerAction, ctx: LifecycleCtx): Promise<v
       );
     }
   }
+}
+
+// ─── Ownership-driven uninstall (e46db6ed) ────────────────────────────────────
+//
+// ADR-0004 §D6: `uninstall --host H` reverses only entries attributed to H
+// (`OwnedEntry.host`, stamped at install) and H's ledger entry. Host-independent
+// entries (materialize, os-unit, lockfile-key, registry-record) carry no host and
+// go, with the index record, only when no host-bearing entries remain. No `--host`
+// means all hosts. Host-less legacy entries are attributed only by exact match of
+// `path`/`file` to a host's ledger actions; otherwise the verb refuses and names
+// the all-hosts form. The record-level `host` is informational and never used for
+// attribution.
+
+/** `--host X` names a host that has no footprint for (ext, scope): nothing was touched. */
+export class HostNotInstalledError extends Error {
+  constructor(
+    public readonly ext: string,
+    public readonly host: string,
+    public readonly scope: string,
+    public readonly installedHosts: string[],
+  ) {
+    super(
+      `extension '${ext}' is not installed on host '${host}' in scope '${scope}'` +
+        (installedHosts.length > 0 ? ` (installed on: ${installedHosts.join(', ')})` : ''),
+    );
+    this.name = 'HostNotInstalledError';
+  }
+}
+
+/**
+ * `--host H` on a record holding host-less legacy entries that no host's ledger
+ * claims by exact path: attributing them would be a guess that could delete another
+ * host's files, so the verb refuses and touches nothing.
+ */
+export class AmbiguousLegacyUninstallError extends Error {
+  constructor(
+    public readonly ext: string,
+    public readonly host: string,
+    public readonly scope: string,
+    public readonly unattributed: string[],
+  ) {
+    super(
+      `cannot attribute ${unattributed.length} legacy ownership entr${unattributed.length === 1 ? 'y' : 'ies'} ` +
+        `of '${ext}' (scope '${scope}') to host '${host}' (${unattributed.join(', ')}). ` +
+        `Nothing was removed. Remove every host at once with: soxe uninstall ${ext} -s ${scope}`,
+    );
+    this.name = 'AmbiguousLegacyUninstallError';
+  }
+}
+
+type HostBearingEntry = Extract<
+  OwnedEntry,
+  { kind: 'file-drop' | 'config-key' | 'array-values' | 'object-array-values' | 'agent-catalog' }
+>;
+
+const TRUST_KEYPATH_PREFIX = 'trust:';
+
+function isHostBearingKind(e: OwnedEntry): e is HostBearingEntry {
+  return (
+    e.kind === 'file-drop' ||
+    e.kind === 'config-key' ||
+    e.kind === 'array-values' ||
+    e.kind === 'object-array-values' ||
+    e.kind === 'agent-catalog'
+  );
+}
+
+/**
+ * Host-less config-key entries written by the project `.mcp.json` / `~/.claude.json`
+ * trust propagators (mcp-project-sync, mcp-trust-sync). They are reversed by those
+ * modules on full removal, never by host attribution.
+ */
+function isPropagationEntry(e: OwnedEntry): boolean {
+  if (e.kind !== 'config-key' || e.host !== undefined) return false;
+  return (
+    (e.file.endsWith('.mcp.json') && e.keyPath.startsWith('mcpServers.')) ||
+    e.keyPath.startsWith(TRUST_KEYPATH_PREFIX)
+  );
+}
+
+/** True when `e` takes part in host attribution (placed by a specific host's install). */
+function isHostAttributable(e: OwnedEntry): e is HostBearingEntry {
+  return isHostBearingKind(e) && !isPropagationEntry(e);
+}
+
+function entryLabel(e: OwnedEntry): string {
+  switch (e.kind) {
+    case 'file-drop':
+    case 'materialize':
+      return e.path;
+    case 'config-key':
+    case 'array-values':
+    case 'object-array-values':
+      return `${e.file}#${e.keyPath}`;
+    case 'agent-catalog':
+      return `agent-catalog:${e.name}`;
+    default:
+      return e.kind;
+  }
+}
+
+export interface OwnedUninstallInput {
+  ext: string;
+  scope: HostScope;
+  /** The scope's data dir (holds ledger.json / ownership.json). */
+  dataDir: string;
+  /** Workspace root — project-ledger paths are repo-relative to it. */
+  workspaceRoot: string;
+  isProject: boolean;
+  /** Host to remove; absent = all hosts. */
+  host?: string;
+  ownership: OwnershipIndex;
+  /** Optional pre-loaded ledger (read for planning). */
+  ledger?: Ledger;
+}
+
+export interface OwnedUninstallPlan {
+  /** Hosts whose ledger entry is reversed. */
+  hosts: string[];
+  /** Entries this uninstall removes from the record. */
+  entries: OwnedEntry[];
+  /** True when nothing host-bearing remains: the record and shared state go too. */
+  full: boolean;
+  /** Hosts that keep an install after this uninstall (empty when `full`). */
+  remainingHosts: string[];
+  /** Hosts with any footprint before the uninstall. */
+  installedHosts: string[];
+}
+
+function resolveLedgerFile(file: string, workspaceRoot: string): string {
+  return path.isAbsolute(file) ? file : path.join(workspaceRoot, file);
+}
+
+/** Hosts whose ledger claims `e` by exact path/file (+keyPath for config entries). */
+function ledgerHostsClaiming(
+  e: HostBearingEntry,
+  ledgerByHost: Map<string, LedgerAction[]>,
+  workspaceRoot: string,
+): string[] {
+  const out: string[] = [];
+  for (const [host, actions] of ledgerByHost) {
+    const claimed = actions.some((a) => {
+      switch (e.kind) {
+        case 'file-drop':
+          return a.cap === 'file-drop' && resolveLedgerFile(a.file, workspaceRoot) === e.path;
+        case 'config-key':
+          return (
+            a.cap === 'config-merge' &&
+            a.keyPath === e.keyPath &&
+            resolveLedgerFile(a.file, workspaceRoot) === e.file
+          );
+        case 'array-values':
+          return (
+            a.cap === 'array-merge' &&
+            a.keyPath === e.keyPath &&
+            resolveLedgerFile(a.file, workspaceRoot) === e.file
+          );
+        case 'object-array-values':
+          return (
+            a.cap === 'object-array-merge' &&
+            a.keyPath === e.keyPath &&
+            resolveLedgerFile(a.file, workspaceRoot) === e.file
+          );
+        case 'agent-catalog': {
+          if (a.cap !== 'agent-catalog') return false;
+          const rowName = a.meta?.['rowName'];
+          return typeof rowName !== 'string' || rowName === e.name;
+        }
+      }
+    });
+    if (claimed) out.push(host);
+  }
+  return out;
+}
+
+/**
+ * Decide, without touching anything, what `uninstall [--host H]` would reverse.
+ * Throws `HostNotInstalledError` / `AmbiguousLegacyUninstallError` — both before any
+ * mutation, so a refused uninstall provably touches nothing.
+ */
+export function planOwnedUninstall(input: OwnedUninstallInput): OwnedUninstallPlan {
+  const { ext, scope, host, ownership } = input;
+  const ledger = input.ledger ?? Ledger.load(input.dataDir, { isProject: input.isProject });
+  const rec = ownership.get(ext, scope);
+  const entries = rec?.entries ?? [];
+
+  const ledgerByHost = new Map<string, LedgerAction[]>();
+  for (const le of ledger.entries()) {
+    if (le.ext === ext && le.scope === scope) {
+      ledgerByHost.set(le.host, [...(ledgerByHost.get(le.host) ?? []), ...le.actions]);
+    }
+  }
+  const ledgerHosts = [...ledgerByHost.keys()];
+
+  // Per-entry owner set: the stamped host, else every host whose ledger claims it.
+  const owners = new Map<OwnedEntry, string[]>();
+  const unattributed: OwnedEntry[] = [];
+  for (const e of entries) {
+    if (!isHostAttributable(e)) continue;
+    const o = e.host !== undefined ? [e.host] : ledgerHostsClaiming(e, ledgerByHost, input.workspaceRoot);
+    owners.set(e, o);
+    if (o.length === 0) unattributed.push(e);
+  }
+
+  const installed = new Set<string>(ledgerHosts);
+  for (const o of owners.values()) for (const h of o) installed.add(h);
+  const installedHosts = [...installed].sort();
+
+  if (host === undefined) {
+    // All hosts. owned.host is a legacy fallback only (informational elsewhere).
+    const hosts = new Set<string>(ledgerHosts);
+    if (rec !== undefined) hosts.add(rec.host ?? 'claude');
+    return {
+      hosts: [...hosts].sort(),
+      entries: [...entries],
+      full: true,
+      remainingHosts: [],
+      installedHosts,
+    };
+  }
+
+  const knownViaRecord = rec !== undefined && rec.host === host && entries.some(isHostAttributable);
+  if (!installed.has(host) && !knownViaRecord) {
+    throw new HostNotInstalledError(ext, host, scope, installedHosts);
+  }
+  if (unattributed.length > 0) {
+    throw new AmbiguousLegacyUninstallError(ext, host, scope, unattributed.map(entryLabel));
+  }
+
+  const target: string = host;
+  const toRemove: OwnedEntry[] = [];
+  const keptOwners = new Set<string>();
+  let keptHostBearing = 0;
+  for (const e of entries) {
+    const o: string[] | undefined = owners.get(e);
+    if (o === undefined) continue; // host-independent or propagation: handled on full
+    if (o.includes(target) && o.every((x) => x === target)) {
+      toRemove.push(e);
+    } else {
+      keptHostBearing++;
+      o.filter((x) => x !== target).forEach((x) => keptOwners.add(x));
+    }
+  }
+  ledgerHosts.filter((x) => x !== target).forEach((x) => keptOwners.add(x));
+
+  const full = keptHostBearing === 0 && keptOwners.size === 0;
+  return {
+    hosts: [host],
+    entries: full ? [...entries] : toRemove,
+    full,
+    remainingHosts: full ? [] : [...keptOwners].sort(),
+    installedHosts,
+  };
+}
+
+export interface OwnedUninstallResult {
+  /** Hosts whose ledger entry was reversed. */
+  hostsRemoved: string[];
+  /** Filesystem paths deleted (file-drop / materialize). */
+  removedPaths: string[];
+  /** The ownership record is gone; the caller now removes lockfile/config/install record. */
+  full: boolean;
+  /** Hosts still installed (empty when `full`). */
+  remainingHosts: string[];
+  warnings: string[];
+}
+
+/**
+ * Execute `uninstall [--host H]` against the ownership index + ledger.
+ * Reverses each affected host's ledger entry, deletes the entries attributed to the
+ * removed host(s), and — only when nothing host-bearing remains — the host-independent
+ * entries and the record itself. Non-fatal removal problems are returned as `warnings`.
+ *
+ * `reverseHostIndependent` runs on full removal only, before the filesystem entries are
+ * deleted (the CLI hooks OS-unit teardown here, which needs the process supervisor).
+ */
+export async function uninstallOwned(
+  input: OwnedUninstallInput & {
+    catalogClient?: AgentCatalogClient;
+    reverseHostIndependent?: (entries: OwnedEntry[]) => Promise<void>;
+  },
+): Promise<OwnedUninstallResult> {
+  const plan = planOwnedUninstall(input);
+  const { ext, scope, ownership } = input;
+  const warnings: string[] = [];
+
+  for (const h of plan.hosts) {
+    await uninstall({
+      ext,
+      host: h,
+      scope,
+      scopeRoot: input.dataDir,
+      isProject: input.isProject,
+      ...(input.catalogClient !== undefined ? { catalogClient: input.catalogClient } : {}),
+    });
+  }
+
+  if (plan.full && input.reverseHostIndependent !== undefined) {
+    await input.reverseHostIndependent(plan.entries);
+  }
+
+  const removedPaths: string[] = [];
+  for (const e of plan.entries) {
+    if (e.kind !== 'file-drop' && e.kind !== 'materialize') continue;
+    try {
+      if (fs.existsSync(e.path)) {
+        fs.rmSync(e.path, { recursive: true, force: true });
+        removedPaths.push(e.path);
+      }
+    } catch (err) {
+      warnings.push(`could not remove ${e.path}: ${String(err)}`);
+    }
+  }
+
+  const rec = ownership.get(ext, scope);
+  if (plan.full) {
+    if (rec !== undefined) ownership.remove(ext, scope);
+  } else if (rec !== undefined) {
+    const gone = new Set<OwnedEntry>(plan.entries);
+    ownership.record({
+      extId: ext,
+      scope,
+      entries: rec.entries.filter((e) => !gone.has(e)),
+    });
+  }
+  if (rec !== undefined) ownership.save();
+
+  // Hosts actually reversed: those with a footprint (a never-installed owned.host
+  // fallback reverses nothing and is not reported).
+  const hostsRemoved = plan.hosts.filter((h) => plan.installedHosts.includes(h));
+  return {
+    hostsRemoved: hostsRemoved.length > 0 ? hostsRemoved : plan.hosts,
+    removedPaths,
+    full: plan.full,
+    remainingHosts: plan.remainingHosts,
+    warnings,
+  };
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────

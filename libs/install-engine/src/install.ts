@@ -2375,7 +2375,7 @@ export async function declarativeInstall(
       }
       results.push(fdResult);
       // [inv:no-untracked-injection]: the placed file/dir is owned.
-      ownedEntries.push({ kind: 'file-drop', path: destPath });
+      ownedEntries.push({ kind: 'file-drop', path: destPath, host: hostName });
 
     } else if (surface.capability === 'config-merge') {
       // config-merge: set keyPath to value in the shared config file.
@@ -2499,6 +2499,7 @@ export async function declarativeInstall(
         kind: 'config-key',
         file: absTarget,
         keyPath: resolvedKeyPath,
+        host: hostName,
       });
     } else if (surface.capability === 'agent-catalog') {
       // agent-catalog: upsert an agent row into a remote catalog over that
@@ -2545,7 +2546,7 @@ export async function declarativeInstall(
       results.push(acResult);
       // [inv:no-untracked-injection]: the catalog row is owned. No filesystem
       // target — the ledger's agent-catalog action reverses it (agent_delete).
-      ownedEntries.push({ kind: 'agent-catalog', name: descriptor.ext });
+      ownedEntries.push({ kind: 'agent-catalog', name: descriptor.ext, host: hostName });
     } else if (surface.capability === 'array-merge') {
       // array-merge: append values to an array in the shared config file.
       // Used for permissions arrays, MCP trust arrays, etc.
@@ -2578,6 +2579,7 @@ export async function declarativeInstall(
         file: absTarget,
         keyPath: resolvedKeyPath,
         values: descriptor.configValues,
+        host: hostName,
       });
     } else if (surface.capability === 'object-array-merge') {
       // object-array-merge: append identity-tagged objects to an array.
@@ -2623,6 +2625,7 @@ export async function declarativeInstall(
         entries: descriptor.configEntries,
         identityField,
         identityValue,
+        host: hostName,
       });
 
       // Secondary surface: hook-script file-drop for type:hook extensions.
@@ -2665,7 +2668,7 @@ export async function declarativeInstall(
               mirrorPathSync(descriptor.srcPath, hookDestPath);
               hookApplied = true;
             }
-            ownedEntries.push({ kind: 'file-drop', path: hookDestPath });
+            ownedEntries.push({ kind: 'file-drop', path: hookDestPath, host: hostName });
             // Record in ledger for reversal
             const hookScriptLedgerFilePath = isProject
               ? path.relative(workspaceRoot, hookDestPath)

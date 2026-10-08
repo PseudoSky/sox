@@ -118,8 +118,14 @@ import {
 // print help text, and `@nx/enforce-module-boundaries` rejects it:
 //   "Static imports of lazy-loaded libraries are forbidden."
 import {
+  AmbiguousLegacyUninstallError,
+  HostNotInstalledError,
+  planOwnedUninstall,
   SCOPES,
+  uninstallOwned,
   type DeclarativeInstallResult,
+  type OwnedUninstallPlan,
+  type OwnedUninstallResult,
   type InstallDescriptor,
   type InstallRecord,
   type OwnedEntry,
@@ -134,7 +140,6 @@ import {
   findLocalExtension,
   getScopePath,
   install,
-  uninstall as lifecycleUninstall,
   update as lifecycleUpdate,
   loadConfig,
   loadExtensionManifest,
@@ -4015,7 +4020,8 @@ async function uninstallOne(
   // ── ADR-0004 §D6 [inv:reversible-injection]: consume the ownership index ────
   const dataDir = dataRoot(scopeTyped as DataScope, root);
   const pathMod = require('node:path') as typeof import('node:path');
-  const ownership = OwnershipIndex.loadFromFile(pathMod.join(dataDir, 'ownership.json'));
+  const ownershipFile = pathMod.join(dataDir, 'ownership.json');
+  let ownership = OwnershipIndex.loadFromFile(ownershipFile);
   const owned = ownership.get(id, scopeTyped);
 
   // BL-275/C2 left a gap: when there is no lockfile at all (fresh/lockfile-less
@@ -4029,85 +4035,121 @@ async function uninstallOne(
     process.exit(1);
   }
 
-  // ── #16728 durable fix: reverse the propagated project .mcp.json merges ─────
-  if (scopeTyped === 'user' || scopeTyped === 'org') {
+  // e46db6ed: --host H removes only H's footprint; no --host removes every host.
+  // The plan runs BEFORE any mutation (mcp-sync reversals included) so a refused
+  // `--host` provably touches nothing.
+  const hostFlag = flags['host'];
+  if (hostFlag !== undefined && (hostFlag === '' || hostFlag === 'true' || hostFlag.includes(','))) {
+    process.stderr.write(`${CLI} uninstall: --host takes exactly one host (omit it to remove every host)\n`);
+    process.exit(1);
+  }
+  const ownedInput = {
+    ext: id,
+    scope: scopeTyped,
+    dataDir,
+    workspaceRoot: root,
+    isProject: scopeTyped === 'project',
+    ...(hostFlag !== undefined ? { host: hostFlag } : {}),
+  };
+  let plan: OwnedUninstallPlan;
+  try {
+    plan = planOwnedUninstall({ ...ownedInput, ownership });
+  } catch (e) {
+    if (e instanceof HostNotInstalledError || e instanceof AmbiguousLegacyUninstallError) {
+      process.stderr.write(`${CLI} uninstall: ${e.message}\n`);
+      process.exit(1);
+    }
+    throw e;
+  }
+
+  if (plan.full) {
+    // ── #16728 durable fix: reverse the propagated project .mcp.json merges ───
+    if (scopeTyped === 'user' || scopeTyped === 'org') {
+      try {
+        const host0 = owned?.host ?? 'claude';
+        const reversed = await reverseUserMcpFromProjects({ extId: id, host: host0 });
+        for (const p of reversed) {
+          process.stdout.write(`${CLI} uninstall: mcp-sync removed  ${id} ← ${p}\n`);
+        }
+      } catch (e) {
+        process.stderr.write(`${CLI} uninstall: warning: mcp project-sync reversal failed for '${id}' — ${String(e)}\n`);
+      }
+    }
+
+    // ── mcp-trust durable fix: reverse any trust grants sox made (any scope) ──
+    // Trust entries always live in the user-scope ownership record regardless of
+    // which install scope created them (~/.claude.json is a single user-level
+    // file) — unlike the .mcp.json propagation above, this is NOT scope-gated.
     try {
-      const host0 = owned?.host ?? 'claude';
-      const reversed = await reverseUserMcpFromProjects({ extId: id, host: host0 });
-      for (const p of reversed) {
-        process.stdout.write(`${CLI} uninstall: mcp-sync removed  ${id} ← ${p}\n`);
+      const hostTrust = owned?.host ?? 'claude';
+      const untrusted = await reverseMcpTrustFromProjects({ extId: id, host: hostTrust });
+      for (const p of untrusted) {
+        process.stdout.write(`${CLI} uninstall: mcp-trust removed  ${id} ← ${p}\n`);
       }
     } catch (e) {
-      process.stderr.write(`${CLI} uninstall: warning: mcp project-sync reversal failed for '${id}' — ${String(e)}\n`);
+      process.stderr.write(`${CLI} uninstall: warning: mcp-trust reversal failed for '${id}' — ${String(e)}\n`);
     }
+    // The reversals above rewrite ownership.json through their own index handles.
+    ownership = OwnershipIndex.loadFromFile(ownershipFile);
   }
 
-  // ── mcp-trust durable fix: reverse any trust grants sox made (any scope) ────
-  // Trust entries always live in the user-scope ownership record regardless of
-  // which install scope created them (~/.claude.json is a single user-level
-  // file) — unlike the .mcp.json propagation above, this is NOT scope-gated.
-  try {
-    const hostTrust = owned?.host ?? 'claude';
-    const untrusted = await reverseMcpTrustFromProjects({ extId: id, host: hostTrust });
-    for (const p of untrusted) {
-      process.stdout.write(`${CLI} uninstall: mcp-trust removed  ${id} ← ${p}\n`);
-    }
-  } catch (e) {
-    process.stderr.write(`${CLI} uninstall: warning: mcp-trust reversal failed for '${id}' — ${String(e)}\n`);
-  }
-
-  if (owned !== undefined) {
-    const host = owned.host ?? 'claude';
+  let removal: OwnedUninstallResult = {
+    hostsRemoved: [],
+    removedPaths: [],
+    full: plan.full,
+    remainingHosts: plan.remainingHosts,
+    warnings: [],
+  };
+  if (owned !== undefined || plan.hosts.length > 0) {
     try {
-      await lifecycleUninstall({
-        ext: id,
-        host,
-        scope: scopeTyped,
-        scopeRoot: dataDir,
-        isProject: scopeTyped === 'project',
+      removal = await uninstallOwned({
+        ...ownedInput,
+        ownership,
+        reverseHostIndependent: async (entries) => {
+          for (const entry of entries) {
+            if (entry.kind !== 'os-unit') continue;
+            const platform = getOsUnitPlatform(entry.supervisor);
+            const unitDir = process.env['SOX_OS_UNIT_DIR'] ?? pathMod.dirname(entry.unitPath);
+            const ctx = resolveOsUnitContext(id, scopeTyped, root, {});
+            if (ctx?.entrypoint) {
+              const res = await unloadThenReap({
+                label: entry.label,
+                entrypoint: ctx.entrypoint,
+                platform,
+                unitDir,
+                excludePids: [process.pid],
+                log: (m) => process.stdout.write(`${CLI} uninstall: ${m}\n`),
+              });
+              if (res.undead) {
+                process.stderr.write(`${CLI} uninstall: warning: a survivor of '${entry.label}' could not be confirmed dead\n`);
+              }
+            }
+            disableOsUnit(entry.label, platform, { unitDir, log: (m) => process.stdout.write(`${CLI} uninstall: ${m}\n`) });
+          }
+        },
       });
     } catch (e) {
       process.stderr.write(`${CLI} uninstall: config reversal aborted: ${String(e)}\n`);
       process.exit(1);
     }
-
-    for (const entry of owned.entries) {
-      if (entry.kind !== 'os-unit') continue;
-      const platform = getOsUnitPlatform(entry.supervisor);
-      const unitDir = process.env['SOX_OS_UNIT_DIR'] ?? pathMod.dirname(entry.unitPath);
-      const ctx = resolveOsUnitContext(id, scopeTyped, root, {});
-      if (ctx?.entrypoint) {
-        const res = await unloadThenReap({
-          label: entry.label,
-          entrypoint: ctx.entrypoint,
-          platform,
-          unitDir,
-          excludePids: [process.pid],
-          log: (m) => process.stdout.write(`${CLI} uninstall: ${m}\n`),
-        });
-        if (res.undead) {
-          process.stderr.write(`${CLI} uninstall: warning: a survivor of '${entry.label}' could not be confirmed dead\n`);
-        }
-      }
-      disableOsUnit(entry.label, platform, { unitDir, log: (m) => process.stdout.write(`${CLI} uninstall: ${m}\n`) });
+    for (const w of removal.warnings) {
+      process.stderr.write(`${CLI} uninstall: warning: ${w}\n`);
     }
+  }
 
-    for (const entry of owned.entries) {
-      if (entry.kind === 'file-drop' || entry.kind === 'materialize') {
-        try {
-          if (fsMod.existsSync(entry.path)) {
-            fsMod.rmSync(entry.path, { recursive: true, force: true });
-          }
-        } catch (e) {
-          process.stderr.write(
-            `${CLI} uninstall: warning: could not remove ${entry.path}: ${String(e)}\n`,
-          );
-        }
-      }
-    }
-
-    ownership.remove(id, scopeTyped);
-    ownership.save();
+  if (!removal.full) {
+    // Partial: other hosts keep their install, so the lockfile key, extensions.json
+    // row and install record stay until the last host is removed.
+    const others = removal.remainingHosts.length;
+    process.stdout.write(
+      `${CLI} uninstall: removed  ${id} (${scopeTyped}) from host ${removal.hostsRemoved.join(', ')}` +
+        ` — ${others} other host install${others === 1 ? ' remains' : 's remain'}` +
+        ` (remove them with: ${CLI} uninstall ${id} --host <host>, or all at once: ${CLI} uninstall ${id})\n`,
+    );
+    return;
+  }
+  if (removal.hostsRemoved.length > 0) {
+    process.stdout.write(`${CLI} uninstall: hosts removed  ${removal.hostsRemoved.join(', ')}\n`);
   }
 
   // Remove from lockfile.
@@ -4150,10 +4192,12 @@ async function cmdUninstall(flags: Record<string, string>): Promise<void> {
     process.stdout.write(`${CLI} uninstall — remove an installed extension from a scope
 
 Usage:
-  ${CLI} uninstall <id> [-s <scope>]
+  ${CLI} uninstall <id> [-s <scope>] [--host <host>]
 
 Options:
   -s, --scope <scope>    Scope: user | project | local  (default: user)
+  --host <host>          Remove only this host's install (claude, opencode, ...).
+                         Without it every host's install is removed.
   --help                 Show this message
 `);
     process.exit(0);

@@ -96,7 +96,16 @@ export { checkProviderCapabilities, loadCapabilityTable } from './provider-capab
 // ─── Re-export lifecycle (update / uninstall) ─────────────────────────────────
 
 export type { LifecycleCtx, UpdateCtx, UpdateResult, HostScope as LifecycleHostScope } from './lifecycle.js';
-export { uninstall, update, ReverseAbortError } from './lifecycle.js';
+export {
+  uninstall,
+  update,
+  ReverseAbortError,
+  uninstallOwned,
+  planOwnedUninstall,
+  HostNotInstalledError,
+  AmbiguousLegacyUninstallError,
+} from './lifecycle.js';
+export type { OwnedUninstallInput, OwnedUninstallPlan, OwnedUninstallResult } from './lifecycle.js';
 
 // ─── ADR-0004: ownership index ───────────────────────────────────────────────
 export {
