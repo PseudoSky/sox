@@ -1,7 +1,7 @@
 {
   "name": "@adhd/sox-extension-qa",
-  "version": "0.1.1",
-  "description": "qa agent — owner of the project's quality strategy and the evidence that a change works",
+  "version": "0.2.0",
+  "description": "qa agent \u2014 owner of the project's quality strategy and the evidence that a change works",
   "private": true,
   "license": "MIT",
   "author": "sox-ecosystem",
