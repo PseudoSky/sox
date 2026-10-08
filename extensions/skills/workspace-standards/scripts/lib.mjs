@@ -11,6 +11,15 @@ export const TOOL_VOCAB = ['read', 'search', 'shell', 'edit', 'backlog'];
 export const OBLIGATION_ID = /^[A-Z]{2}\.[0-9]+$/;
 export const ROLES_COVERED_PREFIX = 'roles-covered:';
 
+/** Pull `--name <value>` out of args. A value-taking flag with no value is a named usage error. */
+export function takeOption(args, name) {
+  const i = args.indexOf(name);
+  if (i === -1) return { value: undefined };
+  const value = args[i + 1];
+  if (value === undefined || value.startsWith('--')) return { error: `${name} requires a value` };
+  args.splice(i, 2);
+  return { value };
+}
 /** Named errors. `exit` is the process exit status of the CLI that reports it. */
 export const ERR = {
   USAGE: { code: 'E_USAGE', exit: 64 },
@@ -32,14 +41,21 @@ export function readJson(file) {
 export function loadRegistry(root = SKILL_ROOT) {
   return readJson(path.join(root, 'registry.json'));
 }
-const fileHasContent = (root, rel) => {
-  if (!rel) return false;
+/** Untraced catches are banned; a plain node script cannot resolve @adhd/sox-*, so errors go to stderr. */
+export function trace(where, err) {
+  process.stderr.write(`[workspace-standards] ${where}: ${err?.message ?? err}\n`);
+}
+/** null when `rel` is a non-empty file under root; otherwise the real cause. */
+export function fileProblem(root, rel) {
+  if (!rel) return 'no path declared';
   try {
-    return fs.statSync(path.join(root, rel)).size > 0;
-  } catch {
-    return false;
+    return fs.statSync(path.join(root, rel)).size > 0 ? null : `${rel} is empty`;
+  } catch (err) {
+    trace(`stat ${rel}`, err);
+    return `${rel} unreadable: ${err.message}`;
   }
-};
+}
+const fileHasContent = (root, rel) => fileProblem(root, rel) === null;
 export { fileHasContent };
 
 /** Every target in the registry, foundations first. */
@@ -85,7 +101,8 @@ export function resolveVerb({ root = SKILL_ROOT, verb, target, mode } = {}) {
     }
   }
   if (!rel) return fail(ERR.UNSUPPORTED_VERB, `target "${target}" has no playbook for verb "${verb}"`);
-  if (!fileHasContent(root, rel)) return fail(ERR.PLAYBOOK_MISSING, `registry names "${rel}" for ${verb} ${target} but the file is missing or empty`);
+  const problem = fileProblem(root, rel);
+  if (problem) return fail(ERR.PLAYBOOK_MISSING, `registry names "${rel}" for ${verb} ${target} but ${problem}`);
   return { ok: true, verb, target, kind: t.kind, mode: mode ?? null, playbook: rel, path: path.join(root, rel) };
 }
 
@@ -105,19 +122,24 @@ export function reviewAll({ root = SKILL_ROOT } = {}) {
     const sev = s.status === 'active' ? 'error' : 'planned';
     if (s.status !== 'active') add(s.id, 'planned-standard', 'planned', `status is ${s.status}`);
     for (const verb of VERBS) {
-      if (s.status !== 'active' || !fileHasContent(root, s.playbooks?.[verb])) {
-        add(s.id, 'missing-playbook', sev, `no "${verb}" playbook`);
+      const cause = s.status !== 'active' ? null : fileProblem(root, s.playbooks?.[verb]);
+      if (s.status !== 'active' || cause) add(s.id, 'missing-playbook', sev, `no "${verb}" playbook${cause ? `: ${cause}` : ''}`);
+    }
+    let specCause = 'no runnable conformance specification';
+    if (s.status === 'active') {
+      const problem = fileProblem(root, s.conformance);
+      if (problem) specCause = `no runnable conformance specification: ${problem}`;
+      else {
+        try {
+          const checks = readJson(path.join(root, s.conformance)).checks;
+          specCause = Array.isArray(checks) && checks.length > 0 ? null : 'no runnable conformance specification: "checks" is missing or empty';
+        } catch (err) {
+          trace(`parse ${s.conformance}`, err);
+          specCause = `no runnable conformance specification: ${s.conformance} is malformed: ${err.message}`;
+        }
       }
     }
-    let specOk = false;
-    if (s.status === 'active' && fileHasContent(root, s.conformance)) {
-      try {
-        specOk = Array.isArray(readJson(path.join(root, s.conformance)).checks) && readJson(path.join(root, s.conformance)).checks.length > 0;
-      } catch {
-        specOk = false;
-      }
-    }
-    if (!specOk) add(s.id, 'missing-conformance-spec', sev, 'no runnable conformance specification');
+    if (specCause) add(s.id, 'missing-conformance-spec', sev, specCause);
     if (s.status !== 'active' || !fileHasContent(root, s.applyTemplate)) add(s.id, 'missing-apply-template', sev, 'no apply template');
     if (s.status !== 'active' || !fileHasContent(root, s.declaration)) add(s.id, 'missing-declaration', sev, 'no machine-readable declaration');
   }
@@ -279,7 +301,12 @@ export function coveredIds(manifest) {
 export function reviewRouting({ agents, obligations, roles = null }) {
   const findings = [];
   const report = [];
-  for (const { agent, manifest } of agents) {
+  for (const { agent, manifest, loadError } of agents) {
+    if (loadError) {
+      report.push({ agent, covered: [] });
+      findings.push({ agent, id: 'unreadable-manifest', detail: `extension.json is not valid JSON: ${loadError}` });
+      continue;
+    }
     const covered = coveredIds(manifest);
     report.push({ agent, covered });
     if (covered.length === 0) {
@@ -313,7 +340,14 @@ export function loadAgents(agentsDir) {
     if (!d.isDirectory()) continue;
     const mf = path.join(agentsDir, d.name, 'extension.json');
     if (!fs.existsSync(mf)) continue;
-    const manifest = readJson(mf);
+    let manifest;
+    try {
+      manifest = readJson(mf);
+    } catch (err) {
+      trace(`parse ${mf}`, err);
+      out.push({ agent: d.name, manifest: {}, loadError: err.message });
+      continue;
+    }
     if (manifest.type && manifest.type !== 'agent') continue;
     out.push({ agent: manifest.id ?? d.name, manifest });
   }

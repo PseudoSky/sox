@@ -3,7 +3,7 @@
   "id": "workspace-standards",
   "version": "0.1.0",
   "type": "skill",
-  "title": "workspace-standards — one entry point to review, run, and apply every workspace standard",
+  "title": "workspace-standards \u2014 one entry point to review, run, and apply every workspace standard",
   "description": "Use this when a workspace standard (testing first) must be reviewed, run for a change, or applied to a repository, or when role routing or gates need review. The command /workspace-standards with a verb (review, run, or apply) and a target loads that target's playbook; a target is a foundation (routing, gates) or a registered standard (testing).",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
@@ -34,7 +34,7 @@
         },
         "target": {
           "type": "string",
-          "description": "A foundation (routing, gates), a registered standard (testing), or all (review and apply only)."
+          "description": "A foundation (routing, gates), a registered standard (testing), or the word all (review and apply only; iterates the registry, foundations first)."
         }
       },
       "required": [
@@ -45,11 +45,67 @@
     "output_schema": {
       "type": "object",
       "properties": {
+        "verb": {
+          "type": "string",
+          "description": "The verb resolved: review, run, or apply."
+        },
+        "target": {
+          "type": "string",
+          "description": "The target id, or all."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "foundation",
+            "standard"
+          ],
+          "description": "Single-target only."
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The mode requested with --mode, or null."
+        },
         "playbook": {
           "type": "string",
-          "description": "Skill-relative path of the playbook the verb loaded, or a named error code."
+          "description": "Skill-relative path of the playbook the verb loaded (single target)."
+        },
+        "path": {
+          "type": "string",
+          "description": "Absolute path of that playbook (single target)."
+        },
+        "order": {
+          "type": "string",
+          "description": "For target all: the iteration order."
+        },
+        "items": {
+          "type": "array",
+          "description": "For target all: one entry per registered target.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "playbook": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
         }
-      }
+      },
+      "description": "On success one JSON object on stdout with exit 0. On failure a named error {ok:false,error:{code,exit,message}} on stderr: E_USAGE 64, E_UNKNOWN_TARGET 2, E_UNSUPPORTED_VERB 3, E_UNKNOWN_VERB 4, E_PLANNED_TARGET 5, E_UNSUPPORTED_MODE 6, E_PLAYBOOK_MISSING 7."
     }
   },
   "install": {

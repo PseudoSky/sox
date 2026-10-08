@@ -10,7 +10,7 @@ import path from 'node:path';
 import {
   SKILL_ROOT, loadRegistry, resolveVerb, reviewAll, reviewAllExit, parseRoles, validateRoles, obligationIds,
   parseStrategy, checkCard, endsInRecord, missingFormatFields, validateDeclaration, reviewRouting, loadAgents,
-  readJson, readText, expandRanges,
+  readJson, readText, expandRanges, takeOption,
 } from '../scripts/lib.mjs';
 
 const std = path.join(SKILL_ROOT, 'standards/testing');
@@ -241,4 +241,60 @@ test('9024e9ac T14.AC11 the recorded reuse decision names the three existing too
 
 test('expandRanges expands letter-number ranges', () => {
   assert.deepEqual(expandRanges(['G1-G3', 'X9']), ['G1', 'G2', 'G3', 'X9']);
+});
+
+test('9024e9ac T14.AC3 a value-taking flag with no value is E_USAGE (exit 64), never a default playbook', () => {
+  for (const flag of ['--mode', '--root']) {
+    for (const argv of [[flag], [flag, '--other']]) {
+      const o = takeOption(['run', 'testing', ...argv], flag);
+      assert.ok(o.error && o.error.includes(flag), `${flag} without a value is reported: ${JSON.stringify(argv)}`);
+    }
+  }
+  const a = ['run', 'testing', '--mode', 'x'];
+  assert.deepEqual(takeOption(a, '--mode'), { value: 'x' });
+  assert.deepEqual(a, ['run', 'testing'], 'flag and value are consumed');
+  assert.deepEqual(takeOption(['run'], '--mode'), { value: undefined });
+});
+
+test('9024e9ac T14.AC8 a malformed conformance spec or unreadable playbook yields a finding carrying the real cause', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-unit-'));
+  const stderr = process.stderr.write.bind(process.stderr);
+  const traced = [];
+  process.stderr.write = (c) => (traced.push(String(c)), true);
+  try {
+    fs.writeFileSync(path.join(root, 'registry.json'), JSON.stringify({
+      foundations: [],
+      standards: [{ id: 'x', status: 'active', playbooks: { review: 'r.md', run: 'gone.md', apply: 'r.md' }, conformance: 'spec.json', applyTemplate: 'r.md', declaration: 'r.md' }],
+    }));
+    fs.writeFileSync(path.join(root, 'r.md'), '# r\n');
+    fs.writeFileSync(path.join(root, 'spec.json'), '{ "checks": [');
+    const { findings } = reviewAll({ root });
+    const spec = findings.find((f) => f.id === 'missing-conformance-spec');
+    assert.ok(spec && /malformed/.test(spec.detail) && /JSON/i.test(spec.detail), spec?.detail);
+    const pb = findings.find((f) => f.id === 'missing-playbook');
+    assert.ok(pb && pb.detail.includes('"run"') && pb.detail.includes('gone.md') && /ENOENT/.test(pb.detail), pb?.detail);
+    assert.ok(traced.some((t) => t.includes('spec.json')) && traced.some((t) => t.includes('gone.md')), 'causes are traced to stderr');
+  } finally {
+    process.stderr.write = stderr;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('9024e9ac T14.AC10 one malformed agent extension.json is a per-agent finding, not an abort', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-unit-'));
+  const stderr = process.stderr.write.bind(process.stderr);
+  process.stderr.write = () => true;
+  try {
+    for (const [name, body] of [['good', { id: 'good', type: 'agent', capabilities: ['roles-covered:AU.1'] }], ['broken', null]]) {
+      fs.mkdirSync(path.join(dir, name));
+      fs.writeFileSync(path.join(dir, name, 'extension.json'), body ? JSON.stringify(body) : '{ not json');
+    }
+    const r = reviewRouting({ agents: loadAgents(dir), obligations: new Set(['AU.1']) });
+    assert.deepEqual(r.findings.map((f) => [f.agent, f.id]), [['broken', 'unreadable-manifest']]);
+    assert.ok(r.findings[0].detail.includes('not valid JSON'));
+    assert.deepEqual(r.agents.map((a) => a.agent), ['broken', 'good']);
+  } finally {
+    process.stderr.write = stderr;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

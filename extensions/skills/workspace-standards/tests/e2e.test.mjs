@@ -1,3 +1,4 @@
+// E2E-ONLY: this file spawns child processes by design; the unit suite (unit.test.mjs) spawns nothing.
 // End-to-end test for workspace-standards (item 9024e9ac, T14).
 // One run, one shared scaffold: the skill directory is copied once into a temp dir and every
 // surface (ws.mjs verbs and errors, review-all, review-routing, conformance, card sizes) is driven
@@ -54,6 +55,8 @@ describe('9024e9ac T14 e2e on one scaffold', () => {
       [['apply', 'styling'], 5, 'E_PLANNED_TARGET'],
       [['run', 'gates', '--mode', 'x'], 6, 'E_UNSUPPORTED_MODE'],
       [['run'], 64, 'E_USAGE'],
+      [['run', 'testing', '--mode'], 64, 'E_USAGE'],
+      [['run', 'testing', '--root'], 64, 'E_USAGE'],
     ];
     for (const [args, status, code] of cases) {
       const r = run('ws.mjs', args);
