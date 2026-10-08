@@ -211,6 +211,18 @@ test('9024e9ac T14.AC10 reviewRouting reports agents with no declaration and unk
   assert.equal(bad.findings.some((f) => f.agent === 'aud'), false, 'a valid declaration is not a finding');
 });
 
+test('9024e9ac T14.AC10 reviewRouting flags a misplaced roles-covered list and hints naming no installed agent', () => {
+  const roles = parseRoles(readText(path.join(SKILL_ROOT, 'fixtures/routing/roles-ghost-hint.md')));
+  const oblig = obligationIds(roles);
+  const agents = [{ agent: 'rev', manifest: { agent: { 'roles-covered': ['static-reviewer:G9'] } } }];
+  const r = reviewRouting({ agents, obligations: oblig, roles });
+  const decl = r.findings.find((f) => f.id === 'no-roles-covered-declaration');
+  assert.ok(decl && decl.detail.includes('is not the declaration'));
+  assert.deepEqual(r.findings.filter((f) => f.id === 'unresolved-hint').map((f) => f.detail), ['role auditor hints "ghost-agent", which matches no installed agent']);
+  const clean = reviewRouting({ agents, obligations: oblig, roles: parseRoles(readText(path.join(SKILL_ROOT, 'fixtures/routing/roles-no-hints.md'))) });
+  assert.equal(clean.findings.some((f) => f.id === 'unresolved-hint'), false);
+});
+
 test('9024e9ac T14.AC10 the roles-covered schema pins the obligation-id shape', () => {
   const s = readJson(path.join(SKILL_ROOT, 'schemas/roles-covered.schema.json'));
   const idPattern = new RegExp(s.properties['roles-covered'].items.pattern);

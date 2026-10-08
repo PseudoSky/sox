@@ -272,20 +272,36 @@ export function coveredIds(manifest) {
     .map((c) => c.slice(ROLES_COVERED_PREFIX.length));
 }
 
-/** Findings for each agent: no declaration, or ids roles.md does not define. */
-export function reviewRouting({ agents, obligations }) {
+/**
+ * Findings for each agent: no declaration, or ids roles.md does not define; and, when `roles`
+ * is given, each roles.md hint that names no installed agent.
+ */
+export function reviewRouting({ agents, obligations, roles = null }) {
   const findings = [];
   const report = [];
   for (const { agent, manifest } of agents) {
     const covered = coveredIds(manifest);
     report.push({ agent, covered });
     if (covered.length === 0) {
-      findings.push({ agent, id: 'no-roles-covered-declaration', detail: 'capabilities has no "roles-covered:<id>" entry' });
+      const misplaced = manifest.agent?.['roles-covered'];
+      findings.push({
+        agent,
+        id: 'no-roles-covered-declaration',
+        detail: misplaced
+          ? 'agent["roles-covered"] is present but is not the declaration; use capabilities entries "roles-covered:<obligation id>"'
+          : 'capabilities has no "roles-covered:<id>" entry',
+      });
       continue;
     }
     for (const id of covered) {
       if (!OBLIGATION_ID.test(id)) findings.push({ agent, id: 'malformed-obligation-id', detail: id });
       else if (!obligations.has(id)) findings.push({ agent, id: 'unknown-obligation-id', detail: id });
+    }
+  }
+  if (roles) {
+    const installed = new Set(agents.map((a) => a.agent));
+    for (const r of roles.roles) {
+      for (const h of r.hints) if (!installed.has(h)) findings.push({ agent: null, id: 'unresolved-hint', detail: `role ${r.name} hints "${h}", which matches no installed agent` });
     }
   }
   return { findings, agents: report };

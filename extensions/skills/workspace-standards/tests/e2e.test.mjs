@@ -83,8 +83,12 @@ describe('9024e9ac T14 e2e on one scaffold', () => {
   });
 
   test('9024e9ac T14.AC10 review-routing: ok fixture 0, missing/unknown fixture 1, real agents 1 naming every agent', () => {
-    const roles = path.join(scaffold, 'standards/testing/roles.md');
+    const roles = path.join(scaffold, 'fixtures/routing/roles-no-hints.md');
+    const realRoles = path.join(scaffold, 'standards/testing/roles.md');
     const fx = (name) => path.join(scaffold, 'fixtures/routing', name);
+    const ghost = run('review-routing.mjs', ['--agents-dir', fx('agents-ok'), '--roles', fx('roles-ghost-hint.md')]);
+    assert.equal(ghost.status, 1);
+    assert.ok(JSON.parse(ghost.stdout).findings.some((f) => f.id === 'unresolved-hint'));
     assert.equal(run('review-routing.mjs', ['--agents-dir', fx('agents-ok'), '--roles', roles]).status, 0);
     const bad = run('review-routing.mjs', ['--agents-dir', fx('agents-missing'), '--roles', roles]);
     assert.equal(bad.status, 1);
@@ -93,7 +97,7 @@ describe('9024e9ac T14 e2e on one scaffold', () => {
     assert.deepEqual(rep.findings.filter((f) => f.id === 'unknown-obligation-id').map((f) => f.agent), ['badid']);
     const realDir = path.resolve(SRC, '..', '..', 'agents');
     if (fs.existsSync(realDir)) {
-      const real = run('review-routing.mjs', ['--agents-dir', realDir, '--roles', roles]);
+      const real = run('review-routing.mjs', ['--agents-dir', realDir, '--roles', realRoles]);
       const dirs = fs.readdirSync(realDir, { withFileTypes: true }).filter((d) => d.isDirectory() && fs.existsSync(path.join(realDir, d.name, 'extension.json'))).length;
       const missing = JSON.parse(real.stdout).findings.filter((f) => f.id === 'no-roles-covered-declaration').length;
       assert.equal(real.status, missing === 0 ? 0 : 1);
