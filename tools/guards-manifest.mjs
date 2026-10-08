@@ -15,7 +15,8 @@
  * enforced by tools/run-guards.mjs, not encoded here.
  *
  * `needsBuild` — nx project names that must be built (via `nx build <name>`) before the guard can
- * run for real (either tier; a failed build FAILs a tier-1 guard, SKIPs a tier-2 one). tools/run-guards.mjs builds these itself; see SPEC-BL-466.md Decision 5.
+ * run for real (either tier). A failed build FAILs a tier-1 guard and SKIPs a tier-2 one.
+ * tools/run-guards.mjs builds these itself; see SPEC-BL-466.md Decision 5.
  *
  * `isolable` — defaults to true. `false` means the guard is structurally unable to run against a
  * worktree-local root (its own path resolution always walks back to the main checkout — see

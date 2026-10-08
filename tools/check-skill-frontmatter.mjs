@@ -31,7 +31,14 @@
  *      ("Description contains XML tags: [...]. Remove markup from the description."),
  *      prefixed with the field name `description`. A tag is `<`, an optional `/`, a
  *      letter, then anything up to the closing `>` (so `<a|b>`, `<b>`, `</b>` are
- *      rejected; a bare comparison such as "x < 5 and y > 3" is not).
+ *      rejected; a spaced comparison such as "x < 5 and y > 3" and a bare "<5" are not).
+ *
+ *      Documented false positives (deliberate parity): the pattern also flags generic-type
+ *      syntax such as `Array<string>` and unspaced comparisons such as `a<b and c>d`, because
+ *      skillcheck's own rule flags exactly those. The guard must never accept a description that
+ *      leg 3 would reject, so it mirrors skillcheck rather than being smarter than it. Write
+ *      such text with spaces ("a < b and c > d") or in prose. Pinned by the
+ *      `c2e1c0c3 AC4` test in tools/check-skill-frontmatter.test.mjs.
  *   3. rendered artifact — render the header via host-registry's renderSkillFile and
  *      run the off-the-shelf `skillcheck` linter (uvx) over the rendered output.
  *      Because the renderer quotes scalars safely, a colon-in-scalar description

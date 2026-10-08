@@ -28,6 +28,9 @@
  * `needsBuild` (guards-manifest.mjs) is honoured by BOTH tiers (c2e1c0c3): a Tier 1 guard that is in
  * scope builds its dependencies once before running, and a failed build is a FAIL (fail-closed — the
  * hook must never read "dist missing" as a pass or as not-applicable).
+ * Commit-time cost: a staged extensions/skills|agents|bundles file now triggers
+ * `nx build host-registry` from the pre-commit hook (skill-headers guard). A cached build is cheap;
+ * a cold one is slower. The build runs once per invocation however many guards share the dependency.
  *
  * Tri-state + NOT_APPLICABLE contract (BL-466-d, BL-466-g, extends BL-469):
  *   PASS            guard process ran, exit 0.

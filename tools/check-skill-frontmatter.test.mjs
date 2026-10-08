@@ -133,6 +133,19 @@ test('c2e1c0c3 AC2: manifest accepts descriptions without tags (comparisons, ang
   assert.equal('<a|b>'.match(XML_TAG_PATTERN)?.length, 1);
 });
 
+test('c2e1c0c3 AC4: XML-tag rule keeps skillcheck parity, including documented false positives', () => {
+  const flagged = (d) => checkManifest({ id: 's', description: d }, 's', 'x/extension.json').length;
+  // Genuine markup is flagged.
+  assert.equal(flagged('Use for <a|b> work'), 1, '<a|b> is flagged');
+  // Documented false positives: skillcheck's own rule flags these too, so the guard keeps parity
+  // (a description that passes here must also pass leg 3, never the reverse).
+  assert.equal(flagged('Returns Array<string> of ids'), 1, 'Array<string> is flagged (documented, skillcheck parity)');
+  assert.equal(flagged('when a<b and c>d holds'), 1, 'unspaced a<b and c>d is flagged (documented, skillcheck parity)');
+  // Spaced comparisons and a bare `<5` are not tags.
+  assert.equal(flagged('when x < 5 and y > 3'), 0, 'spaced comparison is not flagged');
+  assert.equal(flagged('fewer than <5 items'), 0, '<5 (digit after <) is not flagged');
+});
+
 test('manifest: a skill must not carry a host-agnostic render block', () => {
   const errs = checkManifest({ id: 's', description: 'd', render: { claude: {} } }, 's', 'x/extension.json');
   assert.ok(errs.some((e) => e.includes('render')));

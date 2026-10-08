@@ -13,7 +13,8 @@
  *   AC1  fresh scratch checkout, dist absent, staged SKILL.md -> `run-guards --tier1` exits 0 and
  *        the builder ran first (negative control: same guard WITHOUT needsBuild -> exit 1).
  *   AC3  builder fails -> non-zero, guard process never ran (fail-closed preserved).
- *   AC4  the XML-tag rule is documented in the checker header.
+ *   AC4  the XML-tag rule is documented in the checker header; its behavior (incl. documented false
+ *        positives) is exercised by running check-skill-frontmatter.test.mjs's AC4 test.
  *   (AC2, the manifest-level XML-tag leg, is in tools/check-skill-frontmatter.test.mjs.)
  *   Wiring: the real manifest registers skill-headers with needsBuild ['host-registry'].
  *
@@ -152,13 +153,25 @@ process.exit(1);
   );
 }
 
-// AC4 — c2e1c0c3 AC4: the XML-tag rule is documented in the checker header.
+// AC4 — c2e1c0c3 AC4: the XML-tag rule (and its documented false positives) is documented in the
+// checker header (one presence test); its behavior is pinned by check-skill-frontmatter.test.mjs.
 {
   const src = fs.readFileSync(path.join(TOOLS_DIR, 'check-skill-frontmatter.mjs'), 'utf8');
   const header = src.slice(0, src.indexOf('import '));
   report(
-    'c2e1c0c3 AC4: checker header documents the XML-tag rule (skillcheck rule + message)',
-    /XML-tag rule/.test(header) && /frontmatter\.description\.xml-tags/.test(header) && /Description contains XML tags/.test(header),
+    'c2e1c0c3 AC4: checker header documents the XML-tag rule, skillcheck parity and false positives',
+    /XML-tag rule/.test(header) && /frontmatter\.description\.xml-tags/.test(header) && /Array<string>/.test(header) && /a<b and c>d/.test(header),
+  );
+  // Behavioral: run the AC4 cases in the checker's own test suite.
+  const res = spawnSync(
+    process.execPath,
+    ['--test', '--test-name-pattern=c2e1c0c3 AC4', path.join(TOOLS_DIR, 'check-skill-frontmatter.test.mjs')],
+    { encoding: 'utf8' },
+  );
+  report(
+    'c2e1c0c3 AC4: check-skill-frontmatter.test.mjs AC4 test passes (flags <a|b>, Array<string>, a<b and c>d; not x < 5 / <5)',
+    res.status === 0 && /\bpass 1\b/.test(res.stdout) && /\bfail 0\b/.test(res.stdout),
+    `exit=${res.status} ${res.stdout.slice(-300)}${res.stderr.slice(-200)}`,
   );
 }
 
