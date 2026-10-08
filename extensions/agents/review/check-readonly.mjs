@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const WRITE_TOOL = /^(edit|write|multiedit|notebookedit|apply[-_]?patch|patch|bash|shell|run|exec|mcp__.*)$/i;
-const MUST_DENY = ['edit', 'write', 'bash'];
+const MUST_DENY = ['edit', 'write', 'bash', 'task', 'skill', 'webfetch', 'websearch', 'question', 'todowrite'];
 
 export function checkReadOnly(manifest) {
   const v = [];
@@ -17,6 +17,10 @@ export function checkReadOnly(manifest) {
   }
   for (const [host, r] of Object.entries(manifest?.render ?? {})) {
     for (const t of r?.tools ?? []) if (WRITE_TOOL.test(t)) v.push(`render.${host}.tools declares "${t}"`);
+    // A render override REPLACES the IR permission map (agent-renderers.ts: `override?.permission ?? ir.permission`).
+    for (const k of MUST_DENY) if (r?.permissions?.[k] !== undefined && r.permissions[k] !== 'deny') v.push(`render.${host}.permissions.${k} is not "deny"`);
+    if (r?.permission !== undefined) for (const k of MUST_DENY) if (r.permission[k] !== 'deny') v.push(`render.${host}.permission replaces the IR map and omits "${k}: deny"`);
+    if (host === 'agent-mcp' && Object.keys(r?.mcpServers ?? {}).length > 0) v.push('render.agent-mcp.mcpServers grants MCP servers (can write)');
   }
   for (const k of MUST_DENY) if (agent.permission?.[k] !== 'deny') v.push(`permission.${k} is not "deny"`);
   for (const [k, val] of Object.entries(agent.permission ?? {})) {

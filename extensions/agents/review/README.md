@@ -10,7 +10,7 @@
 | blind | `templates/blind.tmpl`: `Review` + diff, nothing else |
 | blind-deep | `templates/blind-deep.tmpl`: `Review` + diff + specification + tests (Deep rigor, D22) |
 
-Any other brief, or a blind brief carrying rationale, ACs, or prior state, returns `REFUSED`.
+Blind modes make no tool calls and judge only the brief. Static mode accepts `rigor: deep` and then refuses implementer reasoning. Any other brief, or a blind brief carrying rationale, ACs, or prior state, returns `REFUSED`.
 
 ## Tools
 
@@ -25,6 +25,7 @@ Any other brief, or a blind brief carrying rationale, ACs, or prior state, retur
 ```bash
 soxe install review --host claude --scope user
 soxe install review --host opencode --scope user
+soxe install review --host agent-mcp --scope user
 ```
 
 ## License

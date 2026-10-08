@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "review",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "agent",
   "title": "review",
   "description": "Use when a change needs an independent read-only review: static mode judges tier and fidelity-gap validity, teeth, and structure coupling (G9, R3, R4, G12) and correctness, returning findings by severity with file:line evidence; blind mode accepts only a diff and the word Review (at Deep rigor also the specification and tests, never the implementer's reasoning). Has no edit, write, or shell tools. Triggers: \"review this diff\", \"static review\", \"blind review\", \"is this test valid\".",
@@ -56,13 +56,14 @@
       "websearch": "deny",
       "task": "deny",
       "skill": "deny",
-      "question": "deny"
+      "question": "deny",
+      "todowrite": "deny"
     }
   },
   "render": {
     "claude": {
       "model": "sonnet",
-      "version": "v0.1.0",
+      "version": "v0.1.1",
       "tools": [
         "Read",
         "Grep",

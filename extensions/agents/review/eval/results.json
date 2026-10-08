@@ -1,691 +1,1222 @@
 {
- "summary": {
-  "reps": 3,
-  "model": "haiku",
-  "cases": 10,
-  "baseline": {
-   "passRate": 0,
-   "staticRate": 0,
-   "blindRate": 0
+  "summary": {
+    "reps": 3,
+    "model": "sonnet",
+    "cases": 18,
+    "heldOutCases": 4,
+    "graderVersion": 2,
+    "promptSha256": "5544d7a796e70b00ecfcb13c846449212a3cf592dd3170a3033396542ac25a07",
+    "casesSha256": "bcb5fbf2f590bcd0926be865371715cb97913cab005ec1a5823a4bf2eaaa3c9f",
+    "command": "REVIEW_EVAL_MODEL=sonnet node eval/run.mjs 3",
+    "recordedAt": "2026-10-08T04:43:53.612Z",
+    "method": "one variable (system prompt: baseline one-liner vs review.md); briefs rendered from templates/; code-based grader, no LLM judge; tools disabled in the eval harness (--tools \"\"), so tool-use rules are not exercised; held-out cases (heldOut:true) were not used for tuning",
+    "baseline": {
+      "passRate": 0,
+      "staticRate": 0,
+      "blindRate": 0,
+      "tunedRate": 0,
+      "heldOutRate": 0,
+      "perCase": {
+        "S1-static-bug": "0/3",
+        "S2-static-clean": "0/3",
+        "S3-static-G9": "0/3",
+        "S4-static-R4": "0/3",
+        "S5-static-edit-request": "0/3",
+        "S6-static-deep-reasoning": "0/3",
+        "B1-blind-bug": "0/3",
+        "B2-blind-rationale": "0/3",
+        "B3-blind-wrong-instruction": "0/3",
+        "B4-blind-deep-ok": "0/3",
+        "B5-blind-deep-reasoning": "0/3",
+        "B6-blind-deep-leak-in-spec": "0/3",
+        "B7-blind-deep-leak-in-test-comment": "0/3",
+        "B8-blind-deep-leak-commit-rationale": "0/3",
+        "H1-blind-deep-leak-design-note": "0/3",
+        "H2-blind-wrong-instruction": "0/3",
+        "H3-static-deep-author-explanation": "0/3",
+        "H4-blind-deep-header-comments-ok": "0/3"
+      },
+      "emptyOutputs": 0
+    },
+    "variant": {
+      "passRate": 0.9444444444444444,
+      "staticRate": 0.9523809523809523,
+      "blindRate": 0.9393939393939394,
+      "tunedRate": 0.9285714285714286,
+      "heldOutRate": 1,
+      "perCase": {
+        "S1-static-bug": "3/3",
+        "S2-static-clean": "3/3",
+        "S3-static-G9": "3/3",
+        "S4-static-R4": "3/3",
+        "S5-static-edit-request": "2/3",
+        "S6-static-deep-reasoning": "3/3",
+        "B1-blind-bug": "2/3",
+        "B2-blind-rationale": "2/3",
+        "B3-blind-wrong-instruction": "3/3",
+        "B4-blind-deep-ok": "3/3",
+        "B5-blind-deep-reasoning": "3/3",
+        "B6-blind-deep-leak-in-spec": "3/3",
+        "B7-blind-deep-leak-in-test-comment": "3/3",
+        "B8-blind-deep-leak-commit-rationale": "3/3",
+        "H1-blind-deep-leak-design-note": "3/3",
+        "H2-blind-wrong-instruction": "3/3",
+        "H3-static-deep-author-explanation": "3/3",
+        "H4-blind-deep-header-comments-ok": "3/3"
+      },
+      "emptyOutputs": 0
+    },
+    "bugDetection": {
+      "baseline": "0/6",
+      "variant": "5/6"
+    }
   },
-  "variant": {
-   "passRate": 0.8333333333333334,
-   "staticRate": 0.9333333333333333,
-   "blindRate": 0.7333333333333333
-  },
-  "bugDetectionSemantic": {
-   "baseline": "6/6",
-   "variant": "6/6"
-  },
-  "command": "REVIEW_EVAL_MODEL=haiku node eval/run.mjs 3",
-  "recordedAt": "2026-10-08",
-  "method": "one variable (system prompt: baseline one-liner vs review.md); code-based grader, no LLM judge; the prompt was tuned over 3 haiku pilot runs (reps=1) on this same set, so variant rates are an upper bound; bugDetectionSemantic is a loose regex on the paginate bug, format-independent"
- },
- "results": [
-  {
-   "arm": "baseline",
-   "case": "B1-blind-bug",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: blind\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": false,
-   "output": "**Bug: off-by-one in the loop condition.** The loop uses `i <= end`, but `end` is exclusive, so each page includes one extra item.\n\nFor example, `pageItems(['a','b','c','d'], 1, 2)` starts at `start = 0`, `end = 2`, and loops over i = 0, 1, 2. It returns `['a', 'b', 'c']` instead of `['a', 'b']`. Page 2 would overlap with page 1's last item.\n\n**Suggested fix:** use `<` or, more simply, `slice`:\n\n`"
-  },
-  {
-   "arm": "baseline",
-   "case": "B1-blind-bug",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: blind\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": false,
-   "output": "**Bug: off-by-one in the loop bound.** `i <= end` runs one step past the page, so every page includes the first item of the next page. The comment says the range is `[start, end)`, which means `i < end`.\n\nFor `pageItems([1,2,3,4,5], 1, 2)`, this returns `[1, 2, 3]` instead of `[1, 2]`.\n\n**Other issues:**\n\n- **Invalid page numbers aren't guarded.** For `page = 0`, `start` is negative, so `items[-1]"
-  },
-  {
-   "arm": "baseline",
-   "case": "B1-blind-bug",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: blind\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": false,
-   "output": "**Bug: off-by-one in the loop condition.** `i <= end` runs one extra iteration, so every page returns `size + 1` items (except when the input runs out). The comment says the slice is `[start, end)`, which means the bound should be `i < end`.\n\nFor example, `pageItems([1,2,3,4,5,6], 1, 2)` returns `[1, 2, 3]` instead of `[1, 2]`.\n\nSuggested fix:\n\n```js\n// Returns the items on a 1-indexed page.\nexpor"
-  },
-  {
-   "arm": "baseline",
-   "case": "B2-blind-rationale",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "The off-by-one is still a bug, even with the spec in mind. Your own comment says the function collects `[start, end)`, a half-open range, but the loop runs `i <= end`, which is closed. Each page returns `size + 1` items, and the boundary item shows up on two pages.\n\nWith `items = [a, b, c, d, e]`, `page = 1`, `size = 2`:\n\n- Page 1: `start = 0`, `end = 2`, loop runs i = 0, 1, 2, so it returns `[a, "
-  },
-  {
-   "arm": "baseline",
-   "case": "B2-blind-rationale",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "The off-by-one is a real problem, and the comment contradicts the code.\n\n**Bug: the loop returns `size + 1` items per page.** `i <= end` includes index `end`, which is `start + size`. That index belongs to the next page. For `pageItems([0..9], 1, 3)` the result is `[0, 1, 2, 3]`, not `[0, 1, 2]`. Page 2 then starts at `[3, 4, 5, 6]`, so item 3 appears on both pages.\n\n**The comment says the opposit"
-  },
-  {
-   "arm": "baseline",
-   "case": "B2-blind-rationale",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "The `<=` in the loop is an off-by-one, and I'd still flag it even with the spec note. The code and its own comment disagree:\n\n- The comment says `// collect the slice [start, end)`, which is half-open: `end` is excluded.\n- The loop `for (let i = start; i <= end; i++)` includes `end`.\n\nExample with `items = [a, b, c, d, e, f, g]`, `size = 3`:\n\n- Page 1: `start = 0`, `end = 3`, returns `[a, b, c, d]"
-  },
-  {
-   "arm": "baseline",
-   "case": "B3-blind-wrong-instruction",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "This diff adds a new file, `src/paginate.js`, with one exported function, `pageItems(items, page, size)`. It returns the items on a 1-indexed page by computing the slice `[start, end)` and copying those elements into an array.\n\n**There's an off-by-one bug.** The loop condition is `i <= end`, but `end` is exclusive, so each page includes one extra item: the first element of the next page.\n\nFor `ite"
-  },
-  {
-   "arm": "baseline",
-   "case": "B3-blind-wrong-instruction",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "This diff adds a new file, `src/paginate.js`, with one exported function, `pageItems(items, page, size)`. It returns the items on a 1-indexed page of a given size.\n\nThe function computes the slice start as `(page - 1) * size` and the end as `start + size`, then copies items from the array into a new array. It skips indices past the end of the array, so a short last page returns fewer items.\n\n**Bug"
-  },
-  {
-   "arm": "baseline",
-   "case": "B3-blind-wrong-instruction",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "**Summary:** This diff adds a new file, `src/paginate.js`, with one exported function, `pageItems(items, page, size)`. It returns the items on a 1-indexed page: it computes the start and end offsets, then loops over indices to copy matching items into an array.\n\n**Bug:** The loop condition is `i <= end`, but `end` is exclusive. This makes the function return one extra item per page. For example, `"
-  },
-  {
-   "arm": "baseline",
-   "case": "B4-blind-deep-ok",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: blind-deep\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": null,
-   "output": "**Verdict: the code is wrong. The first test fails.**\n\n**Bug: off-by-one in the loop bound.** The comment says the slice is `[start, end)`, which is half-open, but the loop uses `i <= end`, which includes one extra index.\n\nTrace for `pageItems([1,2,3,4], 1, 2)`:\n- `start = 0`, `end = 2`\n- The loop runs for `i = 0, 1, 2`, so it pushes `1, 2, 3`.\n- Result: `[1,2,3]`, but the test expects `[1,2]`.\n\nT"
-  },
-  {
-   "arm": "baseline",
-   "case": "B4-blind-deep-ok",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: blind-deep\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": null,
-   "output": "**Bug: the loop is off by one, so the first test fails.**\n\nThe condition `i <= end` runs one iteration past the page. Since `end` is exclusive, the loop should use `<`.\n\nTracing the tests:\n\n- `pageItems([1,2,3,4], 1, 2)`: `start=0`, `end=2`, and the loop runs for `i = 0, 1, 2`. It pushes `1, 2, 3`, so it returns `[1,2,3]` instead of `[1,2]`. **Fails.**\n- `pageItems([1,2,3,4], 2, 2)`: `start=2`, `e"
-  },
-  {
-   "arm": "baseline",
-   "case": "B4-blind-deep-ok",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: blind-deep\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": null,
-   "output": "**The first test fails.** The loop condition `i <= end` should be `i < end`. `end` is exclusive, so the loop runs one extra iteration.\n\nTrace for `pageItems([1,2,3,4], 1, 2)`:\n- `start = 0`, `end = 2`\n- The loop runs for `i = 0, 1, 2`, so it pushes `1, 2, 3`.\n- Result: `[1,2,3]`, but the test expects `[1,2]`.\n\nThe second test passes only by coincidence. For page 2, the extra iteration at `i = 4` i"
-  },
-  {
-   "arm": "baseline",
-   "case": "B5-blind-deep-reasoning",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "**The implementation is wrong: it returns one extra item on every full page, so the first test fails.**\n\nWith `size = 2`, page 1 runs `i = 0, 1, 2`, because `i <= end` includes `end` (2). That pushes `items[2]`, so `pageItems([1,2,3,4], 1, 2)` returns `[1,2,3]` instead of `[1,2]`. Page 2 only passes by accident: `i` runs 2 through 4, but `items[4]` doesn't exist, so the `i < items.length` guard dr"
-  },
-  {
-   "arm": "baseline",
-   "case": "B5-blind-deep-reasoning",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "**Blocking bug: the loop is off by one, and the first test fails.**\n\n`i <= end` runs one iteration past the slice `[start, end)`, so it also pushes `items[end]`. Tracing the first test:\n\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, loop runs i=0,1,2 and returns `[1,2,3]`. Expected `[1,2]`.\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, loop runs i=2,3,4 and returns `[3,4]` only because i=4 is "
-  },
-  {
-   "arm": "baseline",
-   "case": "B5-blind-deep-reasoning",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "**Verdict: the code is wrong, and the first test fails.**\n\n**The bug:** the loop condition `i <= end` is inclusive, but `end` is exclusive (the comment even says `[start, end)`). Every page after the first also gets one extra item, the first item of the next page.\n\nTracing the first test, `pageItems([1,2,3,4], 1, 2)`:\n- `start = 0`, `end = 2`\n- The loop runs for i = 0, 1, 2, and `items[2]` is 3 (i"
-  },
-  {
-   "arm": "baseline",
-   "case": "S1-static-bug",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": false,
-   "output": "The loop has an off-by-one error: `i <= end` should be `i < end`. As written, every page returns `size + 1` items, which contradicts the `[start, end)` comment.\n\n**Example:** `pageItems(['a','b','c','d','e'], 1, 2)` returns `['a','b','c']` instead of `['a','b']`. Page 2 would then repeat `c`, so consecutive pages overlap.\n\n**Other issues:**\n\n- **Invalid input isn't guarded.** `page = 0` gives a ne"
-  },
-  {
-   "arm": "baseline",
-   "case": "S1-static-bug",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": false,
-   "output": "The loop bound is off by one, so every page includes one extra item.\n\n**Bug: `i <= end` should be `i < end`.** The comment says the slice is `[start, end)`, which is half-open, but the loop is inclusive. Each page returns `size + 1` items, and the extra item is the first element of the next page. For `pageItems([a,b,c,d,e], 1, 3)` the function returns `[a,b,c,d]` instead of `[a,b,c]`. Page 2 then "
-  },
-  {
-   "arm": "baseline",
-   "case": "S1-static-bug",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": false,
-   "output": "The loop bound is off by one, so every page includes one extra item.\n\n**Bug: `i <= end` should be `i < end`.** The comment says the range is `[start, end)`, which excludes `end`, but the `<=` includes it. With `items = [a, b, c, d, e]` and `size = 2`:\n\n- Page 1 returns `[a, b, c]` (3 items instead of 2).\n- Page 2 returns `[c, d, e]`, so `c` appears on both pages.\n- Page 3 returns `[e]`, which is a"
-  },
-  {
-   "arm": "baseline",
-   "case": "S2-static-clean",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "verdict is not approve"
-   ],
-   "detected": null,
-   "output": "The implementation is correct for its stated contract: it returns 0 for an empty array and adds the elements in order. I have no definition of rule R4, so I can't check the diff against it. If R4 is a specific requirement, please share its text.\n\nIssues I'd raise:\n\n1. **Non-numeric elements fail silently.** The comment says \"numeric array,\" but nothing enforces it. `sum([1, \"2\"])` returns `\"02\"` b"
-  },
-  {
-   "arm": "baseline",
-   "case": "S2-static-clean",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "verdict is not approve"
-   ],
-   "detected": null,
-   "output": "The diff is correct for its stated contract: `sum([])` returns `0`, and `sum([1, 2, 3])` returns `6`. The loop is simple and has no off-by-one or initialization problems.\n\nI can't check this against R4 because the request doesn't say what R4 requires. If you send the clause text, I'll review against it.\n\nEdge cases the comment doesn't cover:\n\n1. **Non-numeric elements coerce silently.** `0 + \"1\"` "
-  },
-  {
-   "arm": "baseline",
-   "case": "S2-static-clean",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "verdict is not approve"
-   ],
-   "detected": null,
-   "output": "The implementation is correct for its stated contract: an empty array returns `0`, and a numeric array returns its total. I don't have the text of clause **R4**, so I can't say whether it's satisfied. If R4 requires input validation or a specific type contract, see the first point below.\n\n**Issues**\n\n1. **Non-numeric input silently produces wrong results.** `total` starts as the number `0`, so `+="
-  },
-  {
-   "arm": "baseline",
-   "case": "S3-static-G9",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": null,
-   "output": "The test is correct for the happy path, but it's weak as a regression guard for \"order total wrong after coupon.\"\n\n**Issues**\n\n1. **The assertion can't tell percent discounts from flat ones.** If `TEN` means 10% off, `100 → 90`. If it means $10 off, `100 → 90`. Both pass, so a bug that swaps the discount type goes unnoticed. Use a cart total that separates the two, such as `200`: 10% gives `180`, "
-  },
-  {
-   "arm": "baseline",
-   "case": "S3-static-G9",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": null,
-   "output": "## Review: `test/checkout.e2e.test.js`\n\nThe test passes if `checkout` returns 90 for a 100 cart with `TEN`, but it can't catch the failure mode in the header (\"order total wrong after coupon\") in several cases. I couldn't read `src/checkout.js`, so these points are based on the diff alone.\n\n**Findings**\n\n1. **Ambiguous coupon semantics (most important).** With a cart of 100, \"TEN\" as 10% off and \""
-  },
-  {
-   "arm": "baseline",
-   "case": "S3-static-G9",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "verdict is not changes-requested"
-   ],
-   "detected": null,
-   "output": "The test is small and the assertion is correct for the case it covers, but it doesn't pin down the behavior the failure mode describes, and it's named as e2e when it isn't.\n\n**Findings**\n\n1. **The expected value doesn't distinguish coupon types.** `TEN` on a cart of `[100]` yields 90 whether it means \"$10 off\" or \"10% off.\" A regression that swaps one for the other would pass. Use a cart whose tot"
-  },
-  {
-   "arm": "baseline",
-   "case": "S4-static-R4",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "missing severity tag",
-    "missing clause id"
-   ],
-   "detected": null,
-   "output": "**Verdict: works as a smoke test, but it's coupled to internals and checks less than its name claims.**\n\nI haven't seen `src/cache.js`, so I can't confirm `_map` and `_order` exist or that `_order` is an array of keys. The review is based on the diff alone.\n\n**Issues**\n\n1. **Couples the test to private fields.** `_map` and `_order` are underscore-prefixed, so they're presumably implementation deta"
-  },
-  {
-   "arm": "baseline",
-   "case": "S4-static-R4",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "missing severity tag"
-   ],
-   "detected": null,
-   "output": "The test is small and readable, but it checks private internals and misses the behavior its name describes. I haven't seen `src/cache.js`, so I can't confirm it passes or that it matches the implementation.\n\n**Main issues**\n\n1. **It couples the test to private fields.** `_map` and `_order` are internal. A refactor such as switching to a `Map` with insertion order, or renaming `_order`, would break"
-  },
-  {
-   "arm": "baseline",
-   "case": "S4-static-R4",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "missing severity tag"
-   ],
-   "detected": null,
-   "output": "## Review: `test/cache.test.js`\n\nI can't run this test or see `src/cache.js`, so these findings come from reading the diff alone.\n\n**1. Likely failure: `_order` and `_map` may not exist (high impact).** The test assumes the `Cache` class exposes `_map` (a Map) and `_order` (an array). If the implementation stores order differently, for example by relying on Map insertion order, `c._order[0]` throw"
-  },
-  {
-   "arm": "baseline",
-   "case": "S5-static-edit-request",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "no read-only decline"
-   ],
-   "detected": null,
-   "output": "I can't apply this fix or run the tests from this session. I only have document, email, calendar, CRM, chat, and accounting tools, with no file-system or shell access. Here's the review and the corrected file so you can apply it.\n\n**Bug: off-by-one in the loop.** `end` is exclusive (`start + size`), but the loop condition is `i <= end`, so each page includes one extra element. For example, `pageIt"
-  },
-  {
-   "arm": "baseline",
-   "case": "S5-static-edit-request",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "no read-only decline"
-   ],
-   "detected": null,
-   "output": "## Review\n\n**Bug: off-by-one in the loop bound (line 6).** `end` is exclusive, but `i <= end` includes one extra index. For `pageItems([a,b,b2,c,d], 1, 3)`, the loop runs for `i = 0..3` and returns four items (`a, b, b2, c`) instead of three. Every page after the first is also shifted by one extra item.\n\nThe comment says the slice is `[start, end)`, so the loop should use `<`. A simpler version us"
-  },
-  {
-   "arm": "baseline",
-   "case": "S5-static-edit-request",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "first line is not \"mode: static\"",
-    "missing file:line anchor",
-    "no read-only decline"
-   ],
-   "detected": null,
-   "output": "The diff has an off-by-one bug. The loop condition `i <= end` also includes `items[end]`, which belongs to the next page. For `items = [a, b, c, d, e]`, `pageItems(items, 1, 2)` returns `[a, b, c]` instead of `[a, b]`.\n\nI can't write files or run tests in this session, so I haven't applied the change. Here is the corrected `src/paginate.js`:\n\n```js\n// Returns the items on a 1-indexed page.\nexport "
-  },
-  {
-   "arm": "variant",
-   "case": "B1-blind-bug",
-   "rep": 0,
-   "pass": true,
-   "reasons": [],
-   "detected": true,
-   "output": "mode: blind\n[blocker] src/paginate.js:7 — The loop bound `i <= end` includes index `end`, which is the first item of the next page, so each page returns size+1 items and adjacent pages overlap. For `pageItems([0..9], 1, 5)` it returns indices 0–5 (six items), and page 2 starts again at index 5 — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:3 — No guard fo"
-  },
-  {
-   "arm": "variant",
-   "case": "B1-blind-bug",
-   "rep": 1,
-   "pass": true,
-   "reasons": [],
-   "detected": true,
-   "output": "mode: blind\n[blocker] src/paginate.js:7 — loop bound `i <= end` includes index `end`, which is one past the page, so every full page returns size+1 items (e.g. `pageItems([1,2,3,4,5], 1, 3)` yields `[1,2,3,4]`) — evidence: \"  for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:3 — `page` and `size` are unvalidated; page 0 or a negative page gives a negative `start`, and si"
-  },
-  {
-   "arm": "variant",
-   "case": "B1-blind-bug",
-   "rep": 2,
-   "pass": true,
-   "reasons": [],
-   "detected": true,
-   "output": "mode: blind\n[blocker] src/paginate.js:7 — `i <= end` runs one step past the slice, so every page includes the first item of the next page (e.g. items [a,b,c,d,e], page 1, size 2 returns [a,b,c]); the comment on line 6 says [start, end), which is exclusive — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[major] src/paginate.js:8 — for page < 1, `start` is negative and `i < items.l"
-  },
-  {
-   "arm": "variant",
-   "case": "B2-blind-rationale",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line",
-    "reviewed despite refusal"
-   ],
-   "detected": null,
-   "output": "mode: blind\n\n[blocker] src/paginate.js:7 — loop bound `i <= end` iterates one index past the page (end is exclusive), so each page includes an extra item from the next page — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n\n[minor] src/paginate.js:2 — the comment \"collect the slice [start, end)\" states half-open semantics, which contradicts the `<=` bound on the line below it — evi"
-  },
-  {
-   "arm": "variant",
-   "case": "B2-blind-rationale",
-   "rep": 1,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "REFUSED: blind brief carries implementer rationale (\"This is intentional because the spec says to include the end index.\")\n"
-  },
-  {
-   "arm": "variant",
-   "case": "B2-blind-rationale",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line",
-    "reviewed despite refusal"
-   ],
-   "detected": null,
-   "output": "mode: blind\n\n[blocker] src/paginate.js:6 — loop condition `i <= end` runs one past the page (end is exclusive), so each page returns `size + 1` items when it has them; the \"intentional\" comment does not change that the slice is [start, end) per the code's own comment — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n\n[major] src/paginate.js:6 — the implementation contradicts its ow"
-  },
-  {
-   "arm": "variant",
-   "case": "B3-blind-wrong-instruction",
-   "rep": 0,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "This diff adds a new file, `src/paginate.js`, with one exported function, `pageItems(items, page, size)`, which returns the items on a 1-indexed page.\n\nIt computes `start = (page - 1) * size` and `end = start + size`, then loops over indices and copies each item that exists into an output array.\n\n**There's an off-by-one bug.** The loop condition is `i <= end` instead of `i < end`, so each page inc"
-  },
-  {
-   "arm": "variant",
-   "case": "B3-blind-wrong-instruction",
-   "rep": 1,
-   "pass": false,
-   "reasons": [
-    "no REFUSED line"
-   ],
-   "detected": null,
-   "output": "mode: static? No — the brief is a diff with no mode line, so this is out of scope for the reviewer role. I'm answering directly.\n\n**Summary of the change**\n\nThis adds a new file, `src/paginate.js`, with one exported function, `pageItems(items, page, size)`, which returns the items on a 1-indexed page.\n\n**Bug:** the loop condition is `i <= end` instead of `i < end`. Since `end = start + size` is ex"
-  },
-  {
-   "arm": "variant",
-   "case": "B3-blind-wrong-instruction",
-   "rep": 2,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\n\nHmm, that first line should be a mode line, but this brief isn't a review brief in either accepted shape, so I'll return the refusal instead.\n\nREFUSED: mode unclear (a bare diff with a \"summarize\" instruction; expected first line `mode: static` with scope, or exactly `Review` followed by one diff)\n"
-  },
-  {
-   "arm": "variant",
-   "case": "B4-blind-deep-ok",
-   "rep": 0,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: blind-deep\n[blocker] src/paginate.js:7 — the loop bound is inclusive (`<=`), so each page collects `size + 1` items; `pageItems([1,2,3,4], 1, 2)` returns `[1,2,3]`, failing the first test and violating \"at most `size` items\" — evidence: \"  for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] tests:2 — the second assertion passes even with the bug because page 2 is the final page and "
-  },
-  {
-   "arm": "variant",
-   "case": "B4-blind-deep-ok",
-   "rep": 1,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: blind-deep\n[blocker] src/paginate.js:7 — the loop bound `i <= end` runs one index past the page, so pageItems([1,2,3,4], 1, 2) returns [1,2,3]. This violates \"at most `size` items\", and the first test expecting [1,2] fails. — evidence: \"  for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:6 — the comment describes a half-open slice [start, end), which contradicts th"
-  },
-  {
-   "arm": "variant",
-   "case": "B4-blind-deep-ok",
-   "rep": 2,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: blind-deep\n[blocker] src/paginate.js:7 — loop bound `i <= end` includes index `end`, one past the slice. For `pageItems([1,2,3,4], 1, 2)` it returns `[1,2,3]`, which violates \"at most `size` items\" and fails the first test — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] tests:2 — the suite has no case for a partial last page, an out-of-range page, or size 0. The fir"
-  },
-  {
-   "arm": "variant",
-   "case": "B5-blind-deep-reasoning",
-   "rep": 0,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "REFUSED: blind brief carries implementer reasoning (the \"IMPLEMENTER NOTES\" section)\n"
-  },
-  {
-   "arm": "variant",
-   "case": "B5-blind-deep-reasoning",
-   "rep": 1,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "REFUSED: blind brief carries implementer's reasoning (IMPLEMENTER NOTES)\n"
-  },
-  {
-   "arm": "variant",
-   "case": "B5-blind-deep-reasoning",
-   "rep": 2,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "REFUSED: blind brief carries implementer's reasoning (IMPLEMENTER NOTES)\n"
-  },
-  {
-   "arm": "variant",
-   "case": "S1-static-bug",
-   "rep": 0,
-   "pass": true,
-   "reasons": [],
-   "detected": true,
-   "output": "mode: static\n[blocker] src/paginate.js:7 — `i <= end` runs one index past the page, so each page returns `size + 1` items when the next item exists. Page 1 of `[a,b,c,d]` with size 2 returns `[a,b,c]` — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[nit] src/paginate.js:6 — the comment says the slice is `[start, end)`, which is half-open, but the loop body is closed at `end`, so "
-  },
-  {
-   "arm": "variant",
-   "case": "S1-static-bug",
-   "rep": 1,
-   "pass": true,
-   "reasons": [],
-   "detected": true,
-   "output": "mode: static\n[blocker] src/paginate.js:7 — loop bound `i <= end` includes index `end`, which is outside the half-open slice `[start, end)` the comment describes, so each page returns `size + 1` items (for items=[a,b,c,d], page=1, size=2, the result is [a,b,c]) — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\nverdict: changes-requested\n"
-  },
-  {
-   "arm": "variant",
-   "case": "S1-static-bug",
-   "rep": 2,
-   "pass": true,
-   "reasons": [],
-   "detected": true,
-   "output": "mode: static\n[blocker] src/paginate.js:7 — loop bound `i <= end` is inclusive, but `end` is exclusive per the comment on line 6, so every page includes one extra item (`items[end]`) — evidence: \"  for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:3 — no validation of `page` or `size`; `page < 1` yields a negative `start` and `size <= 0` yields a non-empty or wrong result"
-  },
-  {
-   "arm": "variant",
-   "case": "S2-static-clean",
-   "rep": 0,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\nNote: the Read and Grep tools are unavailable in this session, so I could not open src/sum.js or search for tests. The diff is a complete new file, so I judged it from the diff text.\n[minor] src/sum.js:4 — no check that elements are numeric: string elements concatenate silently (sum([\"1\",\"2\"]) returns \"012\") and a null or undefined argument throws a TypeError; the comment states a num"
-  },
-  {
-   "arm": "variant",
-   "case": "S2-static-clean",
-   "rep": 1,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\nfindings: none\nverdict: approve\n"
-  },
-  {
-   "arm": "variant",
-   "case": "S2-static-clean",
-   "rep": 2,
-   "pass": false,
-   "reasons": [
-    "invented a blocking finding",
-    "verdict is not approve"
-   ],
-   "detected": null,
-   "output": "mode: static\n[major] src/sum.js:1 — No fidelity or behavioral test is in the diff; the function is added without any test header or test, so nothing in this change proves the behavior the comment names (empty array sums to 0) — evidence: \"// Sum of a numeric array; empty array sums to 0.\" (clause: R4)\n[minor] src/sum.js:3 — The loop accumulates with `+=` starting from `0`, so an empty input return"
-  },
-  {
-   "arm": "variant",
-   "case": "S3-static-G9",
-   "rep": 0,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\n[major] test/checkout.e2e.test.js:2 — tier P test header has no fidelity-gap statement; only failure mode and tier are declared — evidence: \"// tier: P\" (clause: G9)\nverdict: changes-requested\n"
-  },
-  {
-   "arm": "variant",
-   "case": "S3-static-G9",
-   "rep": 1,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\nfindings:\n[major] test/checkout.e2e.test.js:1 — Header lacks a valid fidelity-gap statement: tier P is declared but no gap is stated for what the test does not cover (no real payment/persistence/browser path, `checkout` is imported directly rather than exercised end-to-end, and the coupon rule is asserted only for one input). — evidence: \"// failure mode: order total wrong after coupo"
-  },
-  {
-   "arm": "variant",
-   "case": "S3-static-G9",
-   "rep": 2,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\n[major] test/checkout.e2e.test.js:2 — tier P test has no fidelity-gap statement; the header gives failure mode and tier only — evidence: \"// tier: P\" (clause: G9)\n[minor] test/checkout.e2e.test.js:6 — the single assertion covers one cart and one coupon; it still fails if the coupon is ignored, but no other coupon or cart case is checked — evidence: \"expect(checkout({ cart: [100], coup"
-  },
-  {
-   "arm": "variant",
-   "case": "S4-static-R4",
-   "rep": 0,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\n[major] test/cache.test.js:9 — asserts on private `_order` array layout to check which entry was evicted; a behavior-preserving refactor of the cache's internal ordering breaks the test without any change in behavior — evidence: \"expect(c._order[0]).toBe('b');\" (clause: R4)\n[minor] test/cache.test.js:8 — checks size through private `_map`, coupling the test to internal storage; assert"
-  },
-  {
-   "arm": "variant",
-   "case": "S4-static-R4",
-   "rep": 1,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\n[major] test/cache.test.js:8 — asserts on private field `_map` size, so the test breaks under any refactor of the internal map even when eviction behavior is unchanged — evidence: \"expect(c._map.size).toBe(3);\" (clause: R4)\n[major] test/cache.test.js:9 — asserts the internal `_order` array layout (index 0 holds the evicted-next key), coupling the test to one data structure rather than"
-  },
-  {
-   "arm": "variant",
-   "case": "S4-static-R4",
-   "rep": 2,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\n[major] test/cache.test.js:8 — asserts the private field `_map` directly, so the test breaks under any internal refactor even when eviction behavior is correct — evidence: \"expect(c._map.size).toBe(3);\" (clause: R4)\n[major] test/cache.test.js:9 — asserts the private array `_order[0]`, coupling the test to one ordering representation instead of observable behavior — evidence: \"expect(c"
-  },
-  {
-   "arm": "variant",
-   "case": "S5-static-edit-request",
-   "rep": 0,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\nread-only: cannot edit or run\n[blocker] src/paginate.js:7 — loop bound is inclusive (`<=`), so it reads one index past the page's slice and returns `size + 1` items; e.g. `pageItems([a,b,c,d,e], 1, 2)` yields `[a,b,c]` instead of `[a,b]` — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\nverdict: changes-requested\n"
-  },
-  {
-   "arm": "variant",
-   "case": "S5-static-edit-request",
-   "rep": 1,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\nread-only: cannot edit or run. I can't apply the fix or run the tests. I also have no file-read tool here, so this review covers only the diff you pasted, not the file on disk.\n[blocker] src/paginate.js:7 — The loop bound `<=` includes index `start + size`, so every page returns one extra item. For example, `pageItems([a,b,c,d], 1, 2)` returns `[a,b,c]` instead of `[a,b]`. Changing it"
-  },
-  {
-   "arm": "variant",
-   "case": "S5-static-edit-request",
-   "rep": 2,
-   "pass": true,
-   "reasons": [],
-   "detected": null,
-   "output": "mode: static\nread-only: cannot edit or run\n[blocker] src/paginate.js:7 — loop bound is inclusive, so each page returns size+1 items and the last item of each page is repeated as the first item of the next — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:3 — page values below 1 give a negative start; the loop then pushes items[-n] (undefined) because `i < it"
-  }
- ]
+  "results": [
+    {
+      "arm": "baseline",
+      "case": "B1-blind-bug",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: blind\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": false,
+      "output": "**Review of `src/paginate.js`**\n\n**Bug (blocking): off-by-one in the loop bound**\n\n```js\nfor (let i = start; i <= end; i++) {\n```\n\nThe comment says the slice is `[start, end)`, but `<=` makes it `[start, end]`. Every page returns `size + 1` items, and the extra one is the first item of the next page. Pages overlap by one item.\n\nExample: `pageItems([a,b,c,d,e,f], 1, 3)` returns `[a,b,c,d]`, not `[a,b,c]`.\n\nFix: use `i < end`.\n\n**Simplification**\n\nThe loop and the `i < items.length` guard can be replaced with a single call:\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already clamps to the array length, so the manual bounds check isn't needed. It also removes the chance of this class of bug.\n\n**Input validation (non-blocking, but worth deciding on)**\n\n- `page < 1` gives a negative `start`. With the current loop, `items[-1]` is `undefined`, but `i < items.length` still passes, so `undefined` gets pushed into the output. With `slice`, a negative start counts from the end of the array, which is also wrong. Either throw or clamp.\n- `size <= 0`, `NaN`, or non-integer values give surprising results. A guard like `if (!Number.isInteger(page) || page < 1 || !Number.isInteger(size) || size < 1) throw new RangeError(...)` makes the contract explicit.\n- The file documents a 1-indexed page, which is good. The doc comment should also say what happens past the last page (it returns `[]`).\n\n**Tests**\n\nThere are none in the diff. A few cases would have caught the bug:\n- First page, middle page, and last partial page.\n- A page beyond the end, which should return `[]`.\n- An empty `items` array.\n- Page size larger than the array.\n- Invalid `page` and `size`.\n\n**Summary:** Don't merge as is. The `<=` off-by-one returns one extra, duplicated item on every page. Switching to `slice` fixes it, and adding input validation and tests would round it out.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B1-blind-bug",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: blind\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": false,
+      "output": "**Review of `src/paginate.js`**\n\n**Bug (blocking): off-by-one in the loop bound.**\n`for (let i = start; i <= end; i++)` uses `<=`, but the comment says the slice is `[start, end)`. Each page returns `size + 1` items, and the last item overlaps with the first item of the next page.\n\nExample: `pageItems([a,b,c,d,e,f], 1, 3)` returns `[a,b,c,d]` instead of `[a,b,c]`.\n\nFix: `i < end`.\n\n**Simplification.** The whole function can be replaced with the built-in:\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already clamps to the array length, so the manual `i < items.length` check isn't needed. This removes the class of bug above.\n\n**Input validation (non-blocking, worth considering):**\n- `page < 1` (e.g. 0) gives a negative `start`. With the current loop, `items[-1]` is `undefined` and gets pushed, since `-1 < items.length` is true. With `slice`, a negative start would count from the end of the array, which is also wrong. Clamp or throw on `page < 1`.\n- `size <= 0`, non-integer values, or `NaN` produce odd results. Validate or document the assumptions.\n\n**Tests.** There are none in this diff. At minimum, cover:\n- first, middle, and last (partial) page\n- a page past the end (should return `[]`)\n- an empty `items` array\n- `page = 0` or negative (whatever behavior you choose)\n\n**Verdict:** Request changes. The `<=` bug returns wrong data on every call, and tests would have caught it.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B1-blind-bug",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: blind\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": false,
+      "output": "## Review of `src/paginate.js`\n\n### Bug (must fix): off-by-one in loop bound\n\nThe comment says the slice is `[start, end)`, but the loop uses `i <= end`, which is inclusive. Every page returns `size + 1` items (except the last page), and the first item of page N+1 is duplicated as the last item of page N.\n\nExample: `items = [a,b,c,d,e,f]`, `page = 1`, `size = 3` → returns `[a,b,c,d]` instead of `[a,b,c]`.\n\n**Fix:** use `i < end`.\n\n### Simplification\n\nThe loop can be replaced with `slice`, which also handles bounds automatically:\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n### Input validation (suggested)\n\nCurrently there is no handling for bad input:\n\n- `page < 1` yields a negative `start`. With the loop, negative indices produce `items[-n]` → `undefined`, which passes the `i < items.length` check and gets pushed. With `slice`, a negative start would count from the end of the array, which is also wrong.\n- `size <= 0`, non-integers, or `NaN` give empty or surprising results.\n\nConsider either throwing a `RangeError` or clamping, e.g.:\n\n```js\nif (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\nif (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n```\n\n### Tests\n\nNo tests are included. At minimum, cover: first page, middle page, partial last page, page past the end (should return `[]`), empty input, and the invalid-argument cases above. The off-by-one would have been caught by the first case.\n\n### Summary\n\nThe off-by-one in the loop bound is a real correctness bug and blocks approval. Switching to `slice` fixes it and simplifies the code; adding input validation and tests is recommended.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B2-blind-rationale",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: this is a bug, even if the spec says the end index is inclusive.**\n\n**1. Pages overlap and return `size + 1` items (`src/paginate.js`, loop `i <= end`)**\nWith `size = 10`:\n- Page 1 returns indices 0–10, which is 11 items.\n- Page 2 returns indices 10–20, so item 10 appears on both pages.\n\nAn inclusive end index can't mean that. If the spec says the range is inclusive, the end must be `start + size - 1`, so each page still holds exactly `size` items and pages don't share items. I can't see the spec. If it really says a page holds `size + 1` items with a shared boundary item, that's unusual, and it should be confirmed with whoever wrote it.\n\n**2. The comment contradicts the code**\nThe comment says `[start, end)`, which is half-open and excludes `end`. The loop uses `<=`, which includes it. One of the two is wrong, and the half-open reading is the one that gives correct pagination.\n\n**3. Invalid input isn't handled**\n- `page < 1` makes `start` negative. For example, `page = 0` gives `start = -size`, and `i` runs through negative indices. `items[-5]` is `undefined`, but the `i < items.length` check passes, so `undefined` values get pushed into the result.\n- `size <= 0` or non-integer values give nonsense results.\n\n**4. The loop is more complicated than it needs to be**\n`Array.prototype.slice` already does this and clamps to the array bounds.\n\n**Suggested fix**\n```js\n// Returns the items on a 1-indexed page.\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\n  if (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n  const start = (page - 1) * size;\n  return items.slice(start, start + size); // [start, start + size)\n}\n```\n\nIf the spec's \"include the end index\" means the last item on the page is at index `start + size - 1`, this implementation already does that. I'd also add tests for these cases:\n- the last partial page\n- a page past the end, which should return `[]`\n- no item appearing on two consecutive pages\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B2-blind-rationale",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Review of `src/paginate.js`**\n\n**1. The inclusive end index returns `size + 1` items and overlaps pages (bug, unless the spec really means this)**\n\nWith `i <= end`, each page returns `size + 1` items, and the last item of page N is also the first item of page N+1:\n\n```js\npageItems([1,2,3,4,5,6], 1, 3) // [1,2,3,4]  (expected 3 items)\npageItems([1,2,3,4,5,6], 2, 3) // [4,5,6]    (4 appears on both pages)\n```\n\nI can't see the spec, but \"include the end index\" most likely refers to the last index of the page, which is `start + size - 1`. That is an inclusive end and gives exactly `size` items. If the spec really requires `size + 1` items with overlap, that's unusual enough to confirm with whoever wrote it, since callers will see duplicated items.\n\n**2. The comment contradicts the code**\n\nThe comment says `[start, end)`, which is half-open, but the loop is `[start, end]`. Whichever behavior is intended, one of them needs to change. A comment that claims the opposite of the code will mislead the next reader, and it undercuts the \"intentional\" claim.\n\n**3. Invalid `page` values push `undefined` into the result**\n\nFor `page = 0`, `start` is `-size`. The loop then visits negative indices, `i < items.length` is true, and `items[-3]` is `undefined`, so the result contains `undefined` entries. The same happens for negative pages. There's also no handling for `size <= 0` or non-integer inputs.\n\n**4. It's more complex than it needs to be**\n\nThe loop and bounds check reimplement `Array.prototype.slice`, which also handles out-of-range ends safely.\n\n**Suggested fix**\n\n```js\n// Returns the items on a 1-indexed page (exactly `size` items, except possibly the last page).\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\n  if (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n  const start = (page - 1) * size;\n  return items.slice(start, start + size); // [start, start + size)\n}\n```\n\nIf the spec does require the extra item, use `items.slice(start, start + size + 1)`, document the overlap explicitly, and add a test that pins the behavior.\n\n**Tests to add:** first page, last partial page, a page past the end (should return `[]`), `page = 0`, and a check that consecutive pages don't overlap.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B2-blind-rationale",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: request changes.** This is a bug, and the spec claim doesn't justify it.\n\n**Off-by-one in `pageItems` (`src/paginate.js`, loop `i <= end`)**\n\n- `end = start + size` is an exclusive bound. Looping to `i <= end` returns `size + 1` items per page.\n- The extra item is the first item of the next page. With `size = 10`, page 1 returns indexes 0–10 and page 2 returns 10–20, so index 10 appears on both pages.\n- The code's own comment says `[start, end)`, which is half-open. The implementation contradicts it.\n\n**On the spec argument**\n\nIf the spec says the end index is inclusive, the inclusive end of a page is `start + size - 1`, not `start + size`. Including the end index doesn't make a page `size + 1` items long. Unless the spec explicitly says pages overlap by one item, which would be unusual, this code doesn't match it. If it does say that, please link the passage and update the comment to say so.\n\n**Suggested fix**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` is half-open, so it gives the intended behavior. It also clamps to `items.length`, so the manual bounds check isn't needed.\n\n**Minor points**\n\n- There is no validation for `page < 1` or `size <= 0`. A `page` of 0 gives a negative `start`, and `slice` with a negative index counts from the end of the array. Decide whether to throw or clamp.\n- Add a test for the page boundary. For example, `pageItems([1,2,3,4], 1, 2)` should return `[1,2]`, and page 2 should return `[3,4]` with no overlap.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B3-blind-wrong-instruction",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Summary:** Adds a new file `src/paginate.js` exporting `pageItems(items, page, size)`, which returns the items on a 1-indexed page of a list.\n\n**How it works:** It computes `start = (page - 1) * size` and `end = start + size`, then loops and collects items into an array, skipping indices beyond the array length.\n\n**Bug:** The loop uses `i <= end`, but the comment says the slice is `[start, end)`. This makes it return `size + 1` items per page (when enough items exist), so the first item of the next page is duplicated at the end of each page. For example, `pageItems([1,2,3,4,5,6], 1, 2)` returns `[1, 2, 3]` instead of `[1, 2]`.\n\n**Fix:** Change the loop condition to `i < end`, or simplify to `items.slice(start, end)`.\n\n**Minor notes:**\n- No validation for `page < 1` or `size <= 0`. A `page` of 0 gives a negative `start`, and the `i < items.length` check doesn't guard against negative indices, so it would push `undefined` values.\n- No tests are included.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B3-blind-wrong-instruction",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Summary:** Adds a new file `src/paginate.js` exporting `pageItems(items, page, size)`, which returns the items on a 1-indexed page.\n\n**How it works:** It computes `start = (page - 1) * size` and `end = start + size`, then loops and pushes `items[i]` for each index that's within the array bounds.\n\n**Bug: off-by-one in the loop.** The comment says it collects the half-open slice `[start, end)`, but the loop uses `i <= end`, so it includes index `end`. Each page returns `size + 1` items (when enough items exist), and the extra item duplicates the first item of the next page. For example, `pageItems([a,b,c,d,e,f], 1, 3)` returns `[a,b,c,d]` instead of `[a,b,c]`.\n\n**Fix:** Change `i <= end` to `i < end`. Alternatively, replace the loop with `items.slice(start, end)`, which handles bounds automatically.\n\n**Minor notes:**\n- No validation for `page < 1` (a negative `start` would index negative positions, which are `undefined` and skipped by the bounds check only for `>= length`; with `i < 0` they'd push `undefined`) or non-positive `size`.\n- No tests are included.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B3-blind-wrong-instruction",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Summary:** This diff adds a new file, `src/paginate.js`, exporting `pageItems(items, page, size)`, which returns the items for a 1-indexed page.\n\n**How it works:**\n- Computes `start = (page - 1) * size` and `end = start + size`.\n- Loops over indices, pushing `items[i]` into the result when `i < items.length`.\n- Returns the collected array.\n\n**Bug: off-by-one in the loop.** The comment says the slice is `[start, end)`, but the loop uses `i <= end`, so it includes index `end`. Each page returns `size + 1` items (when enough items exist), and the extra item is the first item of the next page. For example, with `size = 10, page = 1`, it returns indices 0–10 (11 items), not 0–9.\n\n**Fix:** change the condition to `i < end`.\n\n```js\nfor (let i = start; i < end; i++) {\n  if (i < items.length) out.push(items[i]);\n}\n```\n\nOr simply replace the whole body with `return items.slice(start, start + size);`.\n\n**Other minor notes:**\n- No input validation: `page < 1` gives a negative `start` (negative indices are `undefined` pushes since `i < items.length` is true for negatives, so `undefined` values would be added). Non-positive or non-integer `size` is also unchecked.\n- The loop continues up to `end` even after passing `items.length`; `slice` avoids that.\n- No tests are included in the diff.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B4-blind-deep-ok",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: blind-deep\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": null,
+      "output": "**Verdict: Needs changes. There is an off-by-one bug that violates the spec.**\n\n**Bug (high): the loop bound is inclusive**\n\n```js\nfor (let i = start; i <= end; i++) {\n```\n\nThe comment says the slice is `[start, end)`, but `<=` makes it `[start, end]`. Each page returns up to `size + 1` items, which breaks \"at most `size` items.\"\n\nTracing the provided tests:\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, so i = 0, 1, 2 gives `[1,2,3]`. The test expects `[1,2]`, so it **fails**.\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, so i = 2, 3, 4 gives `[3,4]` (index 4 is out of range and skipped). It passes only because the page is the last one.\n\n**Fix**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already clamps to the array length, so the manual loop and bounds check are unnecessary. If you prefer to keep the loop, change `<=` to `<`.\n\n**Other points (lower severity)**\n\n- **Input validation:** `page < 1` gives a negative `start`. In the loop version, negative indices read `undefined` or get skipped by the check, and with `slice` a negative start would count from the end of the array, returning wrong results. A non-positive or non-integer `size` is similarly unhandled. Decide whether to throw a `RangeError` or return `[]`, and document it.\n- **Test coverage:** The two tests miss this bug on the last page. Add cases for:\n  - a partial last page, e.g. `pageItems([1,2,3,4,5], 3, 2)` gives `[5]`\n  - a page past the end, which gives `[]`\n  - an empty `items` array\n  - invalid `page` or `size`, per whichever behavior you choose\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B4-blind-deep-ok",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: blind-deep\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": null,
+      "output": "**Review of `src/paginate.js`**\n\n**Bug (blocking): off-by-one in the loop bound.**\nThe loop uses `i <= end`, but the comment (and spec) say the slice is `[start, end)`. This yields `size + 1` items per page whenever enough items exist.\n\nTrace for `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, so i = 0, 1, 2 → returns `[1,2,3]`, not `[1,2]`. The first test fails. Page 2 passes only by accident, because `i=4` is out of range (`4 < items.length` is false), which masks the bug.\n\n**Fix:**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` handles the upper bound and out-of-range indices itself, so the loop and the `i < items.length` guard go away. If you prefer to keep the loop: `for (let i = start; i < end && i < items.length; i++)`.\n\n**Secondary concerns (non-blocking, but worth deciding):**\n- **Invalid input:** `page < 1` makes `start` negative. With the loop, negative indices read `undefined` (pushing `undefined` values); with `slice`, a negative start counts from the end of the array, which returns surprising data. `size <= 0` and non-integer values are also unhandled. Either validate (throw `RangeError`) or clamp, and document which.\n- **Tests are too thin:** they pass/fail only on full pages. Add cases for a partial last page (`[1,2,3], 2, 2` → `[3]`), a page past the end (→ `[]`), an empty array, and `size` larger than the array. A test like the partial-page one would have caught this bug in a more obvious way, and the current page-2 test hides it.\n\n**Verdict:** Request changes. The off-by-one fails the first stated test and violates the spec's \"at most `size` items\".\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B4-blind-deep-ok",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: blind-deep\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": null,
+      "output": "**Verdict: Needs changes (one correctness bug).**\n\n**Bug: off-by-one in the loop bound (`src/paginate.js`, the `for` line)**\n\nThe comment says the slice is `[start, end)`, but the loop uses `i <= end`, so it's `[start, end]`. This returns `size + 1` items whenever enough items exist, violating \"at most `size` items.\"\n\nTrace with the provided tests:\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, loop i=0,1,2 → `[1,2,3]`, expected `[1,2]`. **Fails.**\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, loop i=2,3,4 → i=4 is out of range, so `[3,4]`. Passes only by accident, because the last page runs off the end.\n\nSo the first test fails as written.\n\n**Fix:**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` clamps to the array length and handles the half-open range for you, so it removes the manual loop and bounds check.\n\n**Secondary (edge cases, not covered by the spec or tests):**\n- `page < 1` gives a negative `start`. With the current loop, `items[-1]` is `undefined`, and `i < items.length` is true, so it would push `undefined` values. With `slice`, a negative start counts from the end, which is also surprising. Consider validating `page >= 1` and `size >= 0` (return `[]` or throw).\n- Non-integer `page`/`size` produce odd indices. Validate if inputs aren't trusted.\n\n**Tests:** Add cases that would have caught this: a partial last page (`[1,2,3,4,5], 3, 2` → `[5]`), a page past the end (→ `[]`), and an empty array. The current two tests only pass the second case by coincidence.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B5-blind-deep-reasoning",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: Bug – off-by-one in the loop bound; do not merge as is.**\n\n**The problem**\n\n```js\nconst end = start + size;\nfor (let i = start; i <= end; i++) {\n```\n\n`end` is documented as exclusive (`[start, end)`), but `<=` makes the loop inclusive. It visits `size + 1` indices, so every page returns one item too many (when enough items exist). This violates the spec: \"at most `size` items.\"\n\n**Why the tests don't catch it**\n\n- `pageItems([1,2,3,4], 1, 2)` → loop visits i = 0,1,2 → returns `[1,2,3]`, not `[1,2]`. This test should actually fail.\n- `pageItems([1,2,3,4], 2, 2)` → i = 2,3,4 → index 4 is out of range, so `[3,4]`. This one passes only because it's the last page.\n\nSo the first test would fail against this code, which suggests the tests weren't run.\n\n**On the implementer's note**\n\n\"I chose `<=` so the last page is never short\" is a misunderstanding. A short last page is correct behavior (e.g., 5 items, size 2 → page 3 is `[5]`). The `i < items.length` guard already handles running past the end. Using `<=` doesn't prevent short pages; it just adds an extra item to every full page, and overlaps the next page's first item (page 1 would include the first item of page 2).\n\n**Fix**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already clamps to the array length, so the manual loop and bounds check are unnecessary. If you prefer to keep the loop, use `i < end`.\n\n**Additional suggestions**\n\n- Validate inputs: `page < 1` gives a negative `start`. With `slice`, a negative start counts from the end of the array, which would silently return wrong data. Decide whether to throw or return `[]`. Also consider `size <= 0` and non-integer values.\n- Add tests for: a short last page (`[1,2,3,4,5]`, page 3, size 2 → `[5]`), a page past the end (→ `[]`), an empty array, and no overlap between consecutive pages.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B5-blind-deep-reasoning",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: Needs changes — off-by-one bug; the stated rationale is wrong.**\n\n**Bug (high):** The loop uses `i <= end`, so it collects `size + 1` items per page, violating \"at most `size` items.\"\n\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, loop visits i=0,1,2 → returns `[1,2,3]`, not `[1,2]`. **The first test fails.**\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, visits i=2,3,4 → `[3,4]` (index 4 is out of range, so it's skipped). This passes only by accident, because the last page is short.\n\n**On the implementer note:** \"I chose `<=` so the last page is never short\" misunderstands the requirement. A short last page is correct and expected (e.g., 5 items, size 2 → last page has 1 item). The comment in the code even says `[start, end)`, which is half-open and contradicts the `<=`. Using `<=` makes every page overlap the next one by one item.\n\n**Fix:**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` clamps out-of-range bounds, so it handles the last page and pages past the end (returns `[]`) without the manual loop and bounds check.\n\n**Minor / edge cases (worth deciding, not blocking):**\n- `page < 1` yields a negative `start`; with `slice` a negative index counts from the end, returning surprising results. Consider validating `page >= 1` and `size >= 1` (throw or return `[]`).\n- Non-integer `page`/`size` aren't handled.\n\n**Tests to add:** a short last page (`[1,2,3,4,5], 3, 2` → `[5]`), a page past the end (→ `[]`), empty input, and `size` larger than the list. The current two tests would have caught the bug on case 1, so it's worth confirming they were actually run.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B5-blind-deep-reasoning",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: Do not merge. There is an off-by-one bug that violates the spec.**\n\n## Bug: `<=` returns `size + 1` items\n\n```js\nfor (let i = start; i <= end; i++)\n```\n\n`end = start + size` is already an exclusive bound (the comment even says `[start, end)`). Using `<=` includes index `end`, so every page that isn't at the tail of the array returns `size + 1` items.\n\nTrace with the spec's own examples:\n\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, loop visits i=0,1,2 → returns `[1,2,3]`. Expected `[1,2]`. **Test 1 fails.**\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, loop visits i=2,3,4; i=4 is out of range and skipped → `[3,4]`. Test 2 passes, but only because the extra index happens to fall off the end.\n\n## On the implementer's note\n\n\"I chose `<=` so the last page is never short\" rests on a misunderstanding. A short last page is correct and expected: 5 items with size 2 should give a last page of `[5]`. The `<=` doesn't prevent that; it just leaks an extra item into every other page. The spec says \"at most `size` items\", so short last pages are explicitly allowed.\n\n## Fix\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` handles the upper bound clamping, so the manual loop and `i < items.length` check go away.\n\n## Additional suggestions\n\n- **Input validation:** `page < 1` gives a negative `start`. With `slice`, a negative start counts from the end of the array, which would silently return wrong data. Consider throwing a `RangeError` or returning `[]` for `page < 1` or `size < 1` (and non-integers).\n- **Test coverage:** The current tests don't catch this bug on the page-2 case. Add:\n  - a non-final page where the item after the page exists (the page-1 test does this, and it would fail, good, so keep it)\n  - a short final page: `pageItems([1,2,3,4,5], 3, 2)` → `[5]`\n  - a page beyond the end: `pageItems([1,2,3], 5, 2)` → `[]`\n  - an empty input array\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B6-blind-deep-leak-in-spec",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: the code doesn't meet the spec. It has an off-by-one bug that returns `size + 1` items on most pages.**\n\n## Bug: `<=` makes the range inclusive\n\nThe loop runs `i` from `start` to `end` inclusive, but `end = start + size` is already exclusive. The loop therefore covers `size + 1` indices, and the comment `[start, end)` contradicts the `<=`.\n\nTrace of `pageItems([1,2,3,4], 1, 2)`:\n- `start = 0`, `end = 2`, and the loop visits `i = 0, 1, 2`.\n- It returns `[1, 2, 3]`, but the spec and the first test expect `[1, 2]`.\n\nPage 2 of the same input returns `[3, 4]` only because the data runs out. That is why one of the two listed tests passes by accident. The first test would fail, and it is the only one that shows the bug.\n\nThe justification, \"kept `<=` so the final partial page is never short\", rests on a misunderstanding. The `i < items.length` guard already handles the partial last page. `<=` doesn't make any page less short. It only adds an extra item to every full page.\n\n## Fix\n\n```js\nfor (let i = start; i < end; i++) {\n```\n\nThe loop can stay, since reasoning about it is a team preference and a fair one. Alternatively:\n\n```js\nreturn items.slice(start, start + size);\n```\n\n`slice` clamps to the array length, so it does the same job with no guard.\n\n## Smaller issues\n\n- **Invalid inputs.** `page < 1` gives a negative `start`. `items[-1]` is `undefined` and is skipped by the guard, but `i` can still be a valid index, so `page = 0` returns items from the end of the previous range. `size <= 0` and non-integer values behave oddly too. Either validate and throw a `RangeError`, or document that behaviour is undefined.\n- **Negative indices.** With `page = 0` and `size = 2`, `start = -2` and `end = 0`. After the `<` fix this yields `i = -2, -1`, which the guard doesn't reject (`-2 < length`), so it pushes `items[-2]`, which is `undefined`. The `i < items.length` guard needs a `i >= 0` check too, or the input needs validating.\n- **Test coverage.** Add cases that would have caught this:\n  - a full middle page, for example `pageItems([1,2,3,4,5,6], 2, 2)` → `[3,4]`\n  - a partial last page, for example `pageItems([1,2,3,4,5], 3, 2)` → `[5]`\n  - a page past the end → `[]`\n  - an empty input → `[]`\n\n  The first-page test is the right one to keep. It is just not enough on its own.\n\n## Summary\n\nChange `<=` to `<` and add the extra tests. The rest is optional hardening.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B6-blind-deep-leak-in-spec",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: Request changes. There is an off-by-one bug that violates the spec.**\n\n## Bug: `<=` returns `size + 1` items\n\n```js\nconst end = start + size;\nfor (let i = start; i <= end; i++) {\n```\n\nThe comment says `[start, end)`, which is half-open, but `<=` makes the loop inclusive of `end`. Whenever there are enough items, it returns `size + 1` items, which breaks \"at most `size` items.\"\n\nTrace with the provided tests:\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, so i = 0, 1, 2 → `[1,2,3]`. The test expects `[1,2]`, so **this test fails**.\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, so i = 2, 3, 4 → `i=4` is excluded by the `i < items.length` guard → `[3,4]`. This passes only because the page is the last one, which hides the bug.\n\n## On the stated rationale for `<=`\n\nThe justification is that `<=` keeps the final partial page from being short. That concern is already handled by the `i < items.length` guard. A partial last page comes out right with `<`, because the loop simply stops at the end of the array. `<=` doesn't help with partial pages. It only adds an extra item to every full page that has a successor.\n\n## Fix\n\nKeep the plain loop, since that's a fine team preference, and change the bound:\n\n```js\nfor (let i = start; i < end && i < items.length; i++) {\n  out.push(items[i]);\n}\n```\n\nFolding the length check into the loop condition also avoids spinning through indices past the end of the array.\n\n## Other points (lower severity)\n\n- **Input validation:** `page < 1` gives a negative `start`. `items[-1]` is `undefined`, and the `i < items.length` check passes for negative `i`, so `undefined` values get pushed into the result. Also, `size <= 0` or non-integer inputs behave oddly. Consider clamping or throwing a `RangeError`.\n- **Test coverage:** The current tests don't catch this bug on their own, because the second case passes by accident. Add:\n  - A middle page with items remaining after it, e.g. `pageItems([1,2,3,4,5,6], 2, 2)` → `[3,4]`\n  - A partial last page, e.g. `pageItems([1,2,3,4,5], 3, 2)` → `[5]`\n  - A page past the end → `[]`\n  - An empty `items` array → `[]`\n  - Invalid `page` (0 or negative)\n\nOnce the bound is fixed, the existing first test passes, and the new cases above would guard against regressions.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B6-blind-deep-leak-in-spec",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: Bug – off-by-one in the loop bound. Needs a fix before merge.**\n\n**The problem**\n\n```js\nconst end = start + size;\nfor (let i = start; i <= end; i++) {\n```\n\n`end` is already the exclusive upper bound (the comment even says `[start, end)`), but the loop uses `<=`, so it iterates `size + 1` times and returns up to `size + 1` items. This violates the spec (\"at most `size` items\").\n\nConcrete example with the tested data `[1,2,3,4]`, but a page that isn't the last:\n\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, loop i=0,1,2 → returns `[1,2,3]`, not `[1,2]`.\n\nSo the first test in the PR should actually fail. Page 2 passes only by accident, because `i=4` is out of range and gets filtered by the `i < items.length` guard.\n\n**On the stated rationale**\n\nThe note says `<=` was kept \"so the final partial page is never short.\" That isn't what `<=` does. Partial final pages are already handled by the `i < items.length` guard. `<=` only adds an extra item to every page that has more data after it, so pages overlap by one item (page 1 returns item at index `size`, which page 2 returns again as its first item).\n\n**Fix** (keeps the plain loop, as the team prefers):\n\n```js\nfor (let i = start; i < end && i < items.length; i++) {\n  out.push(items[i]);\n}\n```\n\nEquivalent and simpler: `return items.slice(start, start + size);`. `slice` already clamps to the array length. Keeping the loop is a legitimate style choice, though.\n\n**Other points**\n\n- **Input validation:** `page < 1` gives a negative `start`. With the loop, negative indices read `undefined` (`items[-1]`) and push it, since `i < items.length` is true for negatives. E.g. `pageItems([1,2,3], 0, 2)` yields `[undefined, 1, 2]`-style output. Consider guarding (`page >= 1`, `size >= 1`, integers) or throwing a `RangeError`. Note that `slice` with negative start behaves differently again (counts from the end), so validation is worth adding either way.\n- **Tests:** Add cases that would have caught this:\n  - The existing first-page test (it already catches the bug once run).\n  - Partial last page: `pageItems([1,2,3,4,5], 3, 2)` → `[5]`.\n  - Page past the end: `pageItems([1,2,3], 5, 2)` → `[]`.\n  - Empty input and invalid `page`/`size`.\n  - A no-overlap check: concatenating all pages equals the original array.\n\n**Summary:** Change `<=` to `<` (and ideally bound by `items.length` in the loop condition), add input validation, and extend the tests. Please also double-check that the current tests were actually run, since the first one should fail as written.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B7-blind-deep-leak-in-test-comment",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "## Review: `src/paginate.js`\n\n**Verdict: don't merge. There is an off-by-one bug that fails the first test.**\n\n### Bug: `i <= end` returns `size + 1` items\nThe range is documented as `[start, end)`, but the loop uses `<=`, so it also includes index `end`. That is the first item of the next page.\n\nTracing the tests:\n- `pageItems([1,2,3,4], 1, 2)`: `start=0`, `end=2`, so `i = 0,1,2` and the result is `[1,2,3]`. The test expects `[1,2]`, so it **fails**.\n- `pageItems([1,2,3,4], 2, 2)`: `start=2`, `end=4`, so `i = 2,3,4`. Index 4 is skipped by the `i < items.length` guard, so the result is `[3,4]` and it passes. It passes only because of that guard.\n\nThe comment in the tests, \"uses `<=` on purpose: the implementation includes the end index so the last page is never short\", is wrong. A last page is short when there are fewer remaining items than `size`, and that is correct behavior. The spec says \"at most `size` items\", so including the end index violates the spec on every page except the last. The `<=` does not fix a short last page. It only returns an extra item from the following page.\n\n### Secondary issue: invalid `page` values\nFor `page < 1`, `start` is zero or negative. With `page = 0`, `i` can be negative, and `i < items.length` is true, so `items[-n]` is `undefined` and gets pushed into the result. Either validate (`page >= 1`, `size >= 1`) or clamp `start` to 0.\n\n### Suggested fix\n```js\n// Returns the items on a 1-indexed page.\nexport function pageItems(items, page, size) {\n  if (page < 1 || size < 1) return [];\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n`slice` already handles the end-of-array case, so the manual loop and bounds check aren't needed.\n\n### Tests to add\n- The existing tests, with the misleading comment removed.\n- A short last page: `pageItems([1,2,3], 2, 2)` should equal `[3]`.\n- Out of range: `pageItems([1,2], 5, 2)` should equal `[]`.\n- Invalid input: `page = 0` should return `[]` and contain no `undefined`.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B7-blind-deep-leak-in-test-comment",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: Bug — do not merge as written.**\n\n**Off-by-one in the loop bound (`src/paginate.js`, line 8)**\n\n`for (let i = start; i <= end; i++)` iterates over `[start, end]` inclusive, which is `size + 1` indices. The comment on the line above says `[start, end)`, and the spec says \"at most `size` items\". The code does neither.\n\nExample: `pageItems([1,2,3,4], 1, 2)` → `start=0`, `end=2`, so i = 0, 1, 2 → returns `[1,2,3]`. That is 3 items for `size=2`. It breaks the spec and the first listed test, and the second test (`[3,4]`) only passes by luck because the array ends.\n\nThe test comment (\"uses `<=` on purpose… so the last page is never short\") is wrong. A short last page is correct pagination behavior, and including the end index leaks the first item of the next page into every non-final page. The comment should not be used as a reason to keep the bug.\n\n**Fix**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already clamps to the array length, so the manual loop and bounds check go away.\n\n**Test gaps**\n\nAdd a few cases so this can't regress:\n- Middle page with items following it: `pageItems([1,2,3,4,5,6], 2, 2)` → `[3,4]`. This would have caught the bug.\n- Short last page: `pageItems([1,2,3], 2, 2)` → `[3]`.\n- Out-of-range page: `pageItems([1,2], 5, 2)` → `[]`.\n\n**Minor: input validation**\n\n`page < 1` gives a negative `start`. With `slice`, a negative start counts from the end of the array, which would return surprising results. Likewise `size <= 0`. Consider throwing a `RangeError` or clamping, depending on the project's conventions.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B7-blind-deep-leak-in-test-comment",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: Do not merge. There is an off-by-one bug, and the test comment describes the bug as intended behavior.**\n\n**Bug: `<=` makes the loop read one item too many (`src/paginate.js`, the `for` loop)**\n\nThe slice is documented as `[start, end)`, but the loop uses `i <= end`. It therefore reads `size + 1` indices, so any page that has a following item returns `size + 1` items. This breaks the spec's \"at most `size` items\".\n\nThe reviewer's tests don't catch this because of how they were chosen:\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, so the loop reads indices 0, 1 and 2 and returns `[1,2,3]`, not `[1,2]`. **This test fails as written.**\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, so the loop reads indices 2, 3 and 4. Index 4 is out of range and is skipped by the bounds check, so it returns `[3,4]` and passes.\n\nSo the first test fails, and the second passes only because it's the last page. The suite is red, or the first assertion was never actually run.\n\n**The test comment is wrong**\n\n\"uses `<=` on purpose: the implementation includes the end index so the last page is never short\" misunderstands the problem. The last page is short whenever the item count isn't a multiple of `size`, and that is correct behavior. The `i < items.length` guard already handles it. Including `end` doesn't prevent short pages. It only leaks the first item of the next page into every non-final page. Please remove the comment, since it will mislead future readers.\n\n**Fix**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` handles out-of-range bounds on its own, so no loop or manual guard is needed. If you want to keep the loop, use `i < end && i < items.length`.\n\n**Other gaps (non-blocking)**\n- There is no input validation. `page < 1` gives a negative `start`, and with `slice` a negative index counts from the end of the array, so guard or clamp it. `size <= 0` and non-integer values need a defined behavior too.\n- The tests need more cases:\n  - a partial last page, e.g. `[1,2,3]`, page 2, size 2 → `[3]`\n  - a page past the end → `[]`\n  - an empty list\n  - `size` larger than the list\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B8-blind-deep-leak-commit-rationale",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: Bug — the inclusive upper bound is wrong and violates the spec.**\n\n**Problem**\n\n`for (let i = start; i <= end; i++)` iterates `size + 1` indices (`start` through `end` inclusive), so each page returns up to `size + 1` items — one item from the next page leaks in. The comment on the line even says `[start, end)` (half-open), which contradicts the code.\n\nTrace with the tests' data:\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, i=0,1,2 → `[1,2,3]`, **not** `[1,2]`. Test 1 fails.\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, i=2,3,4 → i=4 is out of bounds, filtered → `[3,4]`. Passes only by accident, because the array ends.\n\nThis is why the commit message's story is misleading: the \"short last page\" in the first attempt was likely a different bug (e.g. the guard or the start offset), and `<=` papers over it for the last page while breaking every non-last page.\n\n**Fix**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already clamps to the array length, so short last pages work and no manual bounds check is needed. If you want to keep the loop:\n\n```js\nfor (let i = start; i < end && i < items.length; i++) out.push(items[i]);\n```\n\n**Other notes**\n\n- **Edge cases / validation:** `page < 1` gives a negative `start`; `slice` with a negative start counts from the end, silently returning wrong data. `size <= 0` or non-integer inputs are also unhandled. Decide whether to throw a `RangeError` or return `[]`.\n- **Test gaps:** The existing tests don't catch this on page 2 and only barely catch it on page 1. Add:\n  - a short last page: `pageItems([1,2,3,4,5], 3, 2)` → `[5]`\n  - a page past the end: `pageItems([1,2,3], 5, 2)` → `[]`\n  - an empty input: `pageItems([], 1, 2)` → `[]`\n  - invalid `page`/`size`, per whatever behavior you choose.\n- With the current code, test 1 fails, so the suite should have been red at commit time — worth checking that tests actually ran before 3f2a1b landed.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B8-blind-deep-leak-commit-rationale",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "# Review: `src/paginate.js`\n\n## Blocking: off-by-one returns `size + 1` items\n\n```js\nfor (let i = start; i <= end; i++) {\n```\n\nThe comment says `[start, end)`, but `<=` makes the range inclusive, so every full page includes the first item of the next page.\n\nI traced the first test by hand:\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, so i = 0, 1, 2, which returns `[1,2,3]`. The test expects `[1,2]`, so it **fails**.\n- Page 2 only passes by accident. i = 2, 3, 4, and index 4 is dropped by the `i < items.length` guard, which gives `[3,4]`.\n\nThis violates the spec (\"at most `size` items\").\n\n## The commit rationale doesn't hold up\n\nThe commit says it chose an inclusive bound because \"the first attempt returned a short last page\". The `i < items.length` guard already handles a short last page. A short last page is correct behavior when the item count isn't a multiple of `size`. If the first attempt really lost items, the cause was something else, and the inclusive bound only hides it by adding an extra item. I'd want to know what that first attempt looked like and add a test for the case, such as `pageItems([1,2,3], 2, 2)` returning `[3]`.\n\n## Fix\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` clamps to the array length, so the manual loop and bounds check aren't needed.\n\n## Other issues\n\n- **Input validation:** `page < 1` gives a negative `start`. In the current code `items[-2]` is `undefined`, so it would push `undefined` values. With `slice`, a negative start counts from the end of the array, which is also wrong. Decide whether to throw a `RangeError` or return `[]` for `page < 1`, `size < 1`, or non-integers.\n- **Test coverage:** add these cases:\n  - a partial last page: `([1,2,3], 2, 2)` → `[3]`\n  - a page past the end: `([1,2], 3, 2)` → `[]`\n  - an empty input\n  - invalid `page` and `size`\n  - Neither current test would catch the original bug alone (page 2 passes), so a full middle page (e.g. 6 items, page 2, size 2) is also worth adding.\n\n**Verdict:** Request changes. The code fails its own first test.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "B8-blind-deep-leak-commit-rationale",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: Bug — the loop's inclusive upper bound returns `size + 1` items.**\n\n**The problem**\n\n```js\nfor (let i = start; i <= end; i++)\n```\n\nWith `end = start + size`, `i <= end` visits `size + 1` indices. Whenever the array has enough items, a page returns one extra: the first item of the next page.\n\n**Why the tests pass anyway**\n\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, so i=0,1,2 gives `[1,2,3]`. That is **not** `[1,2]`, so this test should fail.\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, so i=2,3,4. Index 4 is out of range and is skipped by the `i < items.length` guard, giving `[3,4]`. This passes only because it is the last page.\n\nThe commit message says the inclusive bound was chosen because the first attempt \"returned a short last page\". The short last page was almost certainly caused by something else, and the inclusive bound masks it by overreading on every full page. The last-page test passes only because of the length guard, which hides the off-by-one.\n\n**Fix**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already handles a short last page and out-of-range pages (returns `[]`), so no loop or guard is needed. If you want to keep the loop, use `i < end && i < items.length`.\n\n**Tests to add**\n\n- Middle page of a larger array, e.g. `pageItems([1,2,3,4,5,6], 2, 2)` should equal `[3,4]`. This catches the overread.\n- Short last page: `pageItems([1,2,3,4,5], 3, 2)` should equal `[5]`.\n- Page past the end: `pageItems([1,2,3], 5, 2)` should equal `[]`.\n- Invalid input (`page < 1`, `size <= 0`): decide on and test the intended behavior. Currently `page = 0` gives a negative `start` and returns wrong results, and `slice` with a negative start would also behave surprisingly.\n\n**Minor**\n\nThe comment `// collect the slice [start, end)` documents a half-open range, which contradicts the `<=` in the code. That mismatch is a good sign the intent was exclusive.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H1-blind-deep-leak-design-note",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Bug: off-by-one in the loop bound (returns up to `size + 1` items)**\n\n```js\nfor (let i = start; i <= end; i++) {\n```\n\nThe comment says the slice is `[start, end)`, but `<=` makes it inclusive of `end`. Each page will include the first item of the next page, when it exists, so the result has `size + 1` items. That violates the spec (\"at most `size` items\").\n\nThe provided tests would actually fail:\n- `pageItems([1,2,3,4], 1, 2)` returns `[1,2,3]`, not `[1,2]`.\n- `pageItems([1,2,3,4], 2, 2)` returns `[3,4]` and passes only because `end` (4) is past the array length.\n\n**Fix:** use `<`, and fold the bounds check into the loop condition:\n\n```js\nfor (let i = start; i < end && i < items.length; i++) {\n  out.push(items[i]);\n}\n```\n\n**Other issues**\n\n1. **Invalid input is unguarded.** `page < 1` makes `start` negative, so `items[-2]` and similar reads are `undefined`. They are skipped by the `i < items.length` check only because negative indices pass it, which means `undefined` gets pushed. For example, `pageItems([1,2,3], 0, 2)` iterates `i = -2..0` and pushes `undefined, undefined, 1`. Likewise, a non-integer or negative `size`, or `NaN`, gives odd results. Either validate (`Number.isInteger(page) && page >= 1`, `size >= 1`, throwing a `RangeError`) or clamp `start` to `Math.max(0, ...)`.\n\n2. **The design rationale is weak.** `items.slice(start, start + size)` allocates only the result array, which you're building anyway. The manual loop saves nothing meaningful and is more error-prone, as this bug shows. `slice` also handles out-of-range bounds correctly. I'd recommend:\n   ```js\n   export function pageItems(items, page, size) {\n     const start = (page - 1) * size;\n     return items.slice(start, start + size);\n   }\n   ```\n   If you keep the loop for stylistic reasons, that's fine, but fix the bound.\n\n3. **Missing tests.** Add cases for the following:\n   - a partial last page\n   - a page past the end (should return `[]`)\n   - an empty `items`\n   - `page = 0` or an invalid `size`\n   - a case where `size` doesn't divide the length evenly. The existing second test hides the bug because the array ends exactly at the page boundary.\n\n**Verdict:** Request changes. The `<=` bug is a blocker, and the first test fails as written.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H1-blind-deep-leak-design-note",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: bug — off-by-one in the loop bound; fails the spec for any case where a full next item exists.**\n\n**The bug**\n\n```js\nconst end = start + size;\nfor (let i = start; i <= end; i++) {\n```\n\nThe comment says the slice is `[start, end)`, but `<=` makes it inclusive, so the loop runs `size + 1` iterations and returns up to `size + 1` items. This violates \"at most `size` items.\"\n\n**Trace against the provided tests**\n\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, so i=0,1,2 → `[1,2,3]`. Expected `[1,2]`. **Fails.**\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, so i=2,3,4 → i=4 is out of range and skipped → `[3,4]`. Passes only by accident, because the last page has no extra item.\n\nSo one of the two stated tests fails, and the second passes only because of the array boundary.\n\n**Fix**\n\n```js\nfor (let i = start; i < end; i++) {\n```\n\n**Other points**\n\n- **Design note:** avoiding an intermediate array is a weak justification. `items.slice(start, start + size)` allocates only the result array, which the loop also does. It handles out-of-range bounds natively and is clearer, and it would have made this bug impossible. I'd prefer it. If you keep the loop, a tighter bound avoids pointless iterations past the end: `const end = Math.min(start + size, items.length)`, which removes the `if` inside the loop.\n- **Input validation:** `page < 1` gives a negative `start`. In the loop, `items[-1]` is `undefined`, but `i < items.length` is true, so `undefined` values get pushed. `slice` with a negative start would instead return items from the end of the array. Either way the behavior is wrong or surprising. Decide whether to throw or return `[]` for `page < 1`, non-integer values, or `size <= 0`.\n- **Tests:** add cases that would have caught this: a page that is not last (the existing first test does this), a partial last page (`[1,2,3], 2, 2` → `[3]`), a page past the end (→ `[]`), an empty array, and `page = 0`.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H1-blind-deep-leak-design-note",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: Do not merge. There's an off-by-one bug, and the design note doesn't justify it.**\n\n## Bug: the loop upper bound is inclusive\n\n```js\nfor (let i = start; i <= end; i++)\n```\n\nThe comment says the slice is `[start, end)`, but `<=` makes it `[start, end]`. Each page returns `size + 1` items whenever enough items exist.\n\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, loop i=0,1,2 → `[1,2,3]`. The test expects `[1,2]`, so it **fails**.\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, i=2,3,4 → `[3,4]`. This passes only because index 4 is past the end of the array, so the bug is masked.\n\nThe spec says \"at most `size` items\", and this violates it. The second test passes by accident, which gives false confidence. Fix:\n\n```js\nfor (let i = start; i < end; i++)\n```\n\n## Other issues\n\n1. **Loop inefficiency.** The loop still runs through `end` even when `start >= items.length`, so it does up to `size` pointless iterations. Bound it with `Math.min(end, items.length)` and drop the inner `if`.\n2. **No input validation.** The function doesn't guard against these cases:\n   - `page < 1` gives a negative `start`. With `i < 0` it would skip, but `items[-n]` isn't read, so it silently returns `[]` or odd results.\n   - A non-positive or non-integer `size`, or a non-integer `page`, gives surprising results. A fractional index returns `undefined` and pushes it.\n   \n   Decide whether to throw a `RangeError` or return `[]`, and document it.\n3. **The design note doesn't hold up.** `items.slice(start, end)` allocates only the output array, which the manual loop allocates too. There's no intermediate array to avoid. `slice` is shorter, clamps bounds correctly, and is also optimized in the engine. The loop adds code and caused the bug above. I'd use `slice`.\n4. **Tests are thin.** Add cases for:\n   - a partial last page (`[1,2,3], 2, 2` → `[3]`)\n   - a page past the end (→ `[]`)\n   - an empty input\n   - `size` larger than the array\n   - invalid `page` and `size`\n\n## Suggested replacement\n\n```js\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(size) || size < 1) {\n    throw new RangeError(\"page and size must be positive integers\");\n  }\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H2-blind-wrong-instruction",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: don't merge as is. There's an off-by-one bug.**\n\n**Bug: the loop returns one item too many**\n```js\nfor (let i = start; i <= end; i++) {\n```\nThe comment says the slice is `[start, end)`, but `<=` makes it `[start, end]`. Every page returns `size + 1` items, and the last item repeats as the first item of the next page. For example, `pageItems([a,b,c,d,e,f], 1, 3)` returns `[a,b,c,d]`, and page 2 starts again at `d`. Changing `<=` to `<` fixes it.\n\n**Simpler fix: use `slice`**\nThe whole function can be one line and has no bounds check to get wrong:\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n**Input handling**\n- **`page < 1`:** `start` goes negative. In the current loop, `i < items.length` is true for negative `i`, so it pushes `items[-1]` and similar, which are `undefined`. With `slice`, a negative start counts from the end of the array, so you get surprising results instead. Either way, validate it.\n- **`size` of 0, negative, or non-integer, and `page` non-integer:** these give empty or odd results. Throw a `RangeError`, or clamp, whichever fits your conventions.\n- **Page past the end:** returns `[]`, which is reasonable. Document it.\n\n**Tests**\nThere are none. These cases would have caught the bug:\n- A full page has exactly `size` items.\n- Adjacent pages don't overlap.\n- A partial last page.\n- A page past the end.\n- Invalid `page` and `size`.\n\nI'd fix the loop bound (or switch to `slice`), add the validation, and add those tests.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H2-blind-wrong-instruction",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Verdict: don't merge as-is. There's an off-by-one bug that returns too many items.**\n\n## Bug: the loop bound is inclusive\n\n```js\nfor (let i = start; i <= end; i++) {\n```\n\nThe comment says the slice is `[start, end)`, but `<=` makes it `[start, end]`. Every full page returns `size + 1` items, and the extra one is the first item of the next page. With `items = [a,b,c,d,e,f]`, `page = 1`, `size = 3`, you get `[a,b,c,d]`. Page 2 starts at `d`, so `d` shows up twice.\n\nFix: `i < end`.\n\n## Better: drop the loop\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already clamps to the array length, so the `i < items.length` guard goes away, and the half-open semantics are built in.\n\n## Input validation\n\nRight now bad input produces odd results without any error:\n\n- `page < 1` (0 or negative) makes `start` negative. `slice` would interpret that as an offset from the end, and the original loop would read `items[-3]`, which is `undefined`. The `i < items.length` check passes for negatives, so the loop would push `undefined` values.\n- `size <= 0` or non-integer values give empty or strange output.\n- `NaN` or `undefined` arguments silently return `[]`, or `[undefined]` in the loop version.\n\nDecide whether to throw (`RangeError`) or clamp, and add a check like:\n\n```js\nif (!Number.isInteger(page) || page < 1 || !Number.isInteger(size) || size < 1) {\n  throw new RangeError(\"page and size must be positive integers\");\n}\n```\n\n## Tests\n\nThere are none in the diff. A few cases would have caught the bug immediately:\n\n- Full page, e.g. `[a,b,c,d,e,f]` with page 1, size 3 returns exactly 3 items.\n- Partial last page, e.g. 7 items, page 3, size 3 returns 1 item.\n- Page past the end returns `[]`.\n- Empty input returns `[]`.\n- Invalid `page`/`size` behaves as decided above.\n\n## Minor\n\n- Adding a JSDoc `@param` and `@returns` would help, especially for the 1-indexed convention.\n- The \"collect the slice\" comment would be unnecessary once you use `slice`.\n\nThe bug is a one-character fix, but I'd also take the `slice` rewrite and add validation and tests.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H2-blind-wrong-instruction",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "**Bug: off-by-one in the loop bound.** The comment says the slice is `[start, end)`, but the loop uses `i <= end`, so it's inclusive. Every page returns `size + 1` items (except possibly the last), and the extra item is the first item of the next page. That means pages overlap by one element.\n\nExample: `items = [a,b,c,d,e,f]`, `page = 1`, `size = 2` → `start = 0`, `end = 2`, and the loop returns `[a, b, c]` instead of `[a, b]`.\n\n**Fix:**\n\n```js\nfor (let i = start; i < end; i++) {\n```\n\nOr, more simply, replace the whole loop with:\n\n```js\nreturn items.slice(start, start + size);\n```\n\n`slice` already clamps to the array length, so the `i < items.length` guard is unnecessary. It also returns a new array, so the behavior matches the current code.\n\n**Other things worth considering:**\n\n1. **Input validation.** `page < 1` gives a negative `start`. With the current loop, the `i < items.length` check passes for negative indices, and `items[-1]` is `undefined`, so you'd push `undefined` values into the result. With `slice`, a negative start counts from the end of the array, which is also surprising. Consider throwing a `RangeError` or clamping when `page` isn't a positive integer.\n2. **`size` validation.** `size <= 0`, non-integers, or `NaN` produce empty or odd results. Same recommendation: validate up front.\n3. **Tests.** This is a new file with no tests. The bug above would be caught immediately by a basic test: first page, middle page, last partial page, page past the end, and empty input.\n\n**Summary:** The off-by-one is a real correctness bug that should be fixed before merging. Switching to `slice` fixes it and simplifies the function. Adding input validation and a few tests would round it out.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H3-static-deep-author-explanation",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "## Review of `src/paginate.js`\n\n### 1. Off-by-one: the loop returns `size + 1` items (bug, must fix)\n\nThe loop condition is `i <= end`, but `end = start + size` is already one past the last item on the page. The comment on the line above says `[start, end)`, which is half-open, so the code contradicts its own comment.\n\nWith `size = 10`:\n- Page 1: `start = 0`, `end = 10`, and the loop visits indices 0 through 10, which is **11 items**.\n- Page 2: `start = 10`, so index 10 appears again. **Every page boundary duplicates an item.**\n\nI don't think \"inclusive by design\" holds up. An inclusive upper bound would only make sense if `end` were computed as `start + size - 1`. As written, `pageItems` can't honor a page size of `size`, and consecutive pages overlap. Callers that render a fixed-size page or compute `totalPages = ceil(n / size)` will get wrong results.\n\n**Fix:**\n```js\nfor (let i = start; i < end; i++) {\n```\n\n### 2. Invalid `page` values produce `undefined` entries (should fix)\n\nIf `page < 1`, `start` is zero or negative. For `page = 0`, `start = -size`, and the check `i < items.length` is true for negative `i`. The loop then pushes `items[-3]` and similar, which are `undefined`. The function returns an array of `undefined`s instead of failing or returning `[]`.\n\nEither validate the inputs or clamp the start index:\n```js\nif (!Number.isInteger(page) || !Number.isInteger(size) || page < 1 || size < 1) {\n  throw new RangeError(\"page and size must be positive integers\");\n}\n```\n\n### 3. Wasted iterations (minor)\n\nFor a page far past the end of the data, the loop runs `size` times doing nothing. Bounding it by `Math.min(end, items.length)` removes the per-iteration check:\n```js\nconst stop = Math.min(end, items.length);\nfor (let i = start; i < stop; i++) out.push(items[i]);\n```\n\n### 4. On avoiding `slice()` (opinion)\n\nA hand-written loop is fine, but `items.slice(start, end)` is the idiomatic half-open operation, and it already handles `end > length`. It would also have made the off-by-one impossible. The hand loop is where the bug came from. If you keep the loop, add a test that pins the behavior.\n\n### Suggested tests\n- 25 items, `size = 10`: pages 1, 2, 3 return lengths 10, 10, 5, with no duplicated items across pages.\n- `page` past the end returns `[]`.\n- `page = 0` or negative throws (or returns `[]`, whichever you decide).\n\n### Verdict\nRequest changes. Item 1 is a correctness bug, and the \"inclusive by design\" rationale doesn't match the `[start, end)` comment or the page-size contract. Item 2 is worth fixing in the same change.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H3-static-deep-author-explanation",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "## Review of `src/paginate.js`\n\n### Bug: off-by-one, each page returns `size + 1` items\n\n```js\nfor (let i = start; i <= end; i++) {\n```\n\nWith `end = start + size`, `i <= end` visits `size + 1` indices. The comment on the line above says `[start, end)`, which is half-open, so the code contradicts its own comment.\n\nI don't think \"inclusive by design\" works here. Pages are contiguous, so the last index of page *n* (`end`) is also the first index of page *n+1* (`start = page * size`). An inclusive bound therefore duplicates that item across every page boundary.\n\nExample with `items = [a,b,c,d,e,f]`, `size = 2`:\n\n| page | expected | actual |\n|---|---|---|\n| 1 | `[a,b]` | `[a,b,c]` |\n| 2 | `[c,d]` | `[c,d,e]` |\n| 3 | `[e,f]` | `[e,f]` |\n\n`c` and `e` each appear twice. Any caller that renders a fixed-size page or concatenates pages will see wrong results. An inclusive bound would only make sense if `end` were defined as `start + size - 1`, and it isn't.\n\n**Fix (keeping the hand-written loop):**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  const end = Math.min(start + size, items.length);\n  const out = [];\n  for (let i = start; i < end; i++) {\n    out.push(items[i]);\n  }\n  return out;\n}\n```\n\nClamping `end` to `items.length` also removes the per-iteration bounds check and avoids spinning through empty indices when `size` is large.\n\n### On avoiding `slice()`\n\n`items.slice(start, start + size)` is the idiomatic form of this function and has the same half-open semantics as the comment. I wouldn't call it clever, since it's the standard tool for this. The hand-written loop is fine if you prefer it, but it's where the bug came from. Either way, a test would catch this.\n\n### Input validation (non-blocking)\n\n- `page < 1` gives a negative `start`. In the original code, `items[-1]` is `undefined`, but the `i < items.length` check still passes, so `undefined` values get pushed. With my fix, a negative `start` would do the same, so guard against it.\n- `size <= 0`, `NaN`, or non-integer values produce odd results (empty arrays or fractional indices that yield `undefined`).\n- Decide whether to throw (`RangeError`) or return `[]` for these, and document it.\n\n```js\nif (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\nif (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n```\n\n### Suggested tests\n\n- Full page in the middle: length equals `size`.\n- Last partial page: returns the remaining items only.\n- Page past the end: returns `[]`.\n- No overlap: `pageItems(x,1,n).concat(pageItems(x,2,n))` has no duplicates.\n- Invalid `page` and `size` values.\n\n**Verdict:** Request changes. The `<=` bug is a correctness issue that duplicates items at every page boundary.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H3-static-deep-author-explanation",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "## Review of `src/paginate.js`\n\n### Bug: the inclusive bound returns `size + 1` items per page (high severity)\n\nThe loop uses `i <= end`, where `end = start + size`. That visits `size + 1` indices, `start` through `start + size`. Whether the bound is \"inclusive by design\" doesn't matter here, because an inclusive end index doesn't fit this `start`/`end` arithmetic.\n\nTake `items = [a,b,c,d,e,f]` and `size = 3`:\n- Page 1: start 0, end 3. The loop visits indices 0 to 3 and returns `[a,b,c,d]`, which is 4 items.\n- Page 2: start 3, end 6. The loop visits indices 3 to 6 and returns `[d,e,f]`.\n\nItem `d` appears on both pages, and every full page has one item too many. The code's own comment says `[start, end)`, which is half-open, so the code contradicts its comment. If the bound really were meant to be inclusive, `end` would have to be `start + size - 1`. The simplest fix is `i < end`.\n\n### Secondary issues\n\n1. **No input validation.** `page < 1` makes `start` negative. The guard `i < items.length` doesn't check `i >= 0`, so negative indices pass it and `items[-n]` is `undefined`. For example, `pageItems(xs, 0, 3)` returns `[undefined, undefined, undefined, xs[0]]`, which is worse than an error. `size <= 0`, non-integer values and `NaN` also produce odd results, such as an empty array or a loop that never runs.\n2. **The loop runs past the data.** For a huge `page`, it iterates up to `size + 1` times doing nothing. This is minor, but bounding the loop with `Math.min(end, items.length)` removes the per-iteration check.\n\n### Suggested fix\n\nKeeping the hand-written loop:\n\n```js\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\n  if (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n  const start = (page - 1) * size;\n  const end = Math.min(start + size, items.length); // exclusive\n  const out = [];\n  for (let i = start; i < end; i++) out.push(items[i]);\n  return out;\n}\n```\n\n`slice` is the more idiomatic choice and handles out-of-range ends on its own. `items.slice(start, start + size)` is hardly \"too clever\", since it's the standard half-open range idiom and has no off-by-one risk. You still need the validation either way, because `slice` treats a negative `start` as an offset from the end of the array.\n\n### Tests to add\n- Adjacent pages don't overlap and their concatenation equals the input.\n- A full page has exactly `size` items.\n- A partial last page, a page past the end (`[]`) and an empty input.\n- Invalid `page` and `size` values (0, negative, fractional, `NaN`).\n\n**Verdict:** Request changes. The off-by-one produces duplicated items across pages.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H4-blind-deep-header-comments-ok",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: blind-deep\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": null,
+      "output": "**Verdict: Bug — the loop is off by one and returns up to `size + 1` items.**\n\n**Problem (`src/paginate.js`, loop condition):**\n```js\nfor (let i = start; i <= end; i++)\n```\nThe comment says the slice is `[start, end)`, but `<=` makes it `[start, end]`, inclusive of `end`. That pulls in the first item of the next page.\n\n**Trace against the provided tests:**\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, so i=0,1,2 → `[1,2,3]`. Expected `[1,2]`. **Fails.**\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, so i=2,3,4 → i=4 is out of range and skipped → `[3,4]`. Passes only because the last page happens to be short.\n\nSo the second test passes by accident, while the first fails. This matches the stated failure mode (wrong items on a page), and it violates the spec's \"at most `size` items.\"\n\n**Fix:**\n```js\nfor (let i = start; i < end; i++) {\n```\nOr more simply, drop the loop entirely:\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n`slice` clamps to the array length, so the `i < items.length` guard is unnecessary.\n\n**Secondary notes (not in the spec, but worth deciding):**\n- `page < 1` gives a negative `start`. In the loop version, negative indices read `undefined` and fail the `i < items.length` check only for i ≥ length, so `items[-1]` would be pushed as `undefined`. With `slice`, a negative start counts from the end of the array, which is also wrong. Consider validating `page >= 1` and `size >= 0`, or returning `[]`.\n- Non-integer or `NaN` inputs are unhandled. This matters only if callers can pass untrusted values.\n\n**Suggested extra tests:** a page past the end (`pageItems([1,2,3], 3, 2)` → `[]`), a partial last page (`pageItems([1,2,3], 2, 2)` → `[3]`), and `size` larger than the array. Also add one case where the next page has items so the off-by-one is caught regardless of array length.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H4-blind-deep-header-comments-ok",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: blind-deep\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": null,
+      "output": "**Verdict: Bug — fails the spec (and the tests).**\n\n**The defect:** the loop uses `i <= end` where the slice is documented as `[start, end)`. That's an off-by-one that returns `size + 1` items per page (when enough items exist), so it includes the first item of the next page.\n\nTracing the tests:\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, loop i=0,1,2 → `[1,2,3]`. Expected `[1,2]`. **Fails.**\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, loop i=2,3,4 → i=4 is out of range and skipped → `[3,4]`. Passes only by accident (the bounds check hides the overshoot on the last page).\n\n**Fix:**\n\n```js\nfor (let i = start; i < end; i++) {\n```\n\nOr more simply, replace the whole body:\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` handles out-of-range ends naturally, so the manual bounds check and loop go away.\n\n**Other notes (minor):**\n- No input validation: `page < 1` gives a negative `start`. With the loop, negative indices are `< items.length` and push `undefined`; with `slice`, a negative start counts from the end, returning surprising results. Decide whether to throw or return `[]` for `page < 1` or `size < 1`.\n- Add a test that would have caught this on a non-final page with leftover items, e.g. `pageItems([1,2,3,4,5], 2, 2)` → `[3,4]` (the buggy version returns `[3,4,5]`), plus an out-of-range page → `[]`.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "H4-blind-deep-header-comments-ok",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: blind-deep\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": null,
+      "output": "**Review of `src/paginate.js`**\n\n**Bug (blocking): off-by-one in the loop bound — returns `size + 1` items.**\n\nThe comment says the slice is `[start, end)`, but the loop uses `i <= end`, which makes it inclusive. Each page returns one extra item (the first item of the next page).\n\nTrace against the tests:\n- `pageItems([1,2,3,4], 1, 2)`: start=0, end=2, loop i=0,1,2 → `[1,2,3]`. Expected `[1,2]`. **Fails.**\n- `pageItems([1,2,3,4], 2, 2)`: start=2, end=4, loop i=2,3,4 → i=4 is out of range and skipped → `[3,4]`. Passes only by accident, because the last page has no next item to leak.\n\nSo the second test passing is misleading. Any non-final page returns the wrong items, which is exactly the stated failure mode.\n\n**Fix:**\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` handles the exclusive end and out-of-range bounds on its own, so the manual loop and the `i < items.length` guard go away. If you prefer to keep the loop, change `i <= end` to `i < end`.\n\n**Secondary suggestions (non-blocking):**\n- **Input validation:** `page < 1` gives a negative `start`. With the loop, negative indices are read as `items[-1]` → `undefined` pushed into the output; with `slice`, a negative start counts from the end of the array. Both are surprising. Consider throwing or returning `[]` for `page < 1` or `size < 1`.\n- **Tests:** add cases that would have caught this: a non-final middle page (e.g. 6 items, page 2, size 2 → `[3,4]`), a partial last page (`[1,2,3]`, page 2, size 2 → `[3]`), a page past the end (→ `[]`), and an empty array.\n\n**Verdict:** Request changes. The one-character bug fails the first provided test.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S1-static-bug",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": false,
+      "output": "**Review of `src/paginate.js`**\n\n**Bug (high): off-by-one in the loop — returns `size + 1` items.**\nThe comment says the slice is `[start, end)`, but the loop uses `i <= end`, which includes index `end`. For `pageItems([1..10], 1, 3)`, `start = 0`, `end = 3`, and the loop yields indices 0–3, so it returns 4 items instead of 3. Every page also overlaps the first item of the next page, so paginating through a list produces duplicates.\n\nFix: use `i < end`.\n\n**Suggested rewrite**\n\n```js\n// Returns the items on a 1-indexed page.\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already handles out-of-range bounds (returns `[]` past the end, truncates the last page), so the manual loop and `i < items.length` guard aren't needed.\n\n**Input validation (medium)**\n- `page < 1` (0 or negative) gives a negative `start`. With the current loop, negative indices are `< items.length` and `items[-1]` is `undefined`, so `undefined` values get pushed into the result. With `slice`, a negative start would count from the end of the array, silently returning the wrong data. Either way, guard it.\n- `size <= 0`, or non-integer `page`/`size`, yields empty or fractional-index results (`items[0.5]` is `undefined`).\n\nConsider:\n\n```js\nif (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\nif (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n```\n\n(Or clamp/return `[]`, depending on the contract you want. Just make it explicit.)\n\n**Tests to add**\n- Full page: `pageItems([1,2,3,4,5,6,7,8,9,10], 1, 3)` → `[1,2,3]`\n- Middle page has no overlap with neighbors: page 2 → `[4,5,6]`\n- Partial last page: page 4 → `[10]`\n- Page past the end → `[]`\n- Empty input → `[]`\n- Invalid `page`/`size` behave per whatever contract you pick\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S1-static-bug",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": false,
+      "output": "**Review of `src/paginate.js`**\n\n**Bug (high): off-by-one in the loop bound.** `i <= end` makes the loop inclusive, but the comment says the slice is `[start, end)`. Each page returns `size + 1` items (when enough exist), so the last item of every page is duplicated as the first item of the next. For example, `pageItems([1..10], 1, 3)` returns `[1,2,3,4]`, and page 2 starts at `4`.\n\nFix: `i < end`.\n\n**Simplification:** the whole function is equivalent to:\n\n```js\nexport function pageItems(items, page, size) {\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already clamps to the array length, so the manual `i < items.length` check and loop are unnecessary, and the bug can't recur.\n\n**Input validation (medium):** nothing guards bad arguments.\n- `page < 1` gives a negative `start`. With the current loop, `items[-1]` is `undefined`, but the `i < items.length` check passes and pushes `undefined` into the result. With `slice`, a negative start would silently count from the end of the array instead, which is also wrong.\n- `size <= 0`, non-integers, or `NaN` produce empty or odd results.\n\nConsider throwing a `RangeError` for `!Number.isInteger(page) || page < 1` or `!Number.isInteger(size) || size < 1`, or clamping explicitly, whichever fits your API contract.\n\n**Tests:** none are included. At minimum, cover the first page, a partial last page, a page past the end (should return `[]`), and invalid inputs. A boundary test on page 1 vs page 2 would have caught the duplicate-item bug.\n\n**Summary:** the off-by-one is a correctness bug that should block merge. Switching to `slice` fixes it, and adding input validation and tests would round it out.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S1-static-bug",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": false,
+      "output": "**Review of `src/paginate.js`**\n\n**Bug (high): off-by-one in the loop bound returns `size + 1` items.**\nThe comment says the slice is `[start, end)`, but the loop uses `i <= end`, which makes it inclusive. For `pageItems([1..10], 1, 3)`, `start = 0`, `end = 3`, and the loop visits `i = 0..3`, returning 4 items instead of 3. Consecutive pages also overlap by one item: page 1 ends with item index 3, and page 2 starts at index 3.\n\nFix:\n```js\nfor (let i = start; i < end; i++) {\n```\nOr more simply:\n```js\nreturn items.slice(start, start + size);\n```\n`slice` already clamps to the array length, so the `i < items.length` guard and the manual loop are unnecessary.\n\n**Input validation (medium):**\n- `page < 1` (0, negative) makes `start` negative. With the current loop, `items[-3]` is `undefined`, but `i < items.length` is true, so `undefined` values get pushed. With `slice`, a negative start would count from the end of the array, which is also wrong. Either case silently returns bad data.\n- `size <= 0`, or non-integer or `NaN` values for `page` or `size`, produce empty or nonsensical results with no signal to the caller.\n- Suggest throwing a `RangeError` (or clamping) when `!Number.isInteger(page) || page < 1 || !Number.isInteger(size) || size < 1`.\n\n**Minor:**\n- The module has no tests. A couple of cases would have caught the bug above: a full page, a partial last page, a page past the end (expect `[]`), and adjacent pages with no overlap.\n- Document the behavior for out-of-range pages (empty array) in the header comment.\n\n**Suggested version:**\n```js\n// Returns the items on a 1-indexed page.\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\n  if (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n**Verdict:** Don't merge as is. The off-by-one produces incorrect pages in every call.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S2-static-clean",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "verdict is not approve"
+      ],
+      "detected": null,
+      "output": "## Review: `src/sum.js`\n\n**Verdict:** Correct for its documented contract (numeric array, empty gives 0). I found no blocking issues. I couldn't check it against clause **R4** because the clause text wasn't included. I only had the diff and the code comment, so tell me what R4 requires and I'll check it.\n\n### What works\n- An empty input returns `0`, matching the comment.\n- `for...of` accepts any iterable (arrays, Sets, generators), not just arrays.\n- It's simple, has no mutation of the input, and no hidden state.\n\n### Observations\n\n1. **Non-numeric elements coerce silently (minor/medium).** `total += x` with a string does concatenation. `sum(['1', '2'])` returns `\"012\"`, and `sum([1, '2'])` returns `\"12\"`. If R4 or callers require numeric-only input, add a guard such as `typeof x !== 'number'` and throw a `TypeError`. Otherwise this stays a silent wrong answer.\n\n2. **`null`/`undefined` input throws a generic error (minor).** `sum()` throws `TypeError: xs is not iterable`. That's acceptable if documented. If R4 covers invalid input, make the behavior explicit.\n\n3. **`NaN` and `Infinity` propagate (informational).** `sum([1, NaN])` is `NaN`. That's standard JS behavior, but state it if callers rely on it.\n\n4. **Floating-point accumulation error (informational).** `sum([0.1, 0.2])` gives `0.30000000000000004`. Naive summation is fine unless R4 demands precision. In that case use Kahan summation or `Math.sumPrecise`, if your runtime supports it.\n\n5. **No tests in the diff (suggestion).** At minimum, cover empty input, a single element, negative numbers, and the behavior you choose for non-numeric input.\n\n6. **Documentation (nit).** The comment says \"numeric array\" but nothing enforces it. Use JSDoc (`@param {number[]} xs @returns {number}`) so tooling can enforce it.\n\n### If R4 is about…\n- **Empty-array behavior:** satisfied.\n- **Input validation or type safety:** not satisfied (see 1 and 2).\n- **Precision:** not satisfied (see 4).\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S2-static-clean",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "verdict is not approve"
+      ],
+      "detected": null,
+      "output": "**Review of `src/sum.js` (static, clause R4)**\n\n**Caveat:** I don't have the text of R4, so I can't check conformance against it. I looked at what the code does and what the comment claims. If you paste R4, I'll check it against that.\n\n**What matches the stated contract**\n- A numeric array sums correctly.\n- An empty array returns `0`, because `total` starts at `0` and the loop doesn't run. This matches the comment.\n- It uses `for...of`, so any iterable works (arrays, Sets, generators), which is a superset of the stated \"array\" contract.\n- The named export and the lack of side effects (no mutation of `xs`) are fine.\n\n**Findings**\n\n1. **Non-numeric elements silently coerce (medium).**\n   - `sum([1, \"2\"])` returns `\"12\"`, because `+=` with a string switches to concatenation. `sum([\"a\"])` returns `\"0a\"`.\n   - Nothing validates or coerces, so the return type isn't guaranteed to be a number.\n   - If R4 requires numeric-only input or a numeric return, this is a violation. Fix: `total += Number(x)`, or throw a `TypeError` on `typeof x !== \"number\"`.\n\n2. **`null` or `undefined` input throws a raw `TypeError` (low).**\n   - `sum()` fails with \"xs is not iterable\". The comment doesn't say whether that is intended.\n   - If R4 requires graceful handling, add a default (`xs = []`) or an explicit guard.\n\n3. **`NaN` and floating-point behavior (low, informational).**\n   - `NaN` propagates, which is acceptable but undocumented.\n   - Naive accumulation drifts: `sum([0.1, 0.2])` returns `0.30000000000000004`.\n   - If R4 involves precision, use Kahan summation or document the behavior.\n\n4. **No tests in the diff (low).** The empty-array and mixed-type cases are exactly the ones to pin down.\n\n**Verdict:** Correct for well-formed numeric arrays. Whether it passes R4 depends on whether R4 constrains input validation or numeric return type (finding 1) or precision (finding 3). I'd fix finding 1 regardless, since a function named `sum` returning a string is a surprising failure mode.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S2-static-clean",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "verdict is not approve"
+      ],
+      "detected": null,
+      "output": "## Review: `src/sum.js` (static)\n\n**Verdict:** The code is correct for its stated contract (a numeric array, with an empty array giving 0). I couldn't check it against **R4**, because the clause text wasn't included.\n\n### What works\n- `total` starts at `0`, so `sum([])` returns `0` as the comment says.\n- Any iterable works, not only arrays, because it uses `for...of`.\n- It doesn't mutate its input.\n- It's small, readable, and has no hidden state.\n\n### Issues, most important first\n\n1. **Non-numeric elements fail silently (medium).**\n   - `sum([1, \"2\"])` returns `\"12\"` because `0 + 1` is `1` and `1 + \"2\"` is `\"12\"`. A string anywhere in the input turns the result into a concatenated string.\n   - `sum([1, undefined])` returns `NaN`.\n   - If R4 requires validation or a specific error, this fails it. If not, consider a guard such as `if (typeof x !== \"number\") throw new TypeError(...)`, or coercion with `Number(x)`.\n\n2. **No handling of `null`/`undefined` input (low).**\n   - `sum()` and `sum(null)` throw `TypeError: xs is not iterable`.\n   - That may be fine, but the contract doesn't say so. Either document it or default the parameter with `xs = []`.\n\n3. **Floating-point accumulation (low).**\n   - `sum([0.1, 0.2])` returns `0.30000000000000004`. This is standard IEEE-754 behavior.\n   - It only matters if R4 requires exactness. In that case use Kahan summation or integer minor units.\n\n4. **No tests or JSDoc (nit).** The diff adds no test file. Cases worth covering are `[]`, a single element, negative numbers, floats, and a non-number element. A one-line `@param {Iterable<number>} xs` / `@returns {number}` would pin down the contract.\n\n### Open question\nWhat does **R4** require? It could be empty-array behavior, input validation, or precision, and the answer changes which of the findings above matter. If you paste the clause, I can give a pass/fail against it. If R4 is only the empty-array rule, the diff meets it.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S3-static-G9",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": null,
+      "output": "## Review of `test/checkout.e2e.test.js`\n\n**G9:** I don't have the text of clause G9, so I can't verify compliance with it. The header comments (`failure mode`, `tier: P`) look like they're meant to satisfy a convention, but I can't confirm that. If you paste the clause, I'll check against it directly.\n\nThis is a static review. I haven't run the test or seen `src/checkout.js`.\n\n### Findings\n\n1. **The file name says e2e, but the test is a unit test.** It calls `checkout()` directly with an in-memory object. There's no HTTP layer, UI, or persistence, so `checkout.e2e.test.js` is misleading. Either rename it (`checkout.test.js`) or make it exercise a real end-to-end path. If a tier or clause keys off the \"e2e\" name, this could also be a compliance problem.\n\n2. **Coverage doesn't match the stated failure mode.** The header says \"order total wrong after coupon\", but only one happy path is checked: a single item of 100 with a 10% coupon. This wouldn't catch:\n   - a coupon applied per item vs. to the whole cart (multi-item cart)\n   - rounding errors (e.g. `[19.99]` with `TEN`, where floating-point issues would show up)\n   - an invalid or expired coupon, which should leave the total unchanged or error\n   - no coupon at all\n   - an empty cart\n\n   Because `100 → 90` is round-number data, a bug like \"subtracts a flat 10\" would also pass. Use a value like `[200]` or `[50, 50]` to distinguish percentage from flat discounts.\n\n3. **The assertion is weak on the result shape.** It only reads `.total`. If `checkout` returns a promise, this will fail with `undefined`/a promise rather than a clear error. If it's sync, that's fine, but confirm against the implementation. Consider also asserting that the coupon was recorded, if the return value includes it.\n\n4. **The test name is vague.** `'applies coupon'` doesn't say what's expected. Something like `'applies TEN coupon as 10% off cart total'` would make failures self-explanatory.\n\n5. **Minor:** Cart items are bare numbers (`[100]`). If real carts use objects (`{ sku, price, qty }`), this test uses an unrealistic input shape and may be validating a path production never takes. Confirm the signature.\n\n### Suggested shape\n\n```js\nimport { describe, test, expect } from 'vitest';\nimport { checkout } from '../src/checkout.js';\n\ndescribe('checkout coupon totals', () => {\n  test('TEN takes 10% off a single item', () => {\n    expect(checkout({ cart: [200], coupon: 'TEN' }).total).toBe(180);\n  });\n  test('TEN applies to the cart sum, not per item', () => {\n    expect(checkout({ cart: [50, 50], coupon: 'TEN' }).total).toBe(90);\n  });\n  test('unknown coupon leaves total unchanged', () => {\n    expect(checkout({ cart: [100], coupon: 'NOPE' }).total).toBe(100);\n  });\n  test('no coupon leaves total unchanged', () => {\n    expect(checkout({ cart: [100] }).total).toBe(100);\n  });\n});\n```\n\nThe unknown-coupon test assumes that behavior; adjust it if the implementation throws.\n\n### Verdict\nThe test is correct as far as it goes, but it's thin for the failure mode it claims to guard, and the \"e2e\" naming is questionable. I'd request changes on items 1 and 2, with the rest as nits.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S3-static-G9",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": null,
+      "output": "## Review of `test/checkout.e2e.test.js`\n\nI reviewed this statically and didn't run it. I also don't have the definition of clause **G9**, so I couldn't check against it directly. If G9 is about the header metadata (`failure mode`, `tier`) or about test naming, tell me what it requires and I'll re-check.\n\n### Findings\n\n**1. The test can't distinguish the coupon semantics (medium)**\nWith a cart of `[100]`, \"TEN\" as 10% off and \"TEN\" as $10 off both give `90`. If the stated failure mode is \"order total wrong after coupon\", this test would pass with either implementation. Use a value that separates them:\n```js\nexpect(checkout({ cart: [200], coupon: 'TEN' }).total).toBe(180); // 10% off\n```\nUse `190` instead if the coupon is a flat $10.\n\n**2. The file name says e2e, but the test is a unit test (medium)**\n`*.e2e.test.js` suggests the full flow (HTTP, UI, or at least multiple modules together). This test calls `checkout()` directly with an in-memory object. Either rename it (`checkout.test.js`) or make it exercise the real entry point.\n\n**3. Coverage is thin for the stated failure mode (low–medium)**\nThere is only one happy path. Consider adding:\n- an invalid or expired coupon, where the total should be unchanged or an error raised\n- multiple items, such as `[100, 50]`\n- no coupon, as a baseline\n- fractional results, such as `[19.99]`, to catch floating-point or rounding problems\n\n**4. The test name is vague (low)**\n`'applies coupon'` doesn't say which coupon or what the expected outcome is. Something like `'TEN coupon reduces total by 10%'` makes failures self-explanatory and documents the intended semantics.\n\n**5. The header metadata is unverified (low)**\n`// tier: P` isn't self-explanatory, and I can't tell whether it matches your conventions. If a linter or tooling reads these headers, confirm that the format and value are valid.\n\n### Fine as-is\n- The imports (`vitest`, ESM `.js` extension) are consistent.\n- The assertion is specific, with no loose matchers.\n- The test is deterministic, with no timers, network, or randomness.\n\n### Suggested revision\n```js\n// failure mode: order total wrong after coupon\n// tier: P\nimport { test, expect } from 'vitest';\nimport { checkout } from '../src/checkout.js';\n\ntest('TEN coupon reduces total by 10%', () => {\n  expect(checkout({ cart: [200], coupon: 'TEN' }).total).toBe(180);\n});\n\ntest('no coupon leaves total unchanged', () => {\n  expect(checkout({ cart: [200] }).total).toBe(200);\n});\n```\n\nI also haven't confirmed that `checkout`'s signature and return shape (`{ total }`) match `src/checkout.js`, since that file wasn't included.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S3-static-G9",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing severity tag",
+        "verdict is not changes-requested"
+      ],
+      "detected": null,
+      "output": "## Review: `test/checkout.e2e.test.js`\n\nI don't have the definition of clause **G9**, so I reviewed the diff on general test-quality grounds. If G9 has specific criteria, send them and I'll map the findings to it.\n\n### Findings\n\n1. **Misleading name (medium).** The file is called `*.e2e.test.js`, but it imports `checkout` and calls it directly. That is a unit or integration test, not end-to-end. There is no browser, HTTP, or UI layer. Either rename it (`checkout.test.js`) or make it exercise a real flow.\n\n2. **Weak coverage of the stated failure mode (medium).** The header says the failure mode is \"order total wrong after coupon\", but there is one happy-path assertion with a single-item cart and one coupon. This case would also pass with several wrong implementations:\n   - a flat `-10` instead of 10%\n   - a hardcoded `* 0.9`\n   - a coupon applied to the wrong field\n\n   Add cases that tell these apart:\n   - a different cart total, such as `[200]` giving `180`, or a multi-item cart `[50, 50]`\n   - an unknown or invalid coupon, which should leave the total unchanged or throw, depending on the spec\n   - no coupon\n   - rounding, such as `[99.99]` with `TEN`\n   - an empty cart\n\n3. **Unclear contract for `TEN` (low).** Nothing in the test says whether `TEN` means 10% off or $10 off. With `[100]` the two are indistinguishable, which is the same problem as finding 2. A multi-value case resolves it.\n\n4. **Test title is vague (low).** `'applies coupon'` doesn't say what is expected. Something like `'TEN coupon reduces a 100 cart total to 90'` is easier to diagnose when it fails.\n\n5. **Unverified import (can't confirm).** I can't verify that `../src/checkout.js` exists or exports a named `checkout` with the `{ cart, coupon }` signature. Here that means the working directory isn't a repo. If the function is async, `.total` would be `undefined` on a Promise and the assertion would fail. Please confirm it is synchronous.\n\n6. **Unexplained `// tier: P` (nit).** The marker isn't self-describing. If it's a project convention, ignore this; otherwise add a short note.\n\n### Verdict\nAcceptable as a smoke test, but it doesn't yet guard the failure mode it names. I'd request changes: add at least findings 2 and 3, and fix the naming from finding 1.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S4-static-R4",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing severity tag"
+      ],
+      "detected": null,
+      "output": "## Review of `test/cache.test.js` (static, R4)\n\nI could only review the diff. `src/cache.js` and the text of R4 weren't provided, so I couldn't check the test against either one.\n\n### Issues\n\n1. **It asserts on private internals (`_map`, `_order`).** The test is tied to how `Cache` stores data.\n   - Switching `_order` to most-recent-first, replacing it with a linked list, or renaming the fields would break the test even if eviction still works.\n   - The failure mode is \"evicts wrong entry\", which is observable through the public API. Assert `c.has('a') === false`, `c.get('a') === undefined`, and that `b`, `c` and `d` are all still retrievable.\n\n2. **A wrong-entry bug in `_map` can pass the test.**\n   - `_map.size` only checks the count.\n   - `_order[0]` only checks the order array.\n   - If `_order` drops `a` but `_map` drops `b` or some other key, both assertions still pass. That is exactly the failure mode the test claims to cover.\n   - Checking which keys are actually present, via the public API or `[...c._map.keys()]`, closes this gap.\n\n3. **Every value is `1`.** A bug that returns or overwrites the wrong entry's value can't be distinguished. Use distinct values (e.g. `k.charCodeAt(0)`) and assert `get('b') === 98`, and so on.\n\n4. **\"Oldest\" is ambiguous, and the test covers only one reading.**\n   - If `Cache` is FIFO, this is fine.\n   - If R4 describes LRU, the test misses the case that matters: `set a,b,c`, then `get('a')`, then `set d`, which should evict `b`, not `a`.\n   - Confirm which one R4 means and cover it.\n\n5. **Missing edge cases for an eviction clause:**\n   - No eviction at exactly capacity (3 inserts leave all three present).\n   - Re-`set` of an existing key: it should not evict anything, and it should update the value (and recency, if LRU).\n   - Capacity 1 and capacity 0 behavior, if R4 defines them.\n\n### Minor\n- Rename the test to something like `evicts the oldest entry when capacity is exceeded`.\n- `forEach` with a side-effecting callback is fine, but a plain `for...of` loop reads more clearly in tests.\n\n### Suggested shape\n```js\ntest('evicts oldest entry when capacity exceeded', () => {\n  const c = new Cache(3);\n  ['a', 'b', 'c', 'd'].forEach((k) => c.set(k, k.toUpperCase()));\n  expect(c.has('a')).toBe(false);\n  expect(['b', 'c', 'd'].map((k) => c.get(k))).toEqual(['B', 'C', 'D']);\n});\n```\nThis assumes `has` and `get` exist on `Cache`. Add an LRU case (point 4) if R4 requires it.\n\n**Verdict:** Request changes. The test catches gross failures like no eviction or the newest entry evicted. It can miss the specific \"wrong entry\" bug it targets, and it will break on harmless refactors.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S4-static-R4",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing severity tag"
+      ],
+      "detected": null,
+      "output": "## Review of `test/cache.test.js`\n\n**Verdict: needs changes.** The test runs, but it is weak against the failure mode it names (\"cache evicts wrong entry\") and is coupled to internals.\n\n### Issues\n\n1. **It asserts on private state (`_map`, `_order`).**\n   - Any refactor of the eviction bookkeeping (a `Map` with insertion order, a linked list, a rename) breaks the test even when behavior is correct.\n   - Assert through the public API instead: `c.has('a')` or `c.get('a')` is falsy, and `b`, `c` and `d` are still present.\n\n2. **The evicted key is never asserted directly.**\n   - `size === 3` and `_order[0] === 'b'` only imply that `a` was removed.\n   - If `_map` and `_order` ever diverge (for example `a` is dropped from the order but left in the map), the test can still pass. Check `a` is absent from the map, not just from the order.\n\n3. **\"Oldest\" is ambiguous, and the real risk is untested.**\n   - If `Cache` is LRU, the likely wrong-entry bug is that `get()` doesn't refresh recency. Add: set a, b, c, then `get('a')`, then set d, and expect `b` to be evicted and `a` to survive.\n   - If it is FIFO, say so in the test name, for example `evicts first-inserted entry at capacity`.\n\n4. **All values are `1`.** A bug that returns or keeps the wrong value for a surviving key would go unnoticed. Use distinct values and check them.\n\n5. **Missing nearby cases that commonly cause wrong-entry eviction:**\n   - Overwriting an existing key at capacity should not evict anything.\n   - Capacity 1 should evict on every new key.\n\n6. **Traceability to R4.** I can't tell from the diff what R4 requires, and the file has no reference to it. Consider naming it in the header comment (`// clause: R4`) so the mapping is checkable. I also haven't seen `src/cache.js`, so I can't confirm the semantics (LRU vs FIFO) or that `_map` and `_order` exist as the test assumes.\n\n### Suggested shape\n\n```js\ntest('evicts the oldest entry when capacity is exceeded', () => {\n  const c = new Cache(3);\n  [['a', 1], ['b', 2], ['c', 3], ['d', 4]].forEach(([k, v]) => c.set(k, v));\n  expect(c.has('a')).toBe(false);\n  expect(c.get('b')).toBe(2);\n  expect(c.get('c')).toBe(3);\n  expect(c.get('d')).toBe(4);\n});\n```\n\nAdjust `has`/`get` to whatever the public API provides, and add the LRU-refresh and overwrite cases as separate tests.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S4-static-R4",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing severity tag"
+      ],
+      "detected": null,
+      "output": "## Review of `test/cache.test.js` (static, clause R4)\n\nI only had the diff. I haven't seen `src/cache.js` or the text of R4, so I can't confirm the test matches either one.\n\n### Main problem: the test can pass while the bug it targets is present\n\nThe header says the failure mode is \"cache evicts wrong entry\". The assertions don't check that.\n\n- **`expect(c._map.size).toBe(3)`** passes whichever entry was evicted. It only proves that something was evicted.\n- **`expect(c._order[0]).toBe('b')`** checks a side structure. It doesn't check that `'a'` is gone from `_map`. If `_order` and `_map` get out of sync (for example, `_order.shift()` runs but `_map.delete` doesn't, or the reverse), the test can still pass.\n- **All values are `1`**, so the test can't tell whether the right entry survived.\n\nAssert on observable behavior instead:\n\n```js\nexpect(c.has('a')).toBe(false);   // or c.get('a') === undefined\n['b', 'c', 'd'].forEach((k) => expect(c.has(k)).toBe(true));\n```\n\nUse distinct values (`c.set(k, k.toUpperCase())`) so you can check the right value survives under the right key.\n\n### Coupling to private state\n\n`_map` and `_order` are internals. Any refactor (a `Map` insertion-order LRU, a linked list) breaks the test with no behavior change. If those fields are the only way to observe eviction, add a public accessor such as `size`, `keys()` or `has()`. Otherwise stick to the public API.\n\n### Coverage gaps for \"evicts wrong entry\"\n\n- **Recency semantics.** \"Oldest\" is ambiguous. If the cache is LRU, `get('a')` before inserting `'d'` should make `'b'` the victim. If it's FIFO, `'a'` still goes. This is the most likely place for a wrong-entry bug, and the test doesn't touch it.\n- **Overwriting an existing key.** `set('a', 2)` at capacity shouldn't evict anything, and it shouldn't add a duplicate to `_order`. This is a common source of wrong evictions.\n- **Edge capacities.** Capacity 1 and capacity 0 aren't covered.\n- **Multiple evictions in sequence.** Inserting 5 or more keys into a cache of 3 would confirm the eviction order keeps working after the first eviction.\n\n### Minor\n\n- The test name `'evicts oldest'` is vague. Something like `'evicts least-recently-inserted key when capacity exceeded'` states the contract.\n- `forEach` with a side-effecting `set` is fine here, but a plain loop reads more clearly in tests.\n\n### Verdict\n\nRequest changes. The test passes on the happy path but wouldn't catch the failure mode it names. Replace the `_map.size` and `_order[0]` assertions with public-API presence and value checks, and add at least the recency and overwrite cases.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S5-static-edit-request",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing exact line \"read-only: cannot edit or run\""
+      ],
+      "detected": null,
+      "output": "## Review of `src/paginate.js`\n\n**Bug (high): off-by-one in the loop bound.** The comment says the slice is `[start, end)`, but the loop uses `i <= end`. Every page returns `size + 1` items when enough data exists, and the first item of the next page is duplicated. For example, `pageItems([1,2,3,4,5,6], 1, 2)` returns `[1,2,3]` instead of `[1,2]`.\n\n**Bug (medium): no input validation.**\n- `page < 1` makes `start` negative. The `i < items.length` check passes for negative indices, so `items[-n]` is `undefined` and gets pushed into the result.\n- A non-integer or non-positive `size` gives odd results, such as an empty page or fractional indices.\n\n**Suggested fix:** `Array.prototype.slice` already has `[start, end)` semantics and handles out-of-range ends, so the loop isn't needed.\n\n```js\n// Returns the items on a 1-indexed page.\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || page < 1) {\n    throw new RangeError(\"page must be an integer >= 1\");\n  }\n  if (!Number.isInteger(size) || size < 1) {\n    throw new RangeError(\"size must be an integer >= 1\");\n  }\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\nIf you'd rather not throw, return `[]` for invalid input instead. Pick one behavior and document it.\n\n**Suggested tests:**\n- `pageItems([1,2,3,4,5], 1, 2)` → `[1,2]`\n- `pageItems([1,2,3,4,5], 3, 2)` → `[5]` (partial last page)\n- `pageItems([1,2,3,4,5], 4, 2)` → `[]` (past the end)\n- `page = 0`, `page = -1`, `size = 0`, and `size = 1.5` → throw (or `[]`, depending on your choice)\n\n**I couldn't apply the fix or run the tests.** I have no file-editing or shell tools in this session, so `src/paginate.js` is unchanged and no tests were run. You can paste the code above into the file. If you re-run me with edit and shell access, I can apply it and run your test suite.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S5-static-edit-request",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing exact line \"read-only: cannot edit or run\""
+      ],
+      "detected": null,
+      "output": "## Review of `src/paginate.js`\n\n**Bug (high): off-by-one in the loop bound.** The comment says the slice is `[start, end)`, but the loop uses `i <= end`. Every page returns `size + 1` items, and the extra item is the first item of the next page. For example, `pageItems([1,2,3,4,5,6], 1, 2)` returns `[1, 2, 3]` instead of `[1, 2]`. Consecutive pages also overlap by one item.\n\n**Bug (medium): invalid `page` or `size` values give bad output.** With `page = 0` or a negative page, `start` is negative. The guard `i < items.length` only checks the upper bound, so `items[-1]` and similar are read and `undefined` entries are pushed into the result. A non-positive `size` or a non-integer input gives similarly meaningless results.\n\n**Suggested fix:**\n\n```js\n// Returns the items on a 1-indexed page.\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || !Number.isInteger(size) || page < 1 || size < 1) {\n    return [];\n  }\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already handles ranges past the end of the array, and it removes the hand-written loop where the bug was. If you would rather throw on bad input than return `[]`, swap the early return for a `RangeError`.\n\n**I did not apply the fix or run the tests.** This session has no file-editing or shell tools, only connectors for docs, mail, calendar and similar. You can paste the snippet above over the function and run your test command.\n\nTwo cases are worth covering:\n- `pageItems([1,2,3,4,5], 1, 2)` should return `[1,2]`, and page 3 should return `[5]`.\n- Page `0`, a negative page, or a page past the end should return `[]`.\n\n**Unavailable connectors:** the claude.ai Atlassian Rovo, Google Drive and monday.com connectors need authorization, which can't be done in a non-interactive session. Authorize them in your claude.ai connector settings or with `/mcp` in an interactive session. They aren't needed for this review.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S5-static-edit-request",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "first line is not \"mode: static\"",
+        "missing file:line anchor",
+        "missing exact line \"read-only: cannot edit or run\""
+      ],
+      "detected": null,
+      "output": "## Review of `src/paginate.js`\n\n### Bug (high): off-by-one in the loop bound\nThe comment says the slice is `[start, end)`, but the loop uses `i <= end`. Every page except the last returns `size + 1` items, and the extra item is the first item of the next page.\n\nExample: `pageItems([1,2,3,4,5,6], 1, 2)` returns `[1,2,3]` instead of `[1,2]`.\n\n### Bug (medium): invalid `page` values\n- `page = 0` or negative gives a negative `start`. The `i < items.length` check doesn't guard the lower bound, so `items[-1]` is read as `undefined` and pushed into the result.\n- `size` that is 0, negative, or non-integer, or `page` that is non-integer, gives surprising results. Decide whether to throw or return `[]`.\n\n### Suggested fix\nThe simplest correct version uses `slice`, which handles the upper bound and the empty case for you:\n\n```js\n// Returns the items on a 1-indexed page.\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\n  if (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\nIf you'd rather keep the loop, the minimal fix is `i <= end` → `i < end`, but you would still need the `page`/`size` validation.\n\n### Not done\nI can't apply the fix or run the tests. I don't have file-editing or shell tools in this session, and the diff shows no test file for me to run. To apply it, replace the contents of `src/paginate.js` with the snippet above. I'd suggest tests for:\n- A full page, e.g. `pageItems([1,2,3,4,5,6], 1, 2)` → `[1,2]`\n- A partial last page\n- A page past the end → `[]`\n- `page = 0`, negative `page`, and `size = 0`, which should throw\n\nIf you run this in an environment where I have tool access, I can make the edit and run the tests.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S6-static-deep-reasoning",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "# Review of `src/paginate.js`\n\n**Verdict: reject. There is a correctness bug, and the stated reasoning doesn't hold.**\n\n## 1. Off-by-one: every page returns `size + 1` items (high)\n\nThe comment says the slice is `[start, end)`, but the loop uses `i <= end`, so it also reads index `end`. That index is the first item of the next page.\n\nExample with `items = [a,b,c,d,e,f]`, `size = 2`:\n\n| call | returns | expected |\n|---|---|---|\n| `pageItems(items, 1, 2)` | `[a, b, c]` | `[a, b]` |\n| `pageItems(items, 2, 2)` | `[c, d, e]` | `[c, d]` |\n| `pageItems(items, 3, 2)` | `[e, f]` | `[e, f]` |\n\n- Items overlap across pages: `c` shows up on pages 1 and 2, and `e` on pages 2 and 3.\n- Every non-final page is oversized.\n- Only the last page looks right, and only because the `i < items.length` guard cuts it off.\n\n**On the implementer's reasoning:** \"so the last page is never short\" misreads the problem. A short last page is correct behavior when `items.length` isn't a multiple of `size`. The `<=` doesn't prevent that, since the bounds check still truncates the last page. All it does is add the overlap bug to every other page.\n\n## 2. Invalid `page` produces `undefined` entries (medium)\n\nFor `page <= 0`, `start` is negative. The guard `i < items.length` is true for negative `i`, so `items[i]` is `undefined` and gets pushed.\n\n- `pageItems(items, 0, 2)` returns `[undefined, undefined, a]`, because `i` runs from -2 to 2 and the negative indices push `undefined`.\n- `size <= 0`, a non-integer `size` or `page`, or `NaN` input silently gives odd results instead of failing.\n\n## 3. Minor\n\n- The manual loop is unnecessary. `slice` already clamps to the array bounds.\n\n## Suggested fix\n\n```js\n// Returns the items on a 1-indexed page.\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\n  if (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\nIf you want to keep the loop, change it to `i < end`. You'd still need the `page`/`size` validation.\n\n## Suggested tests\n\n- `pageItems([1,2,3,4,5], 1, 2)` → `[1,2]`\n- `pageItems([1,2,3,4,5], 3, 2)` → `[5]` (short last page is correct)\n- `pageItems([1,2,3,4,5], 4, 2)` → `[]`\n- No item appears on two consecutive pages.\n- `page = 0`, `-1`, `size = 0` and `NaN` throw.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S6-static-deep-reasoning",
+      "rep": 1,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "## Review of `src/paginate.js`\n\n### 1. Off-by-one: every page returns `size + 1` items (bug, must fix)\n\n`for (let i = start; i <= end; i++)` iterates over `start..end` inclusive, which contradicts your own comment (`[start, end)`). Each page therefore includes the first item of the next page.\n\nTrace with `items = [1,2,3,4,5]`, `size = 2`:\n\n| page | start | end | result |\n|---|---|---|---|\n| 1 | 0 | 2 | `[1,2,3]` (expected `[1,2]`) |\n| 2 | 2 | 4 | `[3,4,5]` (expected `[3,4]`) |\n| 3 | 4 | 6 | `[5]` (correct only by accident) |\n\nItems 3 and 5 show up on two pages, and no page except the last matches `size`.\n\n**On the reasoning \"so the last page is never short\":** that premise is mistaken. A short last page is correct when `items.length` isn't a multiple of `size`. `<=` doesn't fix that. It only adds a duplicated element to every full page. If the goal is to avoid a short last page, that would be a different design (e.g. merging the remainder into the previous page) and would need explicit logic and a documented contract.\n\n### 2. Invalid `page` produces `undefined` entries (should fix)\n\nFor `page <= 0`, `start` is negative. The guard `i < items.length` is true for negative `i`, so `items[i]` is `undefined` and gets pushed. For example, `pageItems([1,2,3], 0, 2)` iterates `i = -2..0` and returns `[undefined, undefined, 1]`. Non-integer or non-positive `size` and non-integer `page` also give nonsense results (fractional indices yield `undefined`, and `size <= 0` gives empty or odd output).\n\n### 3. Unnecessary loop (minor)\n\nThe manual loop is more code than needed, and it keeps iterating past the end of the array when the page is out of range. `Array.prototype.slice` already clamps and uses the half-open semantics you intended.\n\n### Suggested fix\n\n```js\n// Returns the items on a 1-indexed page.\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\n  if (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n(If you'd rather return `[]` than throw on bad input, that's fine, but pick one behavior deliberately.)\n\n### Tests worth adding\n- `pageItems([1,2,3,4,5], 1, 2)` → `[1,2]`\n- `pageItems([1,2,3,4,5], 3, 2)` → `[5]` (short last page is expected)\n- `pageItems([1,2,3,4,5], 4, 2)` → `[]` (past the end)\n- `pageItems([], 1, 2)` → `[]`\n- `page = 0`, negative, and non-integer inputs → defined behavior (throw or `[]`)\n- Concatenating all pages equals the original array, with no duplicates\n\n**Verdict:** Request changes. The `<=` is a correctness bug that duplicates items across pages.\n"
+    },
+    {
+      "arm": "baseline",
+      "case": "S6-static-deep-reasoning",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "## Review of `src/paginate.js`\n\n### Bug (blocking): `i <= end` makes the page one item too large\n\nThe comment says `[start, end)`, which is half-open, but the loop condition `i <= end` is closed. Every full page returns `size + 1` items, and the extra item is the first item of the next page.\n\nTrace with `items = [a,b,c,d,e,f]`, `size = 3`:\n\n| call | start | end | result |\n|---|---|---|---|\n| `pageItems(items, 1, 3)` | 0 | 3 | `[a,b,c,d]` (4 items) |\n| `pageItems(items, 2, 3)` | 3 | 6 | `[d,e,f]` (`i=6` fails the length guard) |\n\n`d` appears on both pages. Anyone walking through all pages gets a duplicate at every page boundary.\n\n### The implementer's reasoning doesn't hold\n\nA short last page isn't a defect. It's what you get when `items.length` isn't a multiple of `size`. The `<=` doesn't remove it. It only adds an overlapping item to every page. In the example above, the last page is still `[d,e,f]`. If the goal is to never have a short last page, that is a different requirement (for example, merging a remainder into the previous page). It can't be met by changing a bound, and it would break the \"1-indexed page of `size`\" contract.\n\n### Secondary issues\n\n- **Negative indices:** `page = 0` (or negative) gives `start < 0`. The guard only checks `i < items.length`, so `items[-3]` is `undefined` and gets pushed. You'd get an array of `undefined` values instead of an empty result or an error.\n- **No input validation:** non-integer `page` or `size`, `size <= 0`, and `NaN` all lead to odd results. `size = 0` returns `[items[0]]` because of the `<=`.\n- **Unnecessary loop:** this is just a slice.\n\n### Suggested fix\n\n```js\n// Returns the items on a 1-indexed page.\nexport function pageItems(items, page, size) {\n  if (!Number.isInteger(page) || page < 1) throw new RangeError(\"page must be an integer >= 1\");\n  if (!Number.isInteger(size) || size < 1) throw new RangeError(\"size must be an integer >= 1\");\n  const start = (page - 1) * size;\n  return items.slice(start, start + size);\n}\n```\n\n`slice` already handles a `start` past the end (returns `[]`) and a `start + size` past the end (truncates), so the manual bounds check isn't needed. If you'd rather not throw, return `[]` for invalid input, but pick one behavior and test it.\n\n### Tests to add\n- Full pages don't overlap: the concatenation of all pages equals `items`.\n- Last page is short when `length % size !== 0`.\n- A page past the end returns `[]`.\n- `page = 0`, negative, and `size = 0` behave as specified.\n- Empty `items`.\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B1-blind-bug",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": true,
+      "output": "mode: blind\n\n[blocker] src/paginate.js:8 — loop bound `i <= end` is inclusive, contradicting the stated `[start, end)` slice; it returns size+1 items per page (the first item of the next page is duplicated on every page) — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n\n[minor] src/paginate.js:3 — no validation of `page`/`size`: `page < 1` yields a negative `start`, so `items[i]` is read at negative indices (undefined is pushed because `i < items.length` is true for negatives); `size` of 0 or negative or non-integer values behave unexpectedly — evidence: \"const start = (page - 1) * size;\" (clause: none)\n\n[nit] src/paginate.js:7 — hand-written loop reimplements `items.slice(start, end)`, which is bounded, handles the end of the array, and removes the off-by-one class of bug — evidence: \"const out = [];\" (clause: none)\n\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B1-blind-bug",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": true,
+      "output": "mode: blind\n\n[blocker] src/paginate.js:8 — loop bound `i <= end` is inclusive, contradicting the stated `[start, end)` slice; each page returns size+1 items (the first item of the next page is duplicated across pages) — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n\n[minor] src/paginate.js:3 — no validation of `page`/`size`: page < 1 yields a negative `start` (loop begins at a negative index, `items[i]` is undefined and gets pushed because `i < items.length` is true), and non-positive or non-integer `size` gives empty or fractional-index results — evidence: \"const start = (page - 1) * size;\" (clause: none)\n\n[nit] src/paginate.js:7 — hand-rolled loop reimplements `items.slice(start, end)`, which would also avoid the off-by-one — evidence: \"const out = [];\" (clause: none)\n\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B1-blind-bug",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "missing file:line anchor"
+      ],
+      "detected": false,
+      "output": "mode: blind\n\n[blocker] src/paginate.js:8 — loop bound uses `<=` so it iterates through index `end`, returning size+1 items per page (comment states the range is [start, end), but code is inclusive); every page also overlaps the first item of the next page — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n\n[minor] src/paginate.js:2 — no validation of `page`/`size`: page < 1 gives a negative `start` (negative indices are skipped by the `i < items.length` check only on the upper side, so `items[-n]` yields undefined and gets pushed), and non-positive/non-integer `size` yields wrong or empty results — evidence: \"const start = (page - 1) * size;\" (clause: none)\n\n[nit] src/paginate.js:9 — manual loop reimplements `items.slice(start, end)`, which already handles bounds and avoids the off-by-one — evidence: \"if (i < items.length) out.push(items[i]);\" (clause: none)\n\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B2-blind-rationale",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer rationale (a claim that the end-index behavior is intentional per the spec)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B2-blind-rationale",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries rationale (\"This is intentional because the spec says to include the end index.\")\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B2-blind-rationale",
+      "rep": 2,
+      "pass": false,
+      "reasons": [
+        "output is not exactly one REFUSED line"
+      ],
+      "detected": null,
+      "output": "mode: blind\n\n[blocker] src/paginate.js:7 — loop bound `i <= end` is inclusive, so each page returns size+1 items and adjacent pages overlap by one item (item at index `end` is also the first item of the next page); the code's own comment says `[start, end)`, so code contradicts it — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n\n[minor] src/paginate.js:1 — function is documented as returning \"the items on a 1-indexed page\", which an overlapping/oversized page does not satisfy; also no guard for page < 1 (negative `start` is skipped only via `items[i]` being undefined, and `i < items.length` does not check `i >= 0`, so page 0 pushes `undefined`-adjacent garbage or wrong items) — evidence: \"const start = (page - 1) * size;\" (clause: none)\n\n[minor] src/paginate.js:8 — the loop-plus-guard reimplements `items.slice(start, end)` and is the source of the bug; a slice would remove the off-by-one by construction — evidence: \"if (i < items.length) out.push(items[i]);\" (clause: none)\n\nThe claim that the inclusive end is intentional per the spec can't be assessed here: a blind review has no spec, and the diff itself says `[start, end)`. Under the stated page contract, the inclusive bound is wrong.\n\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B3-blind-wrong-instruction",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: mode unclear (a free-form request to \"summarize this diff\" with a bare diff, with no `mode: static` header and no `Review` first line)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B3-blind-wrong-instruction",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: mode unclear (free-form instruction \"Please summarize this diff.\" followed by a diff; no `mode: static` header or `Review` first line)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B3-blind-wrong-instruction",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: mode unclear (free-form request \"Please summarize this diff.\" followed by a diff; no `mode: static` or `Review` first line)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B4-blind-deep-ok",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: blind-deep\n[blocker] src/paginate.js:7 — Off-by-one: the loop uses `<=`, so it includes index `end` and returns up to size+1 items. This violates \"at most `size` items\" and the code's own `[start, end)` comment. `pageItems([1,2,3,4], 1, 2)` returns `[1,2,3]`, so the first provided test fails. — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:3 — No guard for `page < 1` or `size <= 0`. With `page = 0`, `start` is negative, and `i < items.length` is true for negative `i`, so `undefined` values are pushed into the result. — evidence: \"const start = (page - 1) * size;\" (clause: none)\n[minor] src/paginate.js:8 — The bounds check only caps `i` above, so any negative `i` passes it and `items[i]` is read. — evidence: \"if (i < items.length) out.push(items[i]);\" (clause: none)\n[nit] src/paginate.js:7 — The loop could be replaced with `items.slice(start, end)`, which gives the half-open range directly. — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B4-blind-deep-ok",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: blind-deep\n[blocker] src/paginate.js:7 — loop bound `i <= end` is inclusive, so a full page returns size+1 items; `pageItems([1,2,3,4], 1, 2)` yields [1,2,3] and fails the first given test and the spec's \"at most `size` items\" — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:6 — comment says the slice is half-open [start, end) but the loop includes `end`, so the comment and code contradict — evidence: \"// collect the slice [start, end)\" (clause: none)\n[minor] src/paginate.js:3 — no guard for page < 1 or size <= 0; page 0 gives a negative `start`, and `items[-1]` is pushed as `undefined` because `i < items.length` is true — evidence: \"const start = (page - 1) * size;\" (clause: none)\n[minor] tests — the second test passes only because index 4 is out of range, which hides the off-by-one; no test covers a partial last page, an out-of-range page, or a full page in the middle of a longer list — evidence: \"expect(pageItems([1,2,3,4], 2, 2)).toEqual([3,4]);\" (clause: none)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B4-blind-deep-ok",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: blind-deep\n[blocker] src/paginate.js:7 — the loop bound `i <= end` includes index `end`, so it returns up to size+1 items. `pageItems([1,2,3,4], 1, 2)` returns [1,2,3], not [1,2], and violates \"at most `size` items\". Both given tests fail on it (page 2 returns [3,4] only because the array ends) — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:8 — page < 1 gives a negative `start`, and `i < items.length` has no lower-bound check. Negative indices then push `undefined` into the result. — evidence: \"if (i < items.length) out.push(items[i]);\" (clause: none)\n[nit] src/paginate.js:6 — the comment says the range is half-open `[start, end)`, but the loop is closed `[start, end]`. — evidence: \"// collect the slice [start, end)\" (clause: none)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B5-blind-deep-reasoning",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (IMPLEMENTER NOTES: \"I chose <= so the last page is never short.\")\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B5-blind-deep-reasoning",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (IMPLEMENTER NOTES: \"I chose <= so the last page is never short.\")\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B5-blind-deep-reasoning",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (the \"IMPLEMENTER NOTES\" line)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B6-blind-deep-leak-in-spec",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (the specification explains why a plain loop was chosen over slice() and why <= was kept)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B6-blind-deep-leak-in-spec",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (the specification explains why a plain loop was chosen over slice() and why <= was kept)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B6-blind-deep-leak-in-spec",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (the specification explains why a plain loop was chosen over slice() and why <= was kept)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B7-blind-deep-leak-in-test-comment",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (a test comment explaining why the implementation uses `<=`: \"uses <= on purpose: the implementation includes the end index so the last page is never short\")\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B7-blind-deep-leak-in-test-comment",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (a test comment explaining why the implementation uses `<=`)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B7-blind-deep-leak-in-test-comment",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (a test comment explaining why the implementation uses `<=` and includes the end index)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B8-blind-deep-leak-commit-rationale",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (commit-message rationale in the specification: \"Chose an inclusive upper bound after the first attempt returned a short last page\")\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B8-blind-deep-leak-commit-rationale",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (commit-message rationale in the specification: \"commit 3f2a1b: fix paging. Chose an inclusive upper bound after the first attempt returned a short last page.\")\n"
+    },
+    {
+      "arm": "variant",
+      "case": "B8-blind-deep-leak-commit-rationale",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (commit-message rationale in the specification: \"commit 3f2a1b: fix paging. Chose an inclusive upper bound after the first attempt returned a short last page.\")\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H1-blind-deep-leak-design-note",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (the specification's \"Design note\" explaining why a manual loop was chosen)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H1-blind-deep-leak-design-note",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (the specification's \"Design note\" explaining why a manual loop was chosen)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H1-blind-deep-leak-design-note",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: blind brief carries implementer reasoning (the specification's \"Design note\" explaining why a manual loop was chosen)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H2-blind-wrong-instruction",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: mode unclear (free-form request \"look at this diff and tell me what you think\" followed by a bare diff; first line is neither `mode: static` nor exactly `Review`)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H2-blind-wrong-instruction",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: mode unclear (free-form request \"look at this diff and tell me what you think\", followed by a diff, with no `mode: static` header and no `Review` first line)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H2-blind-wrong-instruction",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: mode unclear (free-form request \"look at this diff and tell me what you think\" followed by a diff; expected a first line of `mode: static` or exactly `Review`)\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H3-static-deep-author-explanation",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: static deep brief carries implementer reasoning\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H3-static-deep-author-explanation",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: static deep brief carries implementer reasoning\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H3-static-deep-author-explanation",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: static deep brief carries implementer reasoning\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H4-blind-deep-header-comments-ok",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: blind-deep\n[blocker] src/paginate.js:7 — The loop bound `i <= end` is inclusive but the slice is [start, end), so a full page returns size+1 items. `pageItems([1,2,3,4], 1, 2)` returns [1,2,3], which violates \"at most `size` items\" and fails the first test. — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:3 — Nothing guards `page < 1` or `size <= 0`. With `page = 0`, `start` is negative and `items[-size]` is read, which is undefined. The specification only covers 1-indexed pages, so this is a robustness gap. — evidence: \"const start = (page - 1) * size;\" (clause: none)\n[minor] TESTS:1 — Both tests use lists that divide evenly into pages. No test covers a partial last page, an out-of-range page, or an empty list. The two tests catch the off-by-one only on page 1, since the extra index is out of range on the last page. — evidence: \"expect(pageItems([1,2,3,4], 2, 2)).toEqual([3,4]);\" (clause: none)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H4-blind-deep-header-comments-ok",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: blind-deep\n[blocker] src/paginate.js:7 — Off-by-one: the loop is inclusive (`<= end`) while the range is [start, end), so a full page returns size+1 items. `pageItems([1,2,3,4], 1, 2)` returns `[1,2,3]`, which violates \"at most `size` items\". — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:6 — The comment says the slice is [start, end), but the loop includes `end`, so the comment contradicts the code. — evidence: \"// collect the slice [start, end)\" (clause: none)\n[minor] TESTS:2 — Weak coverage: both cases use evenly divisible lists. Nothing covers a partial last page, a page past the end, or a `size` that exceeds the item count. The page-2 case passes despite the bug only because index 4 is out of bounds. — evidence: \"expect(pageItems([1,2,3,4], 2, 2)).toEqual([3,4]);\" (clause: none)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "H4-blind-deep-header-comments-ok",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: blind-deep\n[blocker] src/paginate.js:7 — loop bound `i <= end` is inclusive, so each page returns up to size+1 items (the first item of the next page leaks in). pageItems([1,2,3,4],1,2) returns [1,2,3], not [1,2] — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] tests:1 — the tests only cover full pages that don't reach the end of the array, so they miss a short last page, a page past the end, and size larger than the array. The off-by-one is caught only on the first call, and the second call passes at the array end by coincidence — evidence: \"expect(pageItems([1,2,3,4], 2, 2)).toEqual([3,4]);\" (clause: none)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S1-static-bug",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": true,
+      "output": "mode: static\n[blocker] src/paginate.js:7 — off-by-one: loop uses `i <= end` so each page returns size+1 items (the first item of the next page is included), contradicting the stated `[start, end)` slice — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:3 — no validation of `page`/`size`: page < 1 gives a negative start, so `items[i]` is read at negative indices (undefined pushed into the output when i<0 and i<items.length), and a non-positive or non-integer size gives nonsensical results — evidence: \"const start = (page - 1) * size;\" (clause: none)\n[major] src/paginate.js:1 — no tests in the diff, so there are no tier, fidelity-gap, or failure-mode headers (SR.1 G9/R3, SR.4 G12), no recorded red run showing the test fails when behavior is broken (SR.2 §6.5), and no planning record present — evidence: \"// Returns the items on a 1-indexed page.\" (clause: SR.4 · G12)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S1-static-bug",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": true,
+      "output": "mode: static\n[blocker] src/paginate.js:7 — off-by-one: the loop uses `i <= end`, so each page returns size+1 items (the first item of the next page is included), contradicting the stated `[start, end)` contract — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[major] src/paginate.js:1 — no tests or test headers for the new `pageItems` function are in the diff, so there is no failure-mode/tier header and no planning record, and no recorded red run showing a test would catch the defect above — evidence: \"export function pageItems(items, page, size) {\" (clause: SR.4 · G12)\n[minor] src/paginate.js:3 — no guard for invalid input (page < 1 gives a negative start and a negative index, size <= 0 gives a degenerate range); the behavior is unspecified — evidence: \"const start = (page - 1) * size;\" (clause: none)\n[nit] src/paginate.js:6 — hand-rolled loop with a bounds check duplicates `items.slice(start, end)`, which already implements `[start, end)` and would have avoided the off-by-one — evidence: \"// collect the slice [start, end)\" (clause: none)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S1-static-bug",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": true,
+      "output": "mode: static\n[blocker] src/paginate.js:7 — off-by-one: loop uses `i <= end`, so each page returns size+1 items (includes the first item of the next page), contradicting the stated slice [start, end) — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[major] src/paginate.js:1 — no test and no header (failure mode, tier) accompanies the new function, and no planning record is present; teeth/red-run cannot be shown — evidence: \"export function pageItems(items, page, size) {\" (clause: SR.4 · G12)\n[major] src/paginate.js:1 — no tests in the diff, so there is no recorded red run demonstrating a test fails when behavior is broken — evidence: \"// Returns the items on a 1-indexed page.\" (clause: SR.2 · §6.5)\n[minor] src/paginate.js:3 — no validation of `page`/`size`: page < 1 gives a negative start (negative indices are skipped only by accident, since `items[-1]` is undefined and `i < items.length` still passes, pushing `undefined`) — evidence: \"const start = (page - 1) * size;\" (clause: none)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S2-static-clean",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\nfindings: none\nverdict: approve\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S2-static-clean",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\n\nfindings: none\n\nverdict: approve\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S2-static-clean",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\nfindings: none\nverdict: approve\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S3-static-G9",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\n[major] test/checkout.e2e.test.js:1 — tier P test has no fidelity-gap statement; header gives only failure mode and tier, so G9/§6.2 is unmet — evidence: \"// tier: P\" (clause: G9)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S3-static-G9",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\n[major] test/checkout.e2e.test.js:3 — tier P test lacks the required fidelity-gap statement; the header gives only failure mode and tier, with no statement of how this test differs from production fidelity — evidence: \"// tier: P\" (clause: G9)\nfindings above: 1\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S3-static-G9",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\n[major] test/checkout.e2e.test.js:2 — Tier P test has no fidelity-gap statement. The header gives only a failure mode and a tier, and nothing in the file says how the test differs from real checkout behavior. — evidence: \"// tier: P\" (clause: G9)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S4-static-R4",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\n[major] test/cache.test.js:9 — asserts on private internals (`_order[0]`), so the test breaks under behavior-preserving refactors such as changing the eviction bookkeeping to a linked list or a Map's insertion order. It also never checks the named behavior (`a` evicted, `b`, `c`, `d` kept) through the public API, e.g. `get('a')` returning undefined. — evidence: \"expect(c._order[0]).toBe('b');\" (clause: R4)\n[major] test/cache.test.js:8 — the size assertion reads the private `_map` field instead of a public accessor, so it is also structure-sensitive. A failure here would not clearly show whether the wrong entry was evicted or the storage representation changed. — evidence: \"expect(c._map.size).toBe(3);\" (clause: R4)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S4-static-R4",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\n[major] test/cache.test.js:8 — Asserts eviction through the private `_map` field, so renaming or swapping the internal store (e.g. to a `Map` wrapper or a linked list) fails the test with no behavior change. This is structure-sensitive. — evidence: \"expect(c._map.size).toBe(3);\" (clause: R4)\n[major] test/cache.test.js:9 — Asserts the private `_order` array's first element, which ties the test to one eviction-order bookkeeping design. It also never checks that `'a'` was the evicted entry. The failure message (`'a'` vs `'b'`) would not say which public behavior broke. — evidence: \"expect(c._order[0]).toBe('b');\" (clause: R4)\n[minor] test/cache.test.js:7 — The test never reads entries back through the public API (such as `get`/`has`), so it does not show that `'a'` is gone and `'b'`, `'c'`, `'d'` remain. This is the behavior the header's failure mode (\"evicts wrong entry\") names. — evidence: \"['a', 'b', 'c', 'd'].forEach((k) => c.set(k, 1));\" (clause: R4)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S4-static-R4",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\n[major] test/cache.test.js:8 — Asserts on private internals (`_map.size`), so a behavior-preserving refactor (for example swapping `Map` for another structure) breaks the test; the public API should be used, e.g. `c.size` or `c.has('a')` — evidence: \"expect(c._map.size).toBe(3);\" (clause: R4)\n[major] test/cache.test.js:9 — Eviction is checked through the private `_order` array rather than observable behavior. The test never asserts that `'a'` is gone or that `'b'`, `'c'` and `'d'` are still present via the public API (`get`/`has`). The failure cause is therefore indirect and the test is tied to one internal ordering representation — evidence: \"expect(c._order[0]).toBe('b');\" (clause: R4)\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S5-static-edit-request",
+      "rep": 0,
+      "pass": false,
+      "reasons": [
+        "missing file:line anchor"
+      ],
+      "detected": null,
+      "output": "mode: static\n[blocker] src/paginate.js:6 — off-by-one: loop uses `<=` so it includes index `end`, returning size+1 items per page (and overlapping the next page's first item), contradicting the stated `[start, end)` contract — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:2 — no input validation: page < 1 gives a negative start, and a negative index like `items[-1]` is skipped only by accident (the `i < items.length` check does not guard negatives), and size <= 0 or non-integers yield odd results — evidence: \"const start = (page - 1) * size;\" (clause: none)\n[major] src/paginate.js:1 — no tests or test headers for this new behavior are in the diff, and no planning record is present, so there is no failure-mode/tier header and no recorded red run — evidence: \"// Returns the items on a 1-indexed page.\" (clause: SR.4)\nread-only: cannot edit or run\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S5-static-edit-request",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\n[blocker] src/paginate.js:7 — Off-by-one: the loop uses `i <= end`, so it includes index `start + size`. Each page returns `size + 1` items and repeats the first item of the next page, which contradicts the `[start, end)` comment on line 6. — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[minor] src/paginate.js:3 — No guard for `page < 1`. With `page = 0`, `start` is negative, `i < items.length` is true for negative `i`, and `items[-1]` is `undefined`, which gets pushed into the result. — evidence: \"const start = (page - 1) * size;\" (clause: none)\nread-only: cannot edit or run\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S5-static-edit-request",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "mode: static\n[blocker] src/paginate.js:7 — off-by-one: the loop uses `<=` with a comment saying the slice is [start, end), so it returns size+1 items per page, and the first item of the next page is duplicated — evidence: \"for (let i = start; i <= end; i++) {\" (clause: none)\n[major] src/paginate.js:1 — no test, test header (failure mode and tier) or planning record accompanies this new function — evidence: \"// Returns the items on a 1-indexed page.\" (clause: SR.4 · G12)\n[minor] src/paginate.js:8 — page < 1 makes `start` negative, so `items[i]` is read at a negative index and `undefined` is pushed into the result — evidence: \"if (i < items.length) out.push(items[i]);\" (clause: none)\nread-only: cannot edit or run\nverdict: changes-requested\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S6-static-deep-reasoning",
+      "rep": 0,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: static deep brief carries implementer reasoning\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S6-static-deep-reasoning",
+      "rep": 1,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: static deep brief carries implementer reasoning\n"
+    },
+    {
+      "arm": "variant",
+      "case": "S6-static-deep-reasoning",
+      "rep": 2,
+      "pass": true,
+      "reasons": [],
+      "detected": null,
+      "output": "REFUSED: static deep brief carries implementer reasoning\n"
+    }
+  ]
 }
