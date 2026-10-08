@@ -21,6 +21,13 @@
  *   --manifest <path>        override the guards manifest module (testing only — BL-466-g fixture).
  *   --cwd <dir>              run git/guard invocations rooted at <dir> instead of process.cwd()
  *                            (testing only).
+ *   --build-runner <script>  (testing only, c2e1c0c3) replace `npx nx build <dep>` with
+ *                            `node <script> <dep> <cwd>`; exit 0 = built. Lets unit tests prove the
+ *                            build prerequisite without spawning a real nx build.
+ *
+ * `needsBuild` (guards-manifest.mjs) is honoured by BOTH tiers (c2e1c0c3): a Tier 1 guard that is in
+ * scope builds its dependencies once before running, and a failed build is a FAIL (fail-closed — the
+ * hook must never read "dist missing" as a pass or as not-applicable).
  *
  * Tri-state + NOT_APPLICABLE contract (BL-466-d, BL-466-g, extends BL-469):
  *   PASS            guard process ran, exit 0.
@@ -64,6 +71,7 @@ function parseArgs(argv) {
   args.head = flagVal('--head');
   args.manifest = flagVal('--manifest');
   args.cwd = flagVal('--cwd');
+  args.buildRunner = flagVal('--build-runner');
   return args;
 }
 
@@ -195,6 +203,34 @@ function record(id, status, detail, ms = 0) {
 }
 
 // --------------------------------------------------------------------------------------------
+// Build prerequisites (shared by Tier 1 and Tier 2)
+// --------------------------------------------------------------------------------------------
+function nxBuild(depName, cwd) {
+  const t0 = Date.now();
+  const res = args.buildRunner
+    ? spawnSync(process.execPath, [path.resolve(args.buildRunner), depName, cwd], { cwd, encoding: 'utf8' })
+    : spawnSync('npx', ['nx', 'build', depName], { cwd, encoding: 'utf8' });
+  const ms = Date.now() - t0;
+  return { ok: res.status === 0, ms, stderr: res.stderr || '', stdout: res.stdout || '' };
+}
+
+// Build each unique dep exactly once, per the cwd it will actually be consumed from.
+const builtDeps = new Map(); // `${cwd}::${dep}` -> boolean (build ok)
+function ensureBuilt(dep, cwd) {
+  const key = `${cwd}::${dep}`;
+  if (builtDeps.has(key)) return builtDeps.get(key);
+  console.log(`[INFO] nx build ${dep} (cwd=${cwd})`);
+  const { ok, ms, stderr } = nxBuild(dep, cwd);
+  if (!ok) {
+    console.error(`[FAIL] build ${dep} — ${stderr.split('\n').slice(-5).join(' | ')}`);
+  } else {
+    console.log(`[INFO] build ${dep} ok (${ms}ms)`);
+  }
+  builtDeps.set(key, ok);
+  return ok;
+}
+
+// --------------------------------------------------------------------------------------------
 // Tier 1
 // --------------------------------------------------------------------------------------------
 async function runTier1(GUARDS) {
@@ -208,6 +244,16 @@ async function runTier1(GUARDS) {
         continue;
       }
     }
+    // c2e1c0c3: an in-scope Tier 1 guard with `needsBuild` builds first. The guard itself stays
+    // fail-closed on a missing dist; a failed build here is a FAIL, never a skip or a pass.
+    let buildOk = true;
+    for (const dep of guard.needsBuild || []) {
+      if (!ensureBuilt(dep, REPO_ROOT)) buildOk = false;
+    }
+    if (!buildOk) {
+      record(guard.id, 'FAIL', 'a needsBuild dependency failed to build (fail-closed)', 0);
+      continue;
+    }
     const { status, ms, exit } = runGuardProcess(guard);
     record(guard.id, status, status === 'PASS' ? 'ran, exit 0' : `ran, exit ${exit}`, ms);
   }
@@ -216,13 +262,6 @@ async function runTier1(GUARDS) {
 // --------------------------------------------------------------------------------------------
 // Tier 2
 // --------------------------------------------------------------------------------------------
-function nxBuild(depName, cwd) {
-  const t0 = Date.now();
-  const res = spawnSync('npx', ['nx', 'build', depName], { cwd, encoding: 'utf8' });
-  const ms = Date.now() - t0;
-  return { ok: res.status === 0, ms, stderr: res.stderr || '', stdout: res.stdout || '' };
-}
-
 function iso8601() {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
@@ -282,31 +321,13 @@ async function runTier2(GUARDS) {
     }
   }
 
-  // Build each unique dep exactly once, per the cwd it will actually be consumed from.
-  const depFailed = new Set(); // `${cwd}::${dep}` marked failed
-  async function ensureBuilt(dep, cwd) {
-    const key = `${cwd}::${dep}`;
-    if (ensureBuilt._done?.has(key)) return !depFailed.has(key);
-    ensureBuilt._done = ensureBuilt._done || new Set();
-    ensureBuilt._done.add(key);
-    console.log(`[INFO] nx build ${dep} (cwd=${cwd})`);
-    const { ok, ms, stderr } = nxBuild(dep, cwd);
-    if (!ok) {
-      depFailed.add(key);
-      console.error(`[FAIL] build ${dep} — ${stderr.split('\n').slice(-5).join(' | ')}`);
-    } else {
-      console.log(`[INFO] build ${dep} ok (${ms}ms)`);
-    }
-    return ok;
-  }
-
   for (const guard of tier2) {
     const cwd = runCwdFor(guard);
     let buildOk = true;
     for (const dep of guard.needsBuild || []) {
       // bl231 never builds — read-only (Decision 4).
       if (guard.id === 'bl231') continue;
-      const ok = await ensureBuilt(dep, cwd);
+      const ok = ensureBuilt(dep, cwd);
       if (!ok) buildOk = false;
     }
     if (!buildOk) {

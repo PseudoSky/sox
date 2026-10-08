@@ -37,6 +37,7 @@ import {
   renderSkill,
   selectSkillFiles,
   SKILL_ID_PATTERN,
+  XML_TAG_PATTERN,
 } from './check-skill-frontmatter.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -110,6 +111,26 @@ test('manifest: description must be present and ≤ MAX_DESCRIPTION_LENGTH', () 
   const long = 'x'.repeat(MAX_DESCRIPTION_LENGTH + 1);
   assert.ok(checkManifest({ id: 's', description: long }, 's', 'x/extension.json').some((e) => e.includes('chars')));
   assert.ok(checkManifest({ id: 's' }, 's', 'x/extension.json').length > 0);
+});
+
+test('c2e1c0c3 AC2: manifest rejects XML-style tags in the description, naming the field', () => {
+  const errs = checkManifest(
+    { id: 's', description: 'Use for <review|run|apply> work' },
+    's',
+    'x/extension.json',
+  );
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /^x\/extension\.json: description: Description contains XML tags: \[<review\|run\|apply>\]\. Remove markup from the description\.$/);
+  // Several tags are all listed; closing tags and plain `<b>` count.
+  const multi = checkManifest({ id: 's', description: '<a|b> and <b>x</b>' }, 's', 'x/extension.json');
+  assert.match(multi[0], /\[<a\|b>, <b>, <\/b>\]/);
+});
+
+test('c2e1c0c3 AC2: manifest accepts descriptions without tags (comparisons, angle-free prose)', () => {
+  for (const d of ['x < 5 and y > 3', 'plain prose: with colon', 'a <3 b', 'run `a<b` ok? 1 < 2']) {
+    assert.deepEqual(checkManifest({ id: 's', description: d }, 's', 'x/extension.json'), [], d);
+  }
+  assert.equal('<a|b>'.match(XML_TAG_PATTERN)?.length, 1);
 });
 
 test('manifest: a skill must not carry a host-agnostic render block', () => {

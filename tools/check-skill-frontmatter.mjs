@@ -19,8 +19,19 @@
  *      (no hand-written frontmatter; the header is machine-rendered). This rejects
  *      the authentic pre-fix bytes at `1ceffdbf^:extensions/skills/dispatch-plan/SKILL.md`.
  *   2. manifest — id is a valid slug AND equals the directory basename; description
- *      is present and ≤1024 chars; no `render` block (skills are host-agnostic, so
- *      a per-host render override is a smell); the prose body is non-empty and bounded.
+ *      is present, ≤1024 chars, and free of XML/HTML-style tags; no `render` block
+ *      (skills are host-agnostic, so a per-host render override is a smell); the prose
+ *      body is non-empty and bounded.
+ *
+ *      XML-tag rule (c2e1c0c3): the agentskills.io spec forbids markup in `description`;
+ *      the third-party linter (`uvx skillcheck`, rule frontmatter.description.xml-tags)
+ *      enforces it, but only at leg 3 — after the host-registry build and a uvx spawn. A
+ *      description such as "Use for <review|run|apply> work" therefore failed late and
+ *      cryptically. Leg 2 now rejects it up front with skillcheck's own wording
+ *      ("Description contains XML tags: [...]. Remove markup from the description."),
+ *      prefixed with the field name `description`. A tag is `<`, an optional `/`, a
+ *      letter, then anything up to the closing `>` (so `<a|b>`, `<b>`, `</b>` are
+ *      rejected; a bare comparison such as "x < 5 and y > 3" is not).
  *   3. rendered artifact — render the header via host-registry's renderSkillFile and
  *      run the off-the-shelf `skillcheck` linter (uvx) over the rendered output.
  *      Because the renderer quotes scalars safely, a colon-in-scalar description
@@ -68,6 +79,9 @@ export const MAX_DESCRIPTION_LENGTH = 1024;
 
 /** Maximum permitted source prose body size (bytes) — a hard sanity bound, not a style rule. */
 export const MAX_BODY_BYTES = 512 * 1024;
+
+/** An XML/HTML-style tag: `<`, optional `/`, a letter, then up to the closing `>` (c2e1c0c3). */
+export const XML_TAG_PATTERN = /<\/?[A-Za-z][^<>]*>/g;
 
 /** True for a SOURCE skill markdown file (extensions/skills/* and bundle members), not an installed copy. */
 export function isSourceSkillMd(f) {
@@ -132,6 +146,14 @@ export function checkManifest(manifest, dirname, file) {
     errors.push(`${file}: extension.json is missing a non-empty "description"`);
   } else if (description.length > MAX_DESCRIPTION_LENGTH) {
     errors.push(`${file}: description is ${description.length} chars (max ${MAX_DESCRIPTION_LENGTH})`);
+  }
+  if (typeof description === 'string') {
+    const tags = description.match(XML_TAG_PATTERN);
+    if (tags !== null) {
+      errors.push(
+        `${file}: description: Description contains XML tags: [${tags.join(', ')}]. Remove markup from the description.`,
+      );
+    }
   }
   // Skills are host-agnostic — a per-host `render` override is an agent-only shape.
   if (manifest['render'] !== undefined) {

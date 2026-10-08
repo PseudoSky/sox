@@ -15,7 +15,7 @@
  * enforced by tools/run-guards.mjs, not encoded here.
  *
  * `needsBuild` — nx project names that must be built (via `nx build <name>`) before the guard can
- * run for real. tools/run-guards.mjs builds these itself; see SPEC-BL-466.md Decision 5.
+ * run for real (either tier; a failed build FAILs a tier-1 guard, SKIPs a tier-2 one). tools/run-guards.mjs builds these itself; see SPEC-BL-466.md Decision 5.
  *
  * `isolable` — defaults to true. `false` means the guard is structurally unable to run against a
  * worktree-local root (its own path resolution always walks back to the main checkout — see
@@ -480,7 +480,20 @@ export const GUARDS = [
     // renders to parseable YAML). Agent source .md files are prose-only in this repo
     // (frontmatter rendered at install from extension.json), so the `extensions/agents/`
     // watch arms the guard for the future but finds no skill files today.
+    // c2e1c0c3: the renderer is libs/host-registry/dist, which a fresh worktree does not have; the
+    // checker fails closed without it (by design), so tier 1 builds it first (run-guards honours
+    // needsBuild in tier 1 too).
+    needsBuild: ['host-registry'],
     watch: ['extensions/skills/', 'extensions/agents/', 'extensions/bundles/'],
+  },
+  {
+    id: 'c2e1c0c3',
+    tier: 1,
+    script: 'test-c2e1c0c3-skill-headers-build.mjs',
+    // Pins that the skill-headers guard's host-registry build prerequisite is honoured in Tier 1
+    // (a fresh worktree has no dist; the checker fails closed without it) and that a failed
+    // build stays fail-closed, plus the XML-tag rule documentation in the checker header.
+    watch: ['tools/run-guards.mjs', 'tools/guards-manifest.mjs', 'tools/check-skill-frontmatter.mjs'],
   },
   {
     id: '7ff58364-7dd7a974-062504ba-3b752549-da25489b',
