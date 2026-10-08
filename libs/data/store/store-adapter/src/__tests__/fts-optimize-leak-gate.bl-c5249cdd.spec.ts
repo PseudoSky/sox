@@ -93,12 +93,12 @@ async function runArm(mode: 'interleaved' | 'single'): Promise<number> {
 
 describe('BL-c5249cdd — Turso FTS segment leak', () => {
   it(
-    'BL-c5249cdd upgrade gate: the FTS segment leak no longer reproduces on the measured 0.8.1 driver (interleaved ≤ single)',
+    'BL-c5249cdd upgrade gate: the FTS segment leak no longer reproduces on the measured 0.8.2 driver (interleaved ≤ single)',
     async () => {
       const interleaved = await runArm('interleaved');
       const single = await runArm('single');
       const installed = installedTursoVersion();
-      // Measured 0.8.1 on this corpus: 265 vs 266 pages. The interleaved
+      // Measured 0.8.2 on this corpus: 266 vs 266 pages (0.8.1: 265 vs 266). The interleaved
       // page_count NO LONGER exceeds the single-optimize control — 0.8.1's v2
       // segment registry does not orphan merged-away segments the way the
       // 0.7.1 Tantivy whole-index manifest did (0.7.1/0.7.2 measured 2,395 vs
@@ -123,7 +123,7 @@ describe('BL-c5249cdd — Turso FTS segment leak', () => {
           single_pages: single,
         },
         `BL-c5249cdd / BL-2bf0b7c8: interleaved=${interleaved} single=${single} installed=${installed} ` +
-          `measured_on=${measuredOn}. The leak is GONE on 0.8.1, so the interleaved page_count must NOT ` +
+          `measured_on=${measuredOn}. The leak is GONE on 0.8.2, so the interleaved page_count must NOT ` +
           `exceed 110% of the single-optimize control (leak_reproduces is expected false), and the ` +
           `installed driver must still be the version these facts were measured on. If a driver ` +
           `re-introduces the leak this gate goes red (leak_reproduces flips true) — re-measure and bump ` +

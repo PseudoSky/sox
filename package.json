@@ -65,6 +65,9 @@
     "ulid": "^3.0.2"
   },
   "pnpm": {
+    "overrides": {
+      "@tursodatabase/database@^0.8.1": "0.8.2"
+    },
     "onlyBuiltDependencies": [
       "better-sqlite3",
       "sqlite-vec",

@@ -123,15 +123,15 @@ import type { StoreAdapter } from './types.js';
 
 /**
  * The `@tursodatabase/database` version the FTS segment leak was last MEASURED
- * against: 0.8.1, where the leak no longer reproduces (265 vs 266 pages on the
- * gate's corpus — interleaved no longer exceeds the single-optimize control).
- * The 0.7.1 Tantivy whole-index manifest orphaned merged-away segments on every
- * interleaved `OPTIMIZE INDEX`; 0.8.1's v2 segment registry does not, so the
- * leak is gone. Not a dependency pin: the upgrade-gate test
+ * against: 0.8.2, where the leak does not reproduce (266 vs 266 pages on the
+ * gate's corpus — interleaved does not exceed the single-optimize control; 0.8.1
+ * measured 265 vs 266). The 0.7.1 Tantivy whole-index manifest orphaned
+ * merged-away segments on every interleaved `OPTIMIZE INDEX`; the v2 segment
+ * registry does not, so the leak is gone. Not a dependency pin: the upgrade-gate test
  * (`fts-optimize-leak-gate.bl-c5249cdd.spec.ts`) reads the INSTALLED driver and
  * fails when it moves off this version, forcing a re-measurement.
  */
-export const FTS_OPTIMIZE_LEAK_MEASURED_ON = '0.8.1';
+export const FTS_OPTIMIZE_LEAK_MEASURED_ON = '0.8.2';
 
 // ── Page stats ────────────────────────────────────────────────────────────────
 
