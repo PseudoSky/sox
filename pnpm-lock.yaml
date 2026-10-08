@@ -169,6 +169,8 @@ importers:
 
   extensions/agents/researcher: {}
 
+  extensions/agents/review: {}
+
   extensions/agents/security: {}
 
   extensions/agents/typescript: {}
@@ -301,6 +303,8 @@ importers:
   extensions/skills/tui-design: {}
 
   extensions/skills/ui-playbooks: {}
+
+  extensions/skills/workspace-standards: {}
 
   libs/agent-shell-wrappers: {}
 
