@@ -1,0 +1,9 @@
+{
+  "name": "@adhd/sox-extension-review",
+  "version": "0.1.0",
+  "description": "review agent — read-only static and blind reviewer; findings by severity with file:line evidence",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": ["review", "code-review", "static-review", "blind-review", "read-only"]
+}

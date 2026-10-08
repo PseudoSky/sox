@@ -1,0 +1,93 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "review",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "review",
+  "description": "Use when a change needs an independent read-only review: static mode judges tier and fidelity-gap validity, teeth, and structure coupling (G9, R3, R4, G12) and correctness, returning findings by severity with file:line evidence; blind mode accepts only a diff and the word Review (at Deep rigor also the specification and tests, never the implementer's reasoning). Has no edit, write, or shell tools. Triggers: \"review this diff\", \"static review\", \"blind review\", \"is this test valid\".",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "review",
+    "code-review",
+    "static-review",
+    "blind-review",
+    "read-only",
+    "test-review"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "review.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "review",
+    "description": "Read-only reviewer with static and blind modes. Returns findings by severity with file:line evidence; blind mode accepts only a diff and the word Review. Cannot edit, write, or run commands.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.1,
+    "tools": [
+      "read",
+      "glob",
+      "grep"
+    ],
+    "roles-covered": [
+      "static-reviewer:G9",
+      "static-reviewer:R3",
+      "static-reviewer:R4",
+      "static-reviewer:G12",
+      "static-reviewer:6.2",
+      "static-reviewer:6.5"
+    ],
+    "permission": {
+      "read": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "edit": "deny",
+      "write": "deny",
+      "bash": "deny",
+      "webfetch": "deny",
+      "websearch": "deny",
+      "task": "deny",
+      "skill": "deny",
+      "question": "deny"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v0.1.0",
+      "tools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ]
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.1
+    },
+    "agent-mcp": {
+      "model": "deepseek/deepseek-flash",
+      "toolMap": {},
+      "mcpServers": {}
+    }
+  },
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode",
+      "agent-mcp"
+    ]
+  }
+}
