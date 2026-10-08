@@ -289,3 +289,35 @@ describe('stripFrontmatter', () => {
     expect(stripFrontmatter('# body\n')).toBe('# body\n');
   });
 });
+
+// cac771f8 AC4 — PINNED, deliberately not normalized. render() emits `---\n${header}\n---\n${body}` + '\n' and
+// stripFrontmatter keeps the body's own trailing newline, so a source body ending in one "\n" renders ending in "\n\n"
+// (claude/opencode file-body). Normalizing would change the bytes of every installed agent file. agent-mcp does not
+// append: its systemPrompt is the stripped body verbatim. Change this only with a deliberate re-render of all installs.
+describe('trailing newline (pinned, cac771f8 AC4)', () => {
+  const ir: AgentIr = { name: 'nl', description: 'newline pin' };
+  const bodyOf = (r: unknown): string => (r as { content: string }).content;
+
+  it('a body ending in exactly one "\\n" renders ending in "\\n\\n" for claude and opencode', () => {
+    for (const host of ['claude', 'opencode'] as const) {
+      const out = bodyOf(agentRenderers[host].render(ir, '---\nname: nl\n---\nBody line.\n'));
+      expect(out.endsWith('Body line.\n\n')).toBe(true);
+      expect(out.endsWith('Body line.\n\n\n')).toBe(false);
+    }
+  });
+
+  it('a body with no trailing newline renders ending in exactly one "\\n"', () => {
+    for (const host of ['claude', 'opencode'] as const) {
+      const out = bodyOf(agentRenderers[host].render(ir, 'Body line.'));
+      expect(out.endsWith('Body line.\n')).toBe(true);
+      expect(out.endsWith('Body line.\n\n')).toBe(false);
+    }
+  });
+
+  it('negative control: the pin distinguishes a normalizing renderer (one vs two trailing newlines are different bytes)', () => {
+    const one = bodyOf(agentRenderers.claude.render(ir, 'Body line.'));
+    const two = bodyOf(agentRenderers.claude.render(ir, 'Body line.\n'));
+    expect(two).toBe(`${one}\n`);
+    expect(two).not.toBe(one);
+  });
+});

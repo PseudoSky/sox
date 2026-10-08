@@ -60,6 +60,63 @@ test('2f81569f T11.AC1 prose contract states the agent cannot edit or run', () =
   assert.match(prose, /no edit, write, or shell tools/);
 });
 
+// ---- cac771f8 AC2 ----------------------------------------------------------------------
+// agent-mcp.ts deriveTooling(): `override?.permission` (singular) replaces the IR map and an explicit
+// render.agent-mcp.nativeTooling.<member> wins over the derived one, so check-readonly must guard both.
+for (const [label, mutate] of [
+  ['nativeTooling.shell:true', (m) => { m.render['agent-mcp'].nativeTooling = { shell: true }; }],
+  ['nativeTooling.shell as an allowCommands object', (m) => { m.render['agent-mcp'].nativeTooling = { shell: { allowCommands: ['ls'] } }; }],
+  ['nativeTooling.dispatch:true', (m) => { m.render['agent-mcp'].nativeTooling = { dispatch: true }; }],
+  ['nativeTooling.dispatch as a gated object', (m) => { m.render['agent-mcp'].nativeTooling = { dispatch: { permissions: { 'agent-mcp.task': 'ask' } } }; }],
+  ['nativeTooling.fs:true (fs write)', (m) => { m.render['agent-mcp'].nativeTooling = { fs: true }; }],
+  ['nativeTooling.fs object without readOnly', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { permissions: {} } }; }],
+  ['nativeTooling.fs readOnly:false', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { readOnly: false } }; }],
+  ['nativeTooling.fs readOnly with write_file allowed', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { readOnly: true, permissions: { 'fs.write_file': 'allow' } } }; }],
+  ['nativeTooling.hitl:true', (m) => { m.render['agent-mcp'].nativeTooling = { hitl: true }; }],
+  ['nativeWebTools:true', (m) => { m.render['agent-mcp'].nativeWebTools = true; }],
+  ['render.agent-mcp.permission (singular) loosens edit', (m) => { m.render['agent-mcp'].permission = { ...m.agent.permission, edit: 'allow' }; }],
+  ['render.agent-mcp.permission (singular) omits every deny', (m) => { m.render['agent-mcp'].permission = { read: 'allow' }; }],
+  ['render.claude.permission (singular) loosens bash', (m) => { m.render.claude.permission = { ...m.agent.permission, bash: { '*': 'allow' } }; }],
+  ['render.agent-mcp.permission grants memory_*', (m) => { m.render['agent-mcp'].permission = { ...m.agent.permission, 'memory_*': 'allow' }; }],
+  ['render.opencode.permissions grants mcp__x__*', (m) => { m.render.opencode.permissions = { 'mcp__x__*': 'allow' }; }],
+]) {
+  test(`cac771f8 AC2 negative control: ${label} is rejected`, () => {
+    const m = structuredClone(manifest);
+    mutate(m);
+    assert.notDeepEqual(checkReadOnly(m), []);
+  });
+}
+
+test('cac771f8 AC2 read-only render overrides are accepted (no over-rejection)', () => {
+  const m = structuredClone(manifest);
+  m.render['agent-mcp'].nativeTooling = {
+    shell: false,
+    dispatch: false,
+    hitl: false,
+    fs: { readOnly: true, permissions: { 'fs.write_file': 'deny', 'fs.edit_file': 'deny' } },
+  };
+  m.render['agent-mcp'].nativeWebTools = false;
+  m.render['agent-mcp'].permission = { ...m.agent.permission };
+  assert.deepEqual(checkReadOnly(m), []);
+  m.render['agent-mcp'].nativeTooling = { fs: false };
+  assert.deepEqual(checkReadOnly(m), []);
+});
+
+test('cac771f8 AC2 the CLI exits 1 on a nativeTooling.shell:true manifest and 0 on the shipped one', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const script = join(here, 'check-readonly.mjs');
+  assert.equal(spawnSync(process.execPath, [script], { encoding: 'utf8' }).status, 0);
+  const bad = structuredClone(manifest);
+  bad.render['agent-mcp'].nativeTooling = { shell: true };
+  const f = join(mkdtempSync(join(tmpdir(), 'review-ro-')), 'extension.json');
+  writeFileSync(f, JSON.stringify(bad));
+  const r = spawnSync(process.execPath, [script, f], { encoding: 'utf8' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /nativeTooling\.shell enables shell/);
+});
+
 // ---- AC2 -------------------------------------------------------------------------------
 test('2f81569f T11.AC2 blind template carries only the diff placeholder and the word Review', () => {
   const t = rd('templates/blind.tmpl');

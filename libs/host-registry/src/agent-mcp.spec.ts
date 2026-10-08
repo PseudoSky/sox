@@ -10,6 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { AgentIr, AgentOverride } from './internal.js';
 
 import { agentMcpHost, resolveAgentMcpEnv, defaultCatalogDbPath, AgentProviderUnderivableError } from './agent-mcp.js';
 import type { AgentCatalogPayload } from './agent-mcp.js';
@@ -148,8 +149,114 @@ describe('agent-mcp — renderer', () => {
     expect(payload.permissions).toEqual({ allowedAgents: ['researcher'] });
   });
 
+  // cac771f8 AC4 companion: agent-mcp appends nothing — systemPrompt is the stripped body verbatim (one "\n" in, one out).
+  it('cac771f8 AC4 systemPrompt keeps the source trailing newline verbatim (no append, no normalize)', () => {
+    const render = (p: string) => payloadOf(agentMcpHost.render!.render(ir, p, { model: 'deepseek/deepseek-flash' })).systemPrompt;
+    expect(render('---\nname: researcher\n---\nBody.\n')).toBe('Body.\n');
+    expect(render('---\nname: researcher\n---\nBody.')).toBe('Body.');
+  });
+
   it('throws when the IR has no name', () => {
     expect(() => agentMcpHost.render!.render({}, 'body')).toThrow(/missing the required `name`/);
+  });
+});
+
+describe('agent-mcp — real review manifest golden render (cac771f8)', () => {
+  const reviewDir = path.resolve(__dirname, '../../../extensions/agents/review');
+  const manifest = JSON.parse(fs.readFileSync(path.join(reviewDir, 'extension.json'), 'utf8')) as {
+    agent: AgentIr;
+    render: Record<string, AgentOverride>;
+  };
+  const reviewProse = fs.readFileSync(path.join(reviewDir, 'review.md'), 'utf8');
+  const WRITE_DENIES = {
+    'fs.write_file': 'deny',
+    'fs.edit_file': 'deny',
+    'fs.create_directory': 'deny',
+    'fs.move_file': 'deny',
+  };
+
+  function renderReview(ir: AgentIr = manifest.agent, override: AgentOverride | undefined = manifest.render['agent-mcp']) {
+    const rendered = agentMcpHost.render!.render(ir, reviewProse, override);
+    if (rendered.kind !== 'config-value') throw new Error(`expected config-value, got ${rendered.kind}`);
+    if (rendered.report === undefined) throw new Error('agent-mcp render must return a report');
+    return { payload: rendered.value as AgentCatalogPayload, report: rendered.report };
+  }
+
+  it('cac771f8 AC1 the shipped review manifest renders a read-only, no-shell, no-dispatch, no-hitl, no-web payload', () => {
+    const { payload, report } = renderReview();
+    expect(payload.nativeTooling.fs).toEqual({ permissions: WRITE_DENIES, readOnly: true });
+    expect(payload.nativeTooling.shell).toBe(false);
+    expect(payload.nativeTooling.dispatch).toBe(false);
+    expect(payload.nativeTooling.hitl).toBe(false);
+    expect(payload.nativeWebTools).toBe(false);
+    expect(payload.mcpServers).toEqual({});
+    expect(report).toEqual({ lost: [], warnings: [], unbound: false, shellDisabledByLoss: false });
+  });
+
+  it('cac771f8 AC1 negative control: loosening edit (tool listed + permission allow) makes the fs deny rules disappear', () => {
+    const ir: AgentIr = {
+      ...manifest.agent,
+      tools: [...(manifest.agent.tools ?? []), 'edit'],
+      permission: { ...manifest.agent.permission, edit: 'allow' },
+    };
+    const { payload } = renderReview(ir);
+    // edit owns the same fs tools as write; the effective action is the most permissive owner => no deny rules, not readOnly.
+    expect(payload.nativeTooling.fs).toBe(true);
+    expect(payload.nativeTooling.fs).not.toEqual({ permissions: WRITE_DENIES, readOnly: true });
+  });
+
+  it('cac771f8 AC1 negative control: bash / task / question / websearch granted flips shell, dispatch, hitl and nativeWebTools', () => {
+    const ir: AgentIr = {
+      ...manifest.agent,
+      tools: [...(manifest.agent.tools ?? []), 'bash', 'task', 'question', 'websearch', 'webfetch'],
+      permission: { ...manifest.agent.permission, bash: 'allow', task: 'allow', question: 'allow', websearch: 'allow', webfetch: 'allow' },
+    };
+    const { payload } = renderReview(ir);
+    expect(payload.nativeTooling.shell).toBe(true);
+    expect(payload.nativeTooling.dispatch).toBe(true);
+    expect(payload.nativeTooling.hitl).toBe(true);
+    expect(payload.nativeWebTools).toBeUndefined();
+  });
+
+  it('cac771f8 AC1 an explicit render.agent-mcp.nativeTooling.shell:true wins over the derived deny (why check-readonly guards it)', () => {
+    const { payload } = renderReview(manifest.agent, { ...manifest.render['agent-mcp'], nativeTooling: { shell: true } } as AgentOverride);
+    expect(payload.nativeTooling.shell).toBe(true);
+  });
+
+  // AC3 (disposition: documented N/A, not report.lost). agent-mcp exposes exactly fs/shell/dispatch/hitl native members,
+  // mounted mcpServers and nativeWebTools. `skill` and `todowrite` name no agent-mcp capability, so a deny on them is
+  // satisfied vacuously and nothing can be lost; `question` is mapped to nativeTooling.hitl.
+  it('cac771f8 AC3 skill/todowrite denies change nothing in the payload and lose nothing (nothing in agent-mcp to deny)', () => {
+    const base = renderReview();
+    const permission = { ...manifest.agent.permission } as Record<string, unknown>;
+    delete permission['skill'];
+    delete permission['todowrite'];
+    const stripped = renderReview({ ...manifest.agent, permission } as AgentIr);
+    expect(stripped.payload).toEqual(base.payload);
+    expect(stripped.report).toEqual(base.report);
+    expect(base.report.lost).toEqual([]);
+  });
+
+  it('cac771f8 AC3 question deny IS mapped (hitl:false); allowing it flips hitl', () => {
+    const { payload } = renderReview();
+    expect(payload.nativeTooling.hitl).toBe(false);
+    const allowed = renderReview({
+      ...manifest.agent,
+      tools: [...(manifest.agent.tools ?? []), 'question'],
+      permission: { ...manifest.agent.permission, question: 'allow' },
+    });
+    expect(allowed.payload.nativeTooling.hitl).toBe(true);
+  });
+
+  it('cac771f8 AC3 the fidelity spec documents the skill/todowrite disposition as N/A', () => {
+    const doc = fs.readFileSync(path.resolve(__dirname, '../../../docs/spec/agent-mcp-renderer-fidelity.md'), 'utf8');
+    const row = doc.split('\n').find((l) => /^\| IR `permission` `skill` \/ `todowrite`/.test(l));
+    expect(row).toBeDefined();
+    expect(row).toMatch(/N\/A/);
+    expect(row).toMatch(/report\.lost/);
+    // negative control: the matcher rejects a doc with that row removed.
+    const without = doc.split('\n').filter((l) => l !== row).join('\n');
+    expect(/^\| IR `permission` `skill` \/ `todowrite`/m.test(without)).toBe(false);
   });
 });
 
