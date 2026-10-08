@@ -1,6 +1,6 @@
 ## Unreleased
 
-- Reference the new `dispatch-worktrees` playbook (a78f60af): pointer in rule 22 and the Step 7 teardown, a playbook-list entry, and a `dependencies` entry. No rule prose added.
+- Reference the new `dispatch-worktrees` playbook (a78f60af): pointer in rule 22 and the Step 7 teardown, a playbook-list entry, and a `dependencies` entry. Pointers only; no rule prose changed.
 
 ## 2.0.0
 
