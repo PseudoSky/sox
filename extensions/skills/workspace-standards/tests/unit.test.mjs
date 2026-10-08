@@ -298,3 +298,18 @@ test('9024e9ac T14.AC10 one malformed agent extension.json is a per-agent findin
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('validate-fixtures AC1 no synthetic extension.json under the skill fixtures (repo-wide soxe validate walk would flag it)', () => {
+  const offenders = [];
+  const walk = (dir) => {
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) walk(full);
+      else if (ent.name === 'extension.json') offenders.push(path.relative(SKILL_ROOT, full));
+    }
+  };
+  walk(path.join(SKILL_ROOT, 'fixtures'));
+  assert.deepEqual(offenders, [], 'fixture manifests must be named extension.fixture.json so soxe validate does not discover them');
+  const agents = loadAgents(path.join(SKILL_ROOT, 'fixtures/routing/agents-ok'));
+  assert.ok(agents.length > 0, 'fixture readers still load extension.fixture.json');
+});

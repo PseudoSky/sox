@@ -334,12 +334,17 @@ export function reviewRouting({ agents, obligations, roles = null }) {
   return { findings, agents: report };
 }
 
+// Synthetic routing fixtures carry `extension.fixture.json`: a file named `extension.json` is
+// swept up by the repo-wide `soxe validate` walk and reported INVALID (fixtures are deliberately
+// incomplete manifests). Real agent dirs use `extension.json`, which always wins.
+const MANIFEST_NAMES = ['extension.json', 'extension.fixture.json'];
+
 export function loadAgents(agentsDir) {
   const out = [];
   for (const d of fs.readdirSync(agentsDir, { withFileTypes: true })) {
     if (!d.isDirectory()) continue;
-    const mf = path.join(agentsDir, d.name, 'extension.json');
-    if (!fs.existsSync(mf)) continue;
+    const mf = MANIFEST_NAMES.map((n) => path.join(agentsDir, d.name, n)).find((f) => fs.existsSync(f));
+    if (!mf) continue;
     let manifest;
     try {
       manifest = readJson(mf);
