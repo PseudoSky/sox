@@ -14,7 +14,8 @@ The fields below live on the backlog ticket. Dispatch sends the ticket id and th
 - **Goal** — one sentence, imperative.
 - **User request (verbatim)** — `user-request (verbatim):` — the user's own words, copied exactly, never paraphrased or trimmed. This field is the record the dispatcher's additions are re-checked against, and the executor's ground truth for what was actually asked.
 - **Dispatcher structuring** — `dispatcher-structuring:` — everything the dispatcher added: the restatement, the decomposition, acceptance criteria, guardrails, the chosen option among ones the user left open. **Before dispatch, re-check each addition against the verbatim.** A **HARD contradiction** is the closed set — it *forbids what the user required*, *requires what the user forbade*, *reverses a stated order/priority/constraint*, or *redirects target/scope to something the user did not name*. On a HARD contradiction, **halt and ask the user before dispatching**. Restating, disambiguating, adding acceptance criteria, choosing among open options, and adding consistent guardrails are **not** contradictions — never ask on those.
-- **Acceptance criteria (with ids)** — the item's AC block, each criterion carrying a stable id (`AC1`, `AC2`, …). Every test the executor writes cites the ticket and the AC ids it exercises (`<uid or BL-<n>> AC<n>`); one test may cite several ACs, but every AC is cited by at least one, and an AC no test cites fails verification. An item with no ACs is not dispatched.
+- **Acceptance criteria (with ids)** — the item's AC block, each criterion carrying a stable id (`AC1`, `AC2`, …). Every test, whoever writes a test, cites the ticket and the AC ids it exercises (`<uid or BL-<n>> AC<n>`); one test may cite several ACs, but every AC is cited by at least one, and an AC no test cites fails verification. An item with no ACs is not dispatched.
+- **Test routing** (briefs for a change that needs tests) — `test-authorship:` (`implementer` | `separated`), `rigor:` (`none` | `light` | `standard` | `deep`) and `playbook:` (the one card id), all as returned by `workspace-standards run testing`. The citation duty attaches to whoever writes a test.
 - **Done-state** — the observable evidence: `tests: <cmd> exits 0`, `diff touches only: <paths>`, `state: <file>.<field> == <value>`, `artifact: <path> exists with <shape>`. At least one; never "when you are confident".
 - **Worktree** (implementer briefs) — the bucket worktree path, the bucket branch, and the plan branch it merges into fast-forward only before transitioning its issue to `review`.
 - **Scope** — files/dirs in scope; anything else is out of scope and must be reported, not edited.
@@ -27,14 +28,13 @@ The fields below live on the backlog ticket. Dispatch sends the ticket id and th
 
 ## 1a. Review briefs and the test standard
 
-Reviews occur twice in a plan (dispatcher Step 5); `templates/brief.md` carries both shapes.
+Reviews occur twice in a plan (dispatcher Step 5); `templates/brief.md` carries all shapes.
 
-- **Static-analysis review** (stage 4, per bucket, guided) — **target**: the bucket's diff on the plan branch. The brief carries the bucket's ACs and scope. The reviewer reads and analyses and does **not** run the suite (QA does). Return: findings by severity, each with file:line evidence.
+- **Static-analysis review** (stage 4, per bucket, guided) — **target**: the bucket's diff on the plan branch. The brief carries the bucket's ACs and scope. The reviewer reads and analyses and does **not** run the suite (QA does); it checks each test's tier and fidelity-gap statement for validity. Return: findings by severity, each with file:line evidence.
+- **Audit** (QA retention audit) — the brief carries the auditor card, R1–R6 and the audit record format, each inlined. Return: one audit record per test.
 - **The blind review** (stage 9, exactly one per plan) — the reviewer receives **only** the plan's whole diff (start sha to head) and the instruction "Review": no ACs, context, rationale, review points or return contract. The dispatcher reads the findings from the reply and files them. A correction, a reopen cycle or a re-dispatch never gets one.
 
-**Test standard** — carried by every brief that writes or changes tests, enforced by QA's audit:
-- **Unit tests mock every library that spawns a process or touches a third-party network** (child-process wrappers, HTTP clients, vendor SDKs): no unit test spawns, dials out, or needs a running service.
-- **e2e tests drive every surface of the artifact in one run** on one shared scaffold and teardown; split only where isolation cannot be had, with the reason stated. Minimum wall-clock duration is a primary goal; the return's evidence states the e2e duration.
+**Test standard** — rides the briefs of test-writing roles only. Inline that role's card (`workspace-standards` `standards/testing/cards/`) and the project's tier-mapping excerpt; do not restate the standard in the brief.
 
 ## Verification (run before returning)
 
@@ -54,6 +54,10 @@ evidence:
   - diff: <paths touched> (<n> files, +<a>/−<b>)
   - <state or artifact check> → <observed value>
 ac-coverage: [<AC id → test citing ticket+AC id>]
+tier: [<test → tier>] | none
+red: <cmd → non-zero exit, failing assertion> | none
+tests-obsoleted: [<test — why>] | none
+test-dispute: [<test — evidence>] | none
 out-of-scope-observed: [<path or symptom> — <one line>] | none
 claims-needing-proof: [<"pre-existing"/"unrelated" style claim> — <evidence attached or "none">] | none
 remaining (if partial/blocked): <what is left, or the blocker>
@@ -127,3 +131,4 @@ transition's note, and the source of the §4 row's `dur_ms`/`item`.
 - Every brief states model and tools explicitly.
 - Every check-and-confirm item is confirmed to the dispatcher *before* it is corrected.
 - Every AC is cited by a test carrying the ticket and the AC id; an AC no test cites is not `done`.
+- A role that writes tests returns `tier:`, `red:` and `tests-obsoleted:`; an implementer who disagrees with a test returns `test-dispute:` and never edits the test.

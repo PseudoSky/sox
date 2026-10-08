@@ -17,7 +17,15 @@ dispatcher-structuring: <everything the dispatcher added — goal narrowing, acc
 - <uid or BL-<n>> AC1 — <binary, checkable statement>
 - <uid or BL-<n>> AC2 — <statement>
 
-Every test you write names the ticket and the AC ids it exercises (`<uid or BL-<n>> AC<n>`); one test may cite several ACs. Every AC is cited by at least one test; an AC no test cites is not done.
+Every test, whoever writes a test, names the ticket and the AC ids it exercises (`<uid or BL-<n>> AC<n>`); one test may cite several ACs. Every AC is cited by at least one test; an AC no test cites is not done.
+
+## Test routing (change needs tests)
+
+test-authorship: <implementer|separated>
+rigor: <none|light|standard|deep>
+playbook: <card id>
+
+The citation duty attaches to whoever writes a test.
 
 ## Done-state (the dispatcher will check these directly)
 
@@ -38,14 +46,17 @@ Out of scope (report, do not edit): everything else
 
 Worktree: `<path>` · bucket branch: `<branch>` · plan branch: `<plan-branch>`. When every AC is verified, merge into the plan branch fast-forward only (rebase your bucket branch first if the plan branch moved; hand a conflicting rebase back as `blocked`), then transition your issue to `review`.
 
-## Test standard (briefs that write or change tests)
+## Test standard (test-writing roles only)
 
-- Unit tests mock every library that spawns a process or touches a third-party network.
-- e2e tests drive every surface in one run on one shared scaffold and teardown; minimize wall-clock duration and report it.
+Inline the role's card and the project's tier-mapping excerpt here.
 
 ## Static-analysis review (per-bucket review briefs only)
 
-Target: `<bucket diff on the plan branch>`. Read and analyse against the ACs and scope above; do not run the suite. Return findings by severity with file:line evidence.
+Target: `<bucket diff on the plan branch>`. Read and analyse against the ACs and scope above; do not run the suite. Check each test's tier and fidelity-gap statement for validity. Return findings by severity with file:line evidence.
+
+## Audit (retention-audit briefs only)
+
+Inline: the auditor card, R1–R6, and the audit record format. Return one audit record per test.
 
 ## Blind review (the plan's one blind review — nothing but this)
 

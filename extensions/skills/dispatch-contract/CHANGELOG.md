@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.0
+
+- Test standard (item 5416b29f, T15): the binary unit/e2e standard is replaced by inlining the test-writing role's card and the project's tier-mapping excerpt; it rides test-writing briefs only. The citation duty attaches to whoever writes a test.
+- Brief gains `test-authorship:`, `rigor:`, `playbook:`; return gains `tier:`, `red:`, `tests-obsoleted:`, `test-dispute:`. Static-review brief checks tier and gap validity; new audit brief carries the auditor card, R1-R6 and the audit record format. Pin tests in `tests/pin.test.mjs`.
+
 ## 2.0.0
 
 - §1a rewritten: the static-analysis review brief (per bucket, guided, no suite run) and the plan's single blind review (diff + "Review" only); the post-merge review brief and §1b are removed. Adds the test standard (unit-test mocking, one-shot e2e).
