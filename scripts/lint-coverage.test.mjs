@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 
 const REPO_ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -310,6 +311,33 @@ describe('lint coverage (Item 7 / BL-<pending>)', () => {
     }
 
     expect(uncoveredInScope).toEqual([]);
+  });
+
+  // integ AC4: scripts/build-index-published-pin.test.ts writes a transient
+  // `scripts/.build-index.prefix.<pid>.<ext>` file for the duration of a test and deletes it in
+  // afterEach. This test walks scripts/ twice (once to list eslint-scoped files, again inside
+  // collectCoveredFiles), so a transient file with a LINTABLE extension appears in one walk and not
+  // the other and flips the "uncovered" assertion ~2 of 3 full `nx run-many -t test` runs. The fix is
+  // that the writer uses a non-lintable extension (.mts), so a transient file is invisible to both
+  // walks. These two tests pin that deterministically (no timing involved).
+  it('integ AC4: the build-index prefix temp-file writer uses an extension the lint walk never lists', () => {
+    const writer = fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'build-index-published-pin.test.ts'), 'utf8');
+    const m = /\.build-index\.prefix\.\$\{process\.pid\}(\.[A-Za-z0-9]+)`/.exec(writer);
+    expect(m, 'writer filename template `.build-index.prefix.${process.pid}.<ext>` not found').not.toBeNull();
+    expect(LINTABLE_EXTENSIONS).not.toContain(m[1]);
+  });
+
+  it('integ AC4: walk() tolerates an in-flight temp file with a non-lintable extension (and would list a lintable one)', () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-coverage-walk-'));
+    try {
+      fs.writeFileSync(path.join(scratch, '.build-index.prefix.1.mts'), '');
+      expect(walk(scratch, [])).toEqual([]);
+      // Control: the previous `.ts` name IS listed, which is exactly the race this guards against.
+      fs.writeFileSync(path.join(scratch, '.build-index.prefix.1.ts'), '');
+      expect(walk(scratch, []).map((f) => path.basename(f))).toEqual(['.build-index.prefix.1.ts']);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   it('root sox-ecosystem project declares a lint target covering scripts/ and tools/', () => {
