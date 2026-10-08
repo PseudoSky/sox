@@ -19,33 +19,39 @@ const prose = rd('review.md');
 const placeholders = (t) => [...t.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]);
 const residue = (t) => t.replace(/\{\{\w+\}\}/g, '').trim();
 
+/** A negative control must be rejected for the EXPECTED reason: `notDeepEqual(findings, [])` passes on any unrelated finding. */
+function assertFinding(findings, expected, label) {
+  assert.ok(findings.some((f) => expected.test(f)), `${label}: expected a finding matching ${expected}, got ${JSON.stringify(findings)}`);
+  assert.ok(findings.length > 0);
+}
+
 // ---- AC1 -------------------------------------------------------------------------------
 test('2f81569f T11.AC1 shipped manifest is read-only', () => {
   assert.deepEqual(checkReadOnly(manifest), []);
 });
 
-for (const [label, mutate] of [
-  ['edit tool added', (m) => m.agent.tools.push('edit')],
-  ['write tool added', (m) => m.agent.tools.push('write')],
-  ['bash tool added', (m) => m.agent.tools.push('bash')],
-  ['apply_patch added', (m) => m.agent.tools.push('apply_patch')],
-  ['claude Write added', (m) => m.render.claude.tools.push('Write')],
-  ['claude NotebookEdit added', (m) => m.render.claude.tools.push('NotebookEdit')],
-  ['edit permission loosened', (m) => { m.agent.permission.edit = 'allow'; }],
-  ['bash permission loosened', (m) => { m.agent.permission.bash = { '*': 'allow' }; }],
-  ['memory server tool added', (m) => m.agent.tools.push({ logical: 'memory', server: 'memory-server' })],
-  ...['task', 'skill', 'webfetch', 'websearch', 'question', 'todowrite'].map((k) => [`${k} permission loosened`, (m) => { m.agent.permission[k] = 'allow'; }]),
-  ...['task', 'skill', 'webfetch', 'websearch', 'question', 'todowrite'].map((k) => [`${k} permission removed`, (m) => { delete m.agent.permission[k]; }]),
-  ['render.opencode.permission replaces the map with edit allowed', (m) => { m.render.opencode.permission = { edit: 'allow', write: 'deny', bash: 'deny' }; }],
-  ['render.opencode.permission replaces the map and omits denies', (m) => { m.render.opencode.permission = { read: 'allow' }; }],
-  ['render.agent-mcp.permissions loosens edit', (m) => { m.render['agent-mcp'].permissions = { edit: 'allow' }; }],
-  ['render.agent-mcp grants an MCP server', (m) => { m.render['agent-mcp'].mcpServers = { fs: { command: 'x' } }; }],
-  ['render.agent-mcp.tools declares bash', (m) => { m.render['agent-mcp'].tools = ['bash']; }],
+for (const [label, mutate, expected] of [
+  ['edit tool added', (m) => m.agent.tools.push('edit'), /agent\.tools declares "edit"/],
+  ['write tool added', (m) => m.agent.tools.push('write'), /agent\.tools declares "write"/],
+  ['bash tool added', (m) => m.agent.tools.push('bash'), /agent\.tools declares "bash"/],
+  ['apply_patch added', (m) => m.agent.tools.push('apply_patch'), /agent\.tools declares "apply_patch"/],
+  ['claude Write added', (m) => m.render.claude.tools.push('Write'), /render\.claude\.tools declares "Write"/],
+  ['claude NotebookEdit added', (m) => m.render.claude.tools.push('NotebookEdit'), /render\.claude\.tools declares "NotebookEdit"/],
+  ['edit permission loosened', (m) => { m.agent.permission.edit = 'allow'; }, /^permission\.edit is not "deny"/],
+  ['bash permission loosened', (m) => { m.agent.permission.bash = { '*': 'allow' }; }, /^permission\.bash is not "deny"/],
+  ['memory server tool added', (m) => m.agent.tools.push({ logical: 'memory', server: 'memory-server' }), /agent\.tools declares a non-core tool object/],
+  ...['task', 'skill', 'webfetch', 'websearch', 'question', 'todowrite'].map((k) => [`${k} permission loosened`, (m) => { m.agent.permission[k] = 'allow'; }, new RegExp(`^permission\\.${k} is not "deny"`)]),
+  ...['task', 'skill', 'webfetch', 'websearch', 'question', 'todowrite'].map((k) => [`${k} permission removed`, (m) => { delete m.agent.permission[k]; }, new RegExp(`^permission\\.${k} is not "deny"`)]),
+  ['render.opencode.permission replaces the map with edit allowed', (m) => { m.render.opencode.permission = { edit: 'allow', write: 'deny', bash: 'deny' }; }, /render\.opencode\.permission replaces the IR map and omits "edit: deny"/],
+  ['render.opencode.permission replaces the map and omits denies', (m) => { m.render.opencode.permission = { read: 'allow' }; }, /render\.opencode\.permission replaces the IR map and omits "write: deny"/],
+  ['render.agent-mcp.permissions loosens edit', (m) => { m.render['agent-mcp'].permissions = { edit: 'allow' }; }, /render\.agent-mcp\.permissions\.edit is not "deny"/],
+  ['render.agent-mcp grants an MCP server', (m) => { m.render['agent-mcp'].mcpServers = { fs: { command: 'x' } }; }, /render\.agent-mcp\.mcpServers grants MCP servers/],
+  ['render.agent-mcp.tools declares bash', (m) => { m.render['agent-mcp'].tools = ['bash']; }, /render\.agent-mcp\.tools declares "bash"/],
 ]) {
   test(`2f81569f T11.AC1 negative control: ${label} is rejected`, () => {
     const m = structuredClone(manifest);
     mutate(m);
-    assert.notDeepEqual(checkReadOnly(m), []);
+    assertFinding(checkReadOnly(m), expected, label);
   });
 }
 
@@ -63,27 +69,27 @@ test('2f81569f T11.AC1 prose contract states the agent cannot edit or run', () =
 // ---- cac771f8 AC2 ----------------------------------------------------------------------
 // agent-mcp.ts deriveTooling(): `override?.permission` (singular) replaces the IR map and an explicit
 // render.agent-mcp.nativeTooling.<member> wins over the derived one, so check-readonly must guard both.
-for (const [label, mutate] of [
-  ['nativeTooling.shell:true', (m) => { m.render['agent-mcp'].nativeTooling = { shell: true }; }],
-  ['nativeTooling.shell as an allowCommands object', (m) => { m.render['agent-mcp'].nativeTooling = { shell: { allowCommands: ['ls'] } }; }],
-  ['nativeTooling.dispatch:true', (m) => { m.render['agent-mcp'].nativeTooling = { dispatch: true }; }],
-  ['nativeTooling.dispatch as a gated object', (m) => { m.render['agent-mcp'].nativeTooling = { dispatch: { permissions: { 'agent-mcp.task': 'ask' } } }; }],
-  ['nativeTooling.fs:true (fs write)', (m) => { m.render['agent-mcp'].nativeTooling = { fs: true }; }],
-  ['nativeTooling.fs object without readOnly', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { permissions: {} } }; }],
-  ['nativeTooling.fs readOnly:false', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { readOnly: false } }; }],
-  ['nativeTooling.fs readOnly with write_file allowed', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { readOnly: true, permissions: { 'fs.write_file': 'allow' } } }; }],
-  ['nativeTooling.hitl:true', (m) => { m.render['agent-mcp'].nativeTooling = { hitl: true }; }],
-  ['nativeWebTools:true', (m) => { m.render['agent-mcp'].nativeWebTools = true; }],
-  ['render.agent-mcp.permission (singular) loosens edit', (m) => { m.render['agent-mcp'].permission = { ...m.agent.permission, edit: 'allow' }; }],
-  ['render.agent-mcp.permission (singular) omits every deny', (m) => { m.render['agent-mcp'].permission = { read: 'allow' }; }],
-  ['render.claude.permission (singular) loosens bash', (m) => { m.render.claude.permission = { ...m.agent.permission, bash: { '*': 'allow' } }; }],
-  ['render.agent-mcp.permission grants memory_*', (m) => { m.render['agent-mcp'].permission = { ...m.agent.permission, 'memory_*': 'allow' }; }],
-  ['render.opencode.permissions grants mcp__x__*', (m) => { m.render.opencode.permissions = { 'mcp__x__*': 'allow' }; }],
+for (const [label, mutate, expected] of [
+  ['nativeTooling.shell:true', (m) => { m.render['agent-mcp'].nativeTooling = { shell: true }; }, /nativeTooling\.shell enables shell/],
+  ['nativeTooling.shell as an allowCommands object', (m) => { m.render['agent-mcp'].nativeTooling = { shell: { allowCommands: ['ls'] } }; }, /nativeTooling\.shell enables shell/],
+  ['nativeTooling.dispatch:true', (m) => { m.render['agent-mcp'].nativeTooling = { dispatch: true }; }, /nativeTooling\.dispatch enables dispatch/],
+  ['nativeTooling.dispatch as a gated object', (m) => { m.render['agent-mcp'].nativeTooling = { dispatch: { permissions: { 'agent-mcp.task': 'ask' } } }; }, /nativeTooling\.dispatch enables dispatch/],
+  ['nativeTooling.fs:true (fs write)', (m) => { m.render['agent-mcp'].nativeTooling = { fs: true }; }, /nativeTooling\.fs grants fs write/],
+  ['nativeTooling.fs object without readOnly', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { permissions: {} } }; }, /nativeTooling\.fs is not readOnly:true/],
+  ['nativeTooling.fs readOnly:false', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { readOnly: false } }; }, /nativeTooling\.fs is not readOnly:true/],
+  ['nativeTooling.fs readOnly with write_file allowed', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { readOnly: true, permissions: { 'fs.write_file': 'allow' } } }; }, /fs\.permissions\.fs\.write_file is not "deny"/],
+  ['nativeTooling.hitl:true', (m) => { m.render['agent-mcp'].nativeTooling = { hitl: true }; }, /nativeTooling\.hitl enables human-input/],
+  ['nativeWebTools:true', (m) => { m.render['agent-mcp'].nativeWebTools = true; }, /nativeWebTools enables web access/],
+  ['render.agent-mcp.permission (singular) loosens edit', (m) => { m.render['agent-mcp'].permission = { ...m.agent.permission, edit: 'allow' }; }, /render\.agent-mcp\.permission replaces the IR map and omits "edit: deny"/],
+  ['render.agent-mcp.permission (singular) omits every deny', (m) => { m.render['agent-mcp'].permission = { read: 'allow' }; }, /render\.agent-mcp\.permission replaces the IR map and omits "bash: deny"/],
+  ['render.claude.permission (singular) loosens bash', (m) => { m.render.claude.permission = { ...m.agent.permission, bash: { '*': 'allow' } }; }, /render\.claude\.permission replaces the IR map and omits "bash: deny"/],
+  ['render.agent-mcp.permission grants memory_*', (m) => { m.render['agent-mcp'].permission = { ...m.agent.permission, 'memory_*': 'allow' }; }, /render\.agent-mcp\.permission\.memory_\* is not "deny"/],
+  ['render.opencode.permissions grants mcp__x__*', (m) => { m.render.opencode.permissions = { 'mcp__x__*': 'allow' }; }, /render\.opencode\.permissions\.mcp__x__\* is not "deny"/],
 ]) {
   test(`cac771f8 AC2 negative control: ${label} is rejected`, () => {
     const m = structuredClone(manifest);
     mutate(m);
-    assert.notDeepEqual(checkReadOnly(m), []);
+    assertFinding(checkReadOnly(m), expected, label);
   });
 }
 
@@ -115,6 +121,120 @@ test('cac771f8 AC2 the CLI exits 1 on a nativeTooling.shell:true manifest and 0 
   const r = spawnSync(process.execPath, [script, f], { encoding: 'utf8' });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /nativeTooling\.shell enables shell/);
+});
+
+// ---- cac771f8 AC2 hardening (static-review findings) -----------------------------------
+// Fail-closed: capabilities are checked against an allow-list, so names the checker has never seen are findings.
+for (const [label, mutate, expected] of [
+  ['wildcard permission rule "*": allow', (m) => { m.agent.permission['*'] = 'allow'; }, /^permission\.\* is a wildcard rule/],
+  ['wildcard permission rule "*": ask', (m) => { m.agent.permission['*'] = 'ask'; }, /^permission\.\* is a wildcard rule/],
+  ['glob-suffixed wildcard "tool_*": allow', (m) => { m.agent.permission['tool_*'] = 'allow'; }, /^permission\.tool_\* is a wildcard rule/],
+  ['patch permission allowed', (m) => { m.agent.permission.patch = 'allow'; }, /^permission\.patch grants an unrecognised capability/],
+  ['multiedit permission allowed', (m) => { m.agent.permission.multiedit = 'allow'; }, /^permission\.multiedit grants an unrecognised capability/],
+  ['apply_patch permission allowed', (m) => { m.agent.permission.apply_patch = 'allow'; }, /^permission\.apply_patch grants an unrecognised capability/],
+  ['github permission allowed', (m) => { m.agent.permission.github = 'allow'; }, /^permission\.github grants an unrecognised capability/],
+  ['render.opencode.permission wildcard allow', (m) => { m.render.opencode.permission = { ...m.agent.permission, '*': 'allow' }; }, /^render\.opencode\.permission\.\* is a wildcard rule/],
+  ['render.agent-mcp.permissions wildcard allow', (m) => { m.render['agent-mcp'].permissions = { '*': 'allow' }; }, /^render\.agent-mcp\.permissions\.\* is a wildcard rule/],
+  ['agent.tools declares dispatch', (m) => { m.agent.tools.push('dispatch'); }, /agent\.tools declares "dispatch"/],
+  ['agent.tools declares shell', (m) => { m.agent.tools.push('shell'); }, /agent\.tools declares "shell"/],
+  ['agent.tools declares agent-catalog (dispatch capability)', (m) => { m.agent.tools.push('agent-catalog'); }, /agent\.tools declares "agent-catalog"/],
+  ['agent.tools declares multiedit', (m) => { m.agent.tools.push('multiedit'); }, /agent\.tools declares "multiedit"/],
+  ['render.claude.tools declares Task', (m) => { m.render.claude.tools.push('Task'); }, /render\.claude\.tools declares "Task"/],
+  ['render.claude.tools declares Bash', (m) => { m.render.claude.tools.push('Bash'); }, /render\.claude\.tools declares "Bash"/],
+  ['permission.task as an allow-list map (spawns a writer)', (m) => { m.agent.permission.task = { '*': 'deny', typescript: 'allow' }; }, /^permission\.task delegates to typescript/],
+  ['render.opencode.permission.task as an allow-list map', (m) => { m.render.opencode.permission = { ...m.agent.permission, task: { debug: 'allow' } }; }, /^render\.opencode\.permission\.task delegates to debug/],
+  ['render.agent-mcp.permissions.allowedAgents', (m) => { m.render['agent-mcp'].permissions = { allowedAgents: ['typescript'] }; }, /permissions\.allowedAgents delegates to other agents/],
+  ['render.agent-mcp.permissions.allowedAgents as a non-array', (m) => { m.render['agent-mcp'].permissions = { allowedAgents: 'typescript' }; }, /permissions\.allowedAgents delegates to other agents/],
+  ['nativeTooling.fs.permissions wildcard allow', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { readOnly: true, permissions: { 'fs.*': 'allow' } } }; }, /fs\.permissions\.fs\.\* is not "deny"/],
+  ['nativeTooling.fs.permissions move_file allowed', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { readOnly: true, permissions: { 'fs.move_file': 'ask' } } }; }, /fs\.permissions\.fs\.move_file is not "deny"/],
+  ['nativeTooling unknown native member', (m) => { m.render['agent-mcp'].nativeTooling = { git: true }; }, /nativeTooling\.git grants an unrecognised native member/],
+  ['claudecli provider allowedBuiltinTools grants Bash', (m) => { m.render['agent-mcp'].provider = { type: 'claudecli', allowedBuiltinTools: ['Read', 'Bash'] }; }, /allowedBuiltinTools declares "Bash"/],
+  ['claudecli provider allowedBuiltinTools grants Write', (m) => { m.render['agent-mcp'].provider = { type: 'claudecli', allowedBuiltinTools: ['Write'] }; }, /allowedBuiltinTools declares "Write"/],
+]) {
+  test(`cac771f8 AC2 hardening: ${label} is rejected`, () => {
+    const m = structuredClone(manifest);
+    mutate(m);
+    assertFinding(checkReadOnly(m), expected, label);
+  });
+}
+
+test('cac771f8 AC2 hardening: read-only grants stay accepted (allow-list is not over-strict)', () => {
+  const m = structuredClone(manifest);
+  m.agent.tools.push('list', 'Glob');
+  m.agent.permission.list = 'allow';
+  m.agent.permission.external_directory = 'allow';
+  m.render['agent-mcp'].permissions = { allowedAgents: [] };
+  m.render['agent-mcp'].provider = { type: 'claudecli', allowedBuiltinTools: ['Read', 'Grep', 'Glob'] };
+  m.render['agent-mcp'].nativeTooling = { fs: { readOnly: true, permissions: { 'fs.read_file': 'allow', 'fs.list_directory': 'ask', 'fs.search_files': 'allow', 'fs.write_file': 'deny' } } };
+  assert.deepEqual(checkReadOnly(m), []);
+});
+
+// A null/garbled field must yield a NAMED `malformed:` finding, never a thrown TypeError.
+for (const [label, mutate, expected] of [
+  ['render.opencode.permission: null', (m) => { m.render.opencode.permission = null; }, /^malformed: render\.opencode\.permission must be an object \(got null\)/],
+  ['render.agent-mcp.permissions: null', (m) => { m.render['agent-mcp'].permissions = null; }, /^malformed: render\.agent-mcp\.permissions must be an object \(got null\)/],
+  ['agent.permission: null', (m) => { m.agent.permission = null; }, /^malformed: agent\.permission must be an object \(got null\)/],
+  ['agent.permission: array', (m) => { m.agent.permission = []; }, /^malformed: agent\.permission must be an object \(got an array\)/],
+  ['agent.tools: a string (would iterate characters)', (m) => { m.agent.tools = 'read'; }, /^malformed: agent\.tools must be an array \(got string\)/],
+  ['agent.tools: null', (m) => { m.agent.tools = null; }, /^malformed: agent\.tools must be an array \(got null\)/],
+  ['render.claude.tools: an object', (m) => { m.render.claude.tools = { 0: 'Read' }; }, /^malformed: render\.claude\.tools must be an array/],
+  ['render.claude: null', (m) => { m.render.claude = null; }, /^malformed: render\.claude must be an object \(got null\)/],
+  ['render: null', (m) => { m.render = null; }, /^malformed: render must be an object \(got null\)/],
+  ['agent: null', (m) => { m.agent = null; }, /^malformed: agent must be an object \(got null\)/],
+  ['render.agent-mcp.nativeTooling: null', (m) => { m.render['agent-mcp'].nativeTooling = null; }, /^malformed: render\.agent-mcp\.nativeTooling must be an object \(got null\)/],
+  ['nativeTooling.fs.permissions: null', (m) => { m.render['agent-mcp'].nativeTooling = { fs: { readOnly: true, permissions: null } }; }, /^malformed: render\.agent-mcp\.nativeTooling\.fs\.permissions must be an object/],
+  ['provider.allowedBuiltinTools: a string', (m) => { m.render['agent-mcp'].provider = { type: 'claudecli', allowedBuiltinTools: 'Bash' }; }, /^malformed: render\.agent-mcp\.provider\.allowedBuiltinTools must be an array/],
+]) {
+  test(`cac771f8 AC2 hardening: ${label} is a named malformed finding, not a crash`, () => {
+    const m = structuredClone(manifest);
+    mutate(m);
+    let findings;
+    assert.doesNotThrow(() => { findings = checkReadOnly(m); });
+    assertFinding(findings, expected, label);
+  });
+}
+
+test('cac771f8 AC2 hardening: a non-object manifest is a malformed finding (null, array, number)', () => {
+  for (const bad of [null, [], 7, 'x']) {
+    assert.deepEqual(checkReadOnly(bad), [`malformed: manifest must be an object (got ${bad === null ? 'null' : Array.isArray(bad) ? 'an array' : typeof bad})`]);
+  }
+});
+
+test('cac771f8 AC2 hardening: CLI exit codes 0 ok / 1 violation / 2 unreadable / 3 malformed, and never a stack trace', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const script = join(here, 'check-readonly.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'review-ro-cli-'));
+  const run = (content) => {
+    const f = join(dir, `m-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(f, content);
+    return spawnSync(process.execPath, [script, f], { encoding: 'utf8' });
+  };
+  const ok = run(JSON.stringify(manifest));
+  assert.equal(ok.status, 0);
+  const violation = structuredClone(manifest);
+  violation.agent.permission['*'] = 'allow';
+  const v = run(JSON.stringify(violation));
+  assert.equal(v.status, 1);
+  assert.match(v.stderr, /wildcard rule/);
+  const unreadable = run('{not json');
+  assert.equal(unreadable.status, 2);
+  assert.match(unreadable.stderr, /cannot read/);
+  const nullPerm = structuredClone(manifest);
+  nullPerm.render.opencode.permission = null;
+  const mal = run(JSON.stringify(nullPerm));
+  assert.equal(mal.status, 3);
+  assert.match(mal.stderr, /MALFORMED[\s\S]*render\.opencode\.permission must be an object \(got null\)/);
+  for (const r of [v, unreadable, mal]) assert.doesNotMatch(r.stderr, /TypeError|\n\s+at /, 'no stack trace');
+  assert.equal(run('null').status, 3);
+});
+
+test('cac771f8 AC2 hardening: the shipped review manifest passes its own check via the CLI path (exit 0, no stderr)', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(process.execPath, [join(here, 'check-readonly.mjs')], { encoding: 'utf8' });
+  assert.equal(r.status, 0);
+  assert.equal(r.stderr, '');
 });
 
 // ---- AC2 -------------------------------------------------------------------------------

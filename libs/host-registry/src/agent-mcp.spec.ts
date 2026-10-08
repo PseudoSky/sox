@@ -378,25 +378,49 @@ describe('agent-mcp — real review manifest golden render (cac771f8)', () => {
     expect(doc).toMatch(/DIFFERENT from/);
   });
 
-  it('e00c47bb AC3 the fidelity spec documents the single-tool web deny disposition', () => {
-    const doc = fs.readFileSync(path.resolve(__dirname, '../../../docs/spec/agent-mcp-renderer-fidelity.md'), 'utf8');
-    const row = doc.split('\n').find((l) => /^\| IR `tools` webfetch\/websearch/.test(l));
+  const fidelityDoc = (): string => fs.readFileSync(path.resolve(__dirname, '../../../docs/spec/agent-mcp-renderer-fidelity.md'), 'utf8');
+  const docRow = (re: RegExp): string | undefined => fidelityDoc().split('\n').find((l) => re.test(l));
+
+  // Each assertion names a fact the renderer actually produces (pinned by the tests above), so a doc that drifts from
+  // the behavior (or a renderer change without a doc change) fails here.
+  it('e00c47bb AC3 the fidelity spec row records every disposition the renderer emits for the single-tool web deny', () => {
+    const row = docRow(/^\| IR `tools` webfetch\/websearch/);
     expect(row).toBeDefined();
-    expect(row).toMatch(/report\.lost/);
-    expect(row).toMatch(/fails closed/);
-    const without = doc.split('\n').filter((l) => l !== row).join('\n');
-    expect(/^\| IR `tools` webfetch\/websearch/m.test(without)).toBe(false);
+    for (const fact of [/report\.lost/, /fails closed/, /nativeWebTools:false/, /'dropped'/, /`acceptLoss`.*`accepted`/, /`covered-by-override`/, /tools` is unspecified/, /unlisted/]) {
+      expect(row, String(fact)).toMatch(fact);
+    }
   });
 
-  it('cac771f8 AC3 the fidelity spec documents the skill/todowrite disposition as N/A', () => {
-    const doc = fs.readFileSync(path.resolve(__dirname, '../../../docs/spec/agent-mcp-renderer-fidelity.md'), 'utf8');
-    const row = doc.split('\n').find((l) => /^\| IR `permission` `skill` \/ `todowrite`/.test(l));
-    expect(row).toBeDefined();
-    expect(row).toMatch(/N\/A/);
-    expect(row).toMatch(/report\.lost/);
-    // negative control: the matcher rejects a doc with that row removed.
-    const without = doc.split('\n').filter((l) => l !== row).join('\n');
-    expect(/^\| IR `permission` `skill` \/ `todowrite`/m.test(without)).toBe(false);
+  it('cac771f8 AC3 every permission key of the review manifest is either mapped by the renderer or documented N/A', () => {
+    const na = docRow(/^\| IR `permission` `skill` \/ `todowrite`/);
+    expect(na).toBeDefined();
+    expect(na).toMatch(/N\/A/);
+    expect(na).toMatch(/report\.lost/);
+    const base = renderReview();
+    // the first table cell names the documented-N/A keys (`skill` / `todowrite`); later cells may mention others.
+    const naKeys = [...((na as string).split('|')[1] ?? '').matchAll(/`([a-z_]+)`/g)].map((m) => m[1]).filter((k) => k !== 'permission');
+    expect(naKeys.sort()).toEqual(['skill', 'todowrite']);
+    for (const key of Object.keys(manifest.agent.permission as Record<string, string>)) {
+      if (naKeys.includes(key)) {
+        // documented N/A: flipping the key to allow changes nothing in the payload or report.
+        const flipped = renderReview({
+          ...manifest.agent,
+          tools: [...(manifest.agent.tools ?? []), key],
+          permission: { ...manifest.agent.permission, [key]: 'allow' },
+        });
+        expect({ key, payload: flipped.payload, report: flipped.report }).toEqual({ key, payload: base.payload, report: base.report });
+      } else if (!['read', 'glob', 'grep'].includes(key)) {
+        // mapped: granting the key must change the rendered payload (otherwise it is neither mapped nor documented).
+        // webfetch/websearch share ONE flag, so they are granted together.
+        const grant = key === 'webfetch' || key === 'websearch' ? ['webfetch', 'websearch'] : [key];
+        const flipped = renderReview({
+          ...manifest.agent,
+          tools: [...(manifest.agent.tools ?? []), ...grant],
+          permission: { ...manifest.agent.permission, ...Object.fromEntries(grant.map((g) => [g, 'allow'])) },
+        });
+        expect({ key, changed: JSON.stringify(flipped.payload) !== JSON.stringify(base.payload) }).toEqual({ key, changed: true });
+      }
+    }
   });
 });
 

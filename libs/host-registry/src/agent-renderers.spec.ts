@@ -298,26 +298,30 @@ describe('trailing newline (pinned, cac771f8 AC4)', () => {
   const ir: AgentIr = { name: 'nl', description: 'newline pin' };
   const bodyOf = (r: unknown): string => (r as { content: string }).content;
 
-  it('a body ending in exactly one "\\n" renders ending in "\\n\\n" for claude and opencode', () => {
+  // Exact bytes (header + fence + body + terminator), so any change to the fence, header order or terminator fails.
+  const EXACT: Record<'claude' | 'opencode', { header: string }> = {
+    claude: { header: '---\nname: nl\ndescription: newline pin\nmodel: sonnet\n---\n' },
+    opencode: { header: '---\nname: nl\ndescription: newline pin\nmode: all\n---\n' },
+  };
+
+  it('a body ending in exactly one "\\n" renders ending in "\\n\\n" (exact bytes) for claude and opencode', () => {
     for (const host of ['claude', 'opencode'] as const) {
-      const out = bodyOf(agentRenderers[host].render(ir, '---\nname: nl\n---\nBody line.\n'));
-      expect(out.endsWith('Body line.\n\n')).toBe(true);
-      expect(out.endsWith('Body line.\n\n\n')).toBe(false);
+      expect(bodyOf(agentRenderers[host].render(ir, '---\nname: nl\n---\nBody line.\n'))).toBe(`${EXACT[host].header}Body line.\n\n`);
     }
   });
 
-  it('a body with no trailing newline renders ending in exactly one "\\n"', () => {
+  it('a body with no trailing newline renders ending in exactly one "\\n" (exact bytes)', () => {
     for (const host of ['claude', 'opencode'] as const) {
-      const out = bodyOf(agentRenderers[host].render(ir, 'Body line.'));
-      expect(out.endsWith('Body line.\n')).toBe(true);
-      expect(out.endsWith('Body line.\n\n')).toBe(false);
+      expect(bodyOf(agentRenderers[host].render(ir, 'Body line.'))).toBe(`${EXACT[host].header}Body line.\n`);
     }
   });
 
-  it('negative control: the pin distinguishes a normalizing renderer (one vs two trailing newlines are different bytes)', () => {
-    const one = bodyOf(agentRenderers.claude.render(ir, 'Body line.'));
-    const two = bodyOf(agentRenderers.claude.render(ir, 'Body line.\n'));
-    expect(two).toBe(`${one}\n`);
-    expect(two).not.toBe(one);
+  it('negative control: a trailing-newline-normalizing renderer would produce different bytes for the two inputs (so the pin has teeth)', () => {
+    const normalize = (c: string): string => c.replace(/\n+$/, '\n');
+    for (const host of ['claude', 'opencode'] as const) {
+      const withNl = bodyOf(agentRenderers[host].render(ir, 'Body line.\n'));
+      expect(normalize(withNl)).not.toBe(withNl);
+      expect(withNl).toBe(`${EXACT[host].header}Body line.\n\n`);
+    }
   });
 });
