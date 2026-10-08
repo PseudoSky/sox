@@ -248,6 +248,61 @@ describe('agent-mcp — real review manifest golden render (cac771f8)', () => {
     expect(allowed.payload.nativeTooling.hitl).toBe(true);
   });
 
+  describe('e00c47bb webfetch/websearch single-tool deny', () => {
+    const web = (permission: Record<string, string>, override: AgentOverride | undefined = manifest.render['agent-mcp']) =>
+      renderReview(
+        { ...manifest.agent, tools: [...(manifest.agent.tools ?? []), 'webfetch', 'websearch'], permission: { ...manifest.agent.permission, ...permission } } as AgentIr,
+        override,
+      );
+
+    it('e00c47bb AC1 webfetch denied + websearch allowed: web disabled fail-closed AND the deny is reported', () => {
+      const { payload, report } = web({ webfetch: 'deny', websearch: 'allow' });
+      expect(payload.nativeWebTools).toBe(false);
+      expect(report.lost).toHaveLength(1);
+      expect(report.lost[0]).toMatchObject({ source: 'webfetch', action: 'deny', disposition: 'dropped' });
+    });
+
+    it('e00c47bb AC1 reverse (websearch denied + webfetch allowed) is reported too', () => {
+      const { payload, report } = web({ webfetch: 'allow', websearch: 'deny' });
+      expect(payload.nativeWebTools).toBe(false);
+      expect(report.lost).toMatchObject([{ source: 'websearch', action: 'deny', disposition: 'dropped' }]);
+    });
+
+    it('e00c47bb AC1 acceptLoss keeps web on but still reports the unenforced deny as accepted', () => {
+      const { payload, report } = web({ webfetch: 'deny', websearch: 'allow' }, { ...manifest.render['agent-mcp'], acceptLoss: true } as AgentOverride);
+      expect(payload.nativeWebTools).toBeUndefined();
+      expect(report.lost).toMatchObject([{ source: 'webfetch', disposition: 'accepted' }]);
+    });
+
+    it('e00c47bb AC1 an explicit nativeWebTools override wins and is recorded as covered-by-override', () => {
+      const { payload, report } = web({ webfetch: 'deny', websearch: 'allow' }, { ...manifest.render['agent-mcp'], nativeWebTools: true } as AgentOverride);
+      expect(payload.nativeWebTools).toBe(true);
+      expect(report.lost).toMatchObject([{ source: 'webfetch', disposition: 'covered-by-override' }]);
+    });
+
+    it('e00c47bb AC2 control: both denied => nativeWebTools:false and report.lost empty', () => {
+      const { payload, report } = web({ webfetch: 'deny', websearch: 'deny' });
+      expect(payload.nativeWebTools).toBe(false);
+      expect(report.lost).toEqual([]);
+    });
+
+    it('e00c47bb control: both allowed => provider default, nothing lost', () => {
+      const { payload, report } = web({ webfetch: 'allow', websearch: 'allow' });
+      expect(payload.nativeWebTools).toBeUndefined();
+      expect(report.lost).toEqual([]);
+    });
+  });
+
+  it('e00c47bb AC3 the fidelity spec documents the single-tool web deny disposition', () => {
+    const doc = fs.readFileSync(path.resolve(__dirname, '../../../docs/spec/agent-mcp-renderer-fidelity.md'), 'utf8');
+    const row = doc.split('\n').find((l) => /^\| IR `tools` webfetch\/websearch/.test(l));
+    expect(row).toBeDefined();
+    expect(row).toMatch(/report\.lost/);
+    expect(row).toMatch(/fails closed/);
+    const without = doc.split('\n').filter((l) => l !== row).join('\n');
+    expect(/^\| IR `tools` webfetch\/websearch/m.test(without)).toBe(false);
+  });
+
   it('cac771f8 AC3 the fidelity spec documents the skill/todowrite disposition as N/A', () => {
     const doc = fs.readFileSync(path.resolve(__dirname, '../../../docs/spec/agent-mcp-renderer-fidelity.md'), 'utf8');
     const row = doc.split('\n').find((l) => /^\| IR `permission` `skill` \/ `todowrite`/.test(l));

@@ -909,8 +909,35 @@ function deriveTooling(ir: AgentIr, override: AgentOverride | undefined, report:
     mcpServers,
     permissions: allowedAgents.length > 0 ? { allowedAgents } : {},
   };
+  // `nativeWebTools` is ONE flag covering both fetch and search, so it can express "all web off" or "provider
+  // default" but never "fetch denied, search allowed" (or the reverse). e00c47bb:
+  //   - every web tool denied/unlisted (and at least one explicitly denied) => false, nothing lost.
+  //   - exactly one denied while the other stays available => un-representable: fail closed (false, the deny is
+  //     enforced at the cost of the allowed sibling) unless `acceptLoss`/an explicit override says otherwise; always
+  //     recorded in report.lost (same disposition model as the bash pattern loss, O2).
+  const fetchDenied = scalar('webfetch') === 'deny';
+  const searchDenied = scalar('websearch') === 'deny';
+  const fetchAvail = available('webfetch');
+  const searchAvail = available('websearch');
+  const partialWebDeny = (fetchDenied && searchAvail) || (searchDenied && fetchAvail);
+  if (partialWebDeny) {
+    const deniedTool = fetchDenied ? 'webfetch' : 'websearch';
+    const survivor = fetchDenied ? 'websearch' : 'webfetch';
+    const overridden = override?.nativeWebTools !== undefined;
+    report.lost.push({
+      source: deniedTool,
+      pattern: '',
+      action: 'deny',
+      reason:
+        `nativeWebTools is a single flag for webfetch and websearch: a ${deniedTool} deny with ${survivor} available cannot be expressed; ` +
+        `${acceptLoss || overridden ? `the ${deniedTool} deny is not enforced` : `web tools are disabled (fail-closed), so ${survivor} is lost too`}`,
+      disposition: overridden ? 'covered-by-override' : acceptLoss ? 'accepted' : 'dropped',
+    });
+  }
   if (override?.nativeWebTools !== undefined) plan.nativeWebTools = override.nativeWebTools;
-  else if (names !== null && scalar('websearch') === 'deny' && !names.has('webfetch')) plan.nativeWebTools = false;
+  else if (partialWebDeny) {
+    if (!acceptLoss) plan.nativeWebTools = false;
+  } else if (names !== null && (fetchDenied || searchDenied) && !fetchAvail && !searchAvail) plan.nativeWebTools = false;
   return plan;
 }
 
