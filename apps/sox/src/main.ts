@@ -4010,7 +4010,8 @@ async function uninstallOne(
         process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
         process.exit(1);
       }
-    } catch {
+    } catch (e) {
+      log.warn('uninstall_ownership_index_unreadable', { ext: id, scope: scopeTyped, error: String(e) });
       process.stderr.write(`${CLI} uninstall: extension '${id}' not found in lockfile\n`);
       process.stderr.write(`  Installed: ${lockKeys.join(', ') || '(none)'}\n`);
       process.exit(1);
@@ -4062,17 +4063,26 @@ async function uninstallOne(
     throw e;
   }
 
+  // What the propagation reversals below already changed outside the ledger; an
+  // abort later in uninstallOwned reports it so the operator sees the full divergence.
+  const alreadyReversed: string[] = [];
   if (plan.full) {
+    // The propagators attribute by host: reverse for the host(s) actually being removed
+    // (every host in the all-hosts form), never the record's last-writer host.
+    const reverseHosts = plan.hosts.length > 0 ? plan.hosts : [owned?.host ?? 'claude'];
+
     // ── #16728 durable fix: reverse the propagated project .mcp.json merges ───
     if (scopeTyped === 'user' || scopeTyped === 'org') {
-      try {
-        const host0 = owned?.host ?? 'claude';
-        const reversed = await reverseUserMcpFromProjects({ extId: id, host: host0 });
-        for (const p of reversed) {
-          process.stdout.write(`${CLI} uninstall: mcp-sync removed  ${id} ← ${p}\n`);
+      for (const h of reverseHosts) {
+        try {
+          const reversed = await reverseUserMcpFromProjects({ extId: id, host: h });
+          for (const p of reversed) {
+            process.stdout.write(`${CLI} uninstall: mcp-sync removed  ${id} ← ${p}\n`);
+            alreadyReversed.push(`mcp-sync ${p}`);
+          }
+        } catch (e) {
+          process.stderr.write(`${CLI} uninstall: warning: mcp project-sync reversal failed for '${id}' (host '${h}') — ${String(e)}\n`);
         }
-      } catch (e) {
-        process.stderr.write(`${CLI} uninstall: warning: mcp project-sync reversal failed for '${id}' — ${String(e)}\n`);
       }
     }
 
@@ -4080,14 +4090,16 @@ async function uninstallOne(
     // Trust entries always live in the user-scope ownership record regardless of
     // which install scope created them (~/.claude.json is a single user-level
     // file) — unlike the .mcp.json propagation above, this is NOT scope-gated.
-    try {
-      const hostTrust = owned?.host ?? 'claude';
-      const untrusted = await reverseMcpTrustFromProjects({ extId: id, host: hostTrust });
-      for (const p of untrusted) {
-        process.stdout.write(`${CLI} uninstall: mcp-trust removed  ${id} ← ${p}\n`);
+    for (const h of reverseHosts) {
+      try {
+        const untrusted = await reverseMcpTrustFromProjects({ extId: id, host: h });
+        for (const p of untrusted) {
+          process.stdout.write(`${CLI} uninstall: mcp-trust removed  ${id} ← ${p}\n`);
+          alreadyReversed.push(`mcp-trust ${p}`);
+        }
+      } catch (e) {
+        process.stderr.write(`${CLI} uninstall: warning: mcp-trust reversal failed for '${id}' (host '${h}') — ${String(e)}\n`);
       }
-    } catch (e) {
-      process.stderr.write(`${CLI} uninstall: warning: mcp-trust reversal failed for '${id}' — ${String(e)}\n`);
     }
     // The reversals above rewrite ownership.json through their own index handles.
     ownership = OwnershipIndex.loadFromFile(ownershipFile);
@@ -4130,6 +4142,11 @@ async function uninstallOne(
       });
     } catch (e) {
       process.stderr.write(`${CLI} uninstall: config reversal aborted: ${String(e)}\n`);
+      if (alreadyReversed.length > 0) {
+        process.stderr.write(
+          `${CLI} uninstall: also already reversed before the abort: ${alreadyReversed.join('; ')}\n`,
+        );
+      }
       process.exit(1);
     }
     for (const w of removal.warnings) {
@@ -4171,7 +4188,11 @@ async function uninstallOne(
         cfg.install = cfg.install.filter((e) => e.id !== id);
         fsMod.writeFileSync(configPath5, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
       }
-    } catch { /* config parse failure — lockfile is already cleaned up */ }
+    } catch (e) {
+      // The lockfile is already cleaned up; an unreadable extensions.json is left as-is.
+      log.warn('uninstall_extensions_json_unreadable', { ext: id, file: configPath5, error: String(e) });
+      process.stderr.write(`${CLI} uninstall: warning: could not update ${configPath5}: ${String(e)}\n`);
+    }
   }
 
   // P9: remove the install record from the global install ledger.

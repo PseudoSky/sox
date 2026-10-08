@@ -269,4 +269,40 @@ describe('e46db6ed — soxe uninstall --host attribution (real CLI)', () => {
     expect(fs.existsSync(skillPath('claude', 'e46-skill'))).toBe(false);
     expect(fs.existsSync(mystery)).toBe(false);
   });
+
+  it('e46db6ed AC1 — no --host reverses claude trust grants even when another host installed last', () => {
+    writeExt('skill', 'e46-skill', ['claude', 'opencode']);
+    for (const h of ['claude', 'opencode']) {
+      expect(cli(['install', 'e46-skill', `--host=${h}`, '--scope=user', `--root=${sc.ws}`]).code).toBe(0);
+    }
+    const ownFile = path.join(sc.data, 'ownership.json');
+    const own = readJson<{ owned: Array<{ extId: string; host?: string; entries: Array<Record<string, unknown>> }> }>(ownFile);
+    const rec = own.owned.find((r) => r.extId === 'e46-skill')!;
+    // opencode installed last: the (informational) record host is NOT claude.
+    expect(rec.host).toBe('opencode');
+    const claudeJson = path.join(sc.home, '.claude.json');
+    const proj = path.join(sc.base, 'some-project');
+    fs.writeFileSync(claudeJson, JSON.stringify({ projects: { [proj]: { enabledMcpjsonServers: ['e46-skill', 'keep'] } } }));
+    rec.entries.push({ kind: 'config-key', file: claudeJson, keyPath: `trust:${proj}` });
+    fs.writeFileSync(ownFile, JSON.stringify(own));
+
+    const un = cli(['uninstall', 'e46-skill', '--scope', 'user', `--root=${sc.ws}`]);
+
+    expect(un.code, un.stderr).toBe(0);
+    expect(un.stdout).toContain('mcp-trust removed');
+    expect(readJson<{ projects: Record<string, { enabledMcpjsonServers: string[] }> }>(claudeJson).projects[proj]!.enabledMcpjsonServers).toEqual(['keep']);
+  });
+
+  it('e46db6ed AC1 — an unreadable extensions.json is reported on stderr, never swallowed', () => {
+    writeExt('skill', 'e46-skill', ['claude']);
+    expect(cli(['install', 'e46-skill', '--host=claude', '--scope=user', `--root=${sc.ws}`]).code).toBe(0);
+    const config = path.join(sc.base, 'extensions.json');
+    fs.writeFileSync(config, '{ not json');
+
+    const un = cli(['uninstall', 'e46-skill', '--scope', 'user', `--root=${sc.ws}`, `--config=${config}`]);
+
+    expect(un.code, un.stderr).toBe(0);
+    expect(un.stderr).toMatch(/could not update .*extensions\.json/);
+    expect(fs.existsSync(skillPath('claude', 'e46-skill'))).toBe(false);
+  });
 });

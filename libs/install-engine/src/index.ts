@@ -104,6 +104,7 @@ export {
   planOwnedUninstall,
   HostNotInstalledError,
   AmbiguousLegacyUninstallError,
+  UninstallAbortedError,
 } from './lifecycle.js';
 export type { OwnedUninstallInput, OwnedUninstallPlan, OwnedUninstallResult } from './lifecycle.js';
 
