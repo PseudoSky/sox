@@ -23,8 +23,12 @@ import type { AgentCatalogPayload } from './agent-mcp.js';
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const AGENTS_ROOT = process.env['E00C47BB_AGENTS_ROOT'] ?? path.join(REPO_ROOT, 'extensions/agents');
-/** Plan tip the pre-change expectations are derived from. */
-const BASELINE_REF = 'f22b1b12';
+/**
+ * Ref the pre-change expectations are derived from: main's tip dd8a8639, which already carries the
+ * faa8064b tiered `nativeTooling.shell` blocks but not the nativeWebTools override. (The earlier
+ * f22b1b12 baseline predates faa8064b, so its manifests lack the shell block.)
+ */
+const BASELINE_REF = 'dd8a8639';
 const MIGRATED = ['architect', 'architect-decision', 'debug', 'performance', 'product', 'researcher', 'typescript'] as const;
 
 interface Manifest {
@@ -103,15 +107,24 @@ describe('e00c47bb MIG1 — migrated agents carry the explicit nativeWebTools ov
         expect(afterRest).toEqual(beforeRest);
       });
 
-      it('e00c47bb MIG1 bash-pattern dropped losses, shell fail-closed and warnings are UNCHANGED', () => {
+      // faa8064b gave every one of these manifests an explicit `nativeTooling.shell` allowlist, so the
+      // bash command-pattern losses are `covered-by-override` (the explicit member replaces the derived
+      // one) and shell is NOT disabled by loss. The nativeWebTools override must not change any of it.
+      it('e00c47bb MIG1 bash losses (covered-by-override by the manifest shell allowlist), shell and warnings are UNCHANGED', () => {
         const before = renderWithout(id);
         const after = renderAgent(id);
         expect(bashLosses(after.report)).toEqual(bashLosses(before.report));
         expect(bashLosses(after.report).length).toBeGreaterThan(0);
-        for (const l of bashLosses(after.report)) expect(l.disposition).toBe('dropped');
-        expect(after.report.shellDisabledByLoss).toBe(true);
+        for (const l of bashLosses(after.report)) expect(l.disposition).toBe('covered-by-override');
+        expect(after.report.shellDisabledByLoss).toBe(false);
         expect(after.report.shellDisabledByLoss).toBe(before.report.shellDisabledByLoss);
-        expect(after.payload.nativeTooling.shell).toBe(false);
+        // Never fail-open: shell is exactly the manifest's declared allowlist, not `true` and not unrestricted.
+        const declared = readManifest(path.join(AGENTS_ROOT, id)).render?.['agent-mcp']?.nativeTooling as
+          | { shell?: { allowCommands: string[]; timeoutMs: number } }
+          | undefined;
+        expect(declared?.shell?.allowCommands.length).toBeGreaterThan(0);
+        expect(after.payload.nativeTooling.shell).toEqual(declared?.shell);
+        expect(after.payload.nativeTooling.shell).toEqual(before.payload.nativeTooling.shell);
         expect(after.report.warnings).toEqual(before.report.warnings);
         expect(after.report.unbound).toBe(before.report.unbound);
       });
