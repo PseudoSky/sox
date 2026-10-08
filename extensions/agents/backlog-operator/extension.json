@@ -119,6 +119,21 @@
           ],
           "timeoutMs": 45000
         }
+      },
+      "nativeTooling": {
+        "shell": {
+          "allowCommands": [
+            "adhd-backlog",
+            "cat",
+            "head",
+            "ls",
+            "rg",
+            "sox-git-ro",
+            "tail",
+            "wc"
+          ],
+          "timeoutMs": 300000
+        }
       }
     }
   },

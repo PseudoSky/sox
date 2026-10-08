@@ -160,6 +160,32 @@
           ],
           "timeoutMs": 45000
         }
+      },
+      "nativeTooling": {
+        "shell": {
+          "allowCommands": [
+            "basename",
+            "cat",
+            "diff",
+            "dirname",
+            "gx",
+            "head",
+            "ls",
+            "npx",
+            "nx",
+            "pnpm",
+            "rg",
+            "scratch-agent-search",
+            "sort",
+            "sox-git-ro",
+            "stat",
+            "tail",
+            "uniq",
+            "wc",
+            "which"
+          ],
+          "timeoutMs": 300000
+        }
       }
     }
   },

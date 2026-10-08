@@ -137,6 +137,38 @@
           ],
           "timeoutMs": 45000
         }
+      },
+      "nativeTooling": {
+        "shell": {
+          "allowCommands": [
+            "basename",
+            "cat",
+            "cp",
+            "diff",
+            "dirname",
+            "gx",
+            "head",
+            "ls",
+            "mkdir",
+            "mv",
+            "npx",
+            "nx",
+            "pnpm",
+            "rg",
+            "sort",
+            "sox-git-impl",
+            "sox-git-ro",
+            "sox-rm",
+            "stat",
+            "tail",
+            "tee",
+            "touch",
+            "uniq",
+            "wc",
+            "which"
+          ],
+          "timeoutMs": 900000
+        }
       }
     }
   },
