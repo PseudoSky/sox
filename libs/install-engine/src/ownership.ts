@@ -24,6 +24,7 @@
 import * as fs from 'node:fs';
 import { ownershipPathFor, type DataScope } from './data-paths.js';
 import { atomicWriteFileSync, withReconciledRetry } from './atomic-write.js';
+import { withFileLockSync, type LockRunner } from './file-lock.js';
 
 // ─── Entry shapes ──────────────────────────────────────────────────────────────
 
@@ -201,15 +202,24 @@ export class OwnershipIndex {
    * both persist (AC1) without depending on a lock (B-I1).
    */
   private readonly dirty = new Map<string, OwnershipRecord | null>();
+  /**
+   * Runs the save critical section under the cross-process lock. Production
+   * always uses `withFileLockSync`; the override exists ONLY as an internal test
+   * seam (ownership-lock AC2: prove the concurrency harness goes RED without the
+   * lock). It is a constructor/load option, deliberately NOT an env var (ADR-0013).
+   */
+  private readonly runLocked: LockRunner;
 
   private constructor(
     filePath: string,
     data: OwnershipFile,
     statAtLoad: { mtimeMs: number; size: number } | null,
+    runLocked: LockRunner = withFileLockSync,
   ) {
     this.filePath = filePath;
     this.data = data;
     this.statAtLoad = statAtLoad;
+    this.runLocked = runLocked;
   }
 
   /** Stable merge key for a record. */
@@ -224,11 +234,19 @@ export class OwnershipIndex {
   }
 
   /** Load (or create) the ownership index at an explicit ownership.json path. */
-  static loadFromFile(filePath: string, opts: { strict?: boolean } = {}): OwnershipIndex {
+  static loadFromFile(
+    filePath: string,
+    opts: {
+      strict?: boolean;
+      /** INTERNAL TEST SEAM (ownership-lock AC2) — replaces the save lock. Never set in production. */
+      lockRunner?: LockRunner;
+    } = {},
+  ): OwnershipIndex {
     return new OwnershipIndex(
       filePath,
       readOwnership(filePath, opts.strict === true ? { strict: true } : {}),
       statFile(filePath),
+      opts.lockRunner,
     );
   }
 
@@ -429,9 +447,17 @@ export class OwnershipIndex {
    *      `OwnershipConflictError`, which `withReconciledRetry` turns into another
    *      merge round against the newer union.
    *
-   * Correctness is the rename (atomicWriteFileSync); the loop only resolves the
-   * lost-update RACE, never the torn-file class (which the unique temp removes
-   * by construction). The stat is kept only as a cheap change signal.
+   * Steps 1-4 run under an exclusive cross-process lock (`<ownership.json>.lock`,
+   * file-lock.ts; ownership-lock). Without it two processes that read the same
+   * snapshot each publish a whole file and the later rename silently drops the
+   * earlier record — and each one's verify still passes, so the verify→retry
+   * loop cannot see it. The verify/retry stays as a backstop for non-cooperating
+   * writers; readers stay lock-free (they only ever see a whole old/new file).
+   * The no-op fast path below runs BEFORE the lock so a no-op save creates neither
+   * ownership.json nor a lock file.
+   *
+   * Atomicity (never a torn file) is the rename (atomicWriteFileSync); the lock
+   * resolves the lost-update RACE between cooperating writers.
    */
   save(): void {
     withReconciledRetry(this.filePath, () => {
@@ -445,59 +471,64 @@ export class OwnershipIndex {
           (loadedStat.mtimeMs !== nowStat.mtimeMs || loadedStat.size !== nowStat.size));
       if (this.dirty.size === 0 && !changed) return;
 
-      // 1. Fresh on-disk snapshot. ENOENT → empty; corrupt → throw (B-I3).
-      const onDisk: OwnershipFile = fs.existsSync(this.filePath)
-        ? readOwnership(this.filePath, { strict: true })
-        : { version: 1, owned: [] };
-      const onDiskKeys = new Set(onDisk.owned.map((r) => OwnershipIndex.keyOf(r.extId, r.scope)));
+      this.runLocked(`${this.filePath}.lock`, () => this.saveLocked());
+    });
+  }
 
-      // 2. Fast path: is the on-disk state already our desired state?
-      const needsWrite = [...this.dirty].some(([k, rec]) => {
-        const onDiskHas = onDiskKeys.has(k);
-        if (rec === null) return onDiskHas;
-        if (!onDiskHas) return true;
-        const cur = onDisk.owned.find((r) => OwnershipIndex.keyOf(r.extId, r.scope) === k);
-        return JSON.stringify(cur) !== JSON.stringify(rec);
-      });
-      if (!needsWrite) {
-        // Our dirty records already equal what is on disk (or there are none) —
-        // adopt the on-disk union in-memory and persist nothing. This keeps a
-        // read-then-save no-op from CREATING a file that did not exist.
-        this.data = { version: 1, owned: [...onDisk.owned] };
-        this.statAtLoad = statFile(this.filePath);
-        this.dirty.clear();
-        return;
-      }
+  /** The read-merge-publish-verify cycle; callers MUST hold the ownership lock. */
+  private saveLocked(): void {
+    // 1. Fresh on-disk snapshot. ENOENT → empty; corrupt → throw (B-I3).
+    const onDisk: OwnershipFile = fs.existsSync(this.filePath)
+      ? readOwnership(this.filePath, { strict: true })
+      : { version: 1, owned: [] };
+    const onDiskKeys = new Set(onDisk.owned.map((r) => OwnershipIndex.keyOf(r.extId, r.scope)));
 
-      // 3. Merge our dirty records onto the on-disk union.
-      const byKey = new Map(
-        onDisk.owned.map((r) => [OwnershipIndex.keyOf(r.extId, r.scope), r] as const),
-      );
-      for (const [k, rec] of this.dirty) {
-        if (rec === null) byKey.delete(k);
-        else byKey.set(k, rec);
-      }
-
-      // 4. Publish atomically, then verify our records landed.
-      const merged: OwnershipFile = { version: 1, owned: [...byKey.values()] };
-      writeOwnershipAtomic(this.filePath, merged);
-      const after = readOwnership(this.filePath, { strict: true });
-      const afterKeys = new Map(
-        after.owned.map((r) => [OwnershipIndex.keyOf(r.extId, r.scope), r] as const),
-      );
-      for (const [k, rec] of this.dirty) {
-        const cur = afterKeys.get(k);
-        const ok =
-          rec === null
-            ? cur === undefined
-            : cur !== undefined && JSON.stringify(cur) === JSON.stringify(rec);
-        // Clobbered by a concurrent writer between read and rename → re-merge.
-        if (!ok) throw new OwnershipConflictError(this.filePath);
-      }
-      this.data = { version: 1, owned: [...afterKeys.values()] };
+    // 2. Fast path: is the on-disk state already our desired state?
+    const needsWrite = [...this.dirty].some(([k, rec]) => {
+      const onDiskHas = onDiskKeys.has(k);
+      if (rec === null) return onDiskHas;
+      if (!onDiskHas) return true;
+      const cur = onDisk.owned.find((r) => OwnershipIndex.keyOf(r.extId, r.scope) === k);
+      return JSON.stringify(cur) !== JSON.stringify(rec);
+    });
+    if (!needsWrite) {
+      // Our dirty records already equal what is on disk (or there are none) —
+      // adopt the on-disk union in-memory and persist nothing. This keeps a
+      // read-then-save no-op from CREATING a file that did not exist.
+      this.data = { version: 1, owned: [...onDisk.owned] };
       this.statAtLoad = statFile(this.filePath);
       this.dirty.clear();
-    });
+      return;
+    }
+
+    // 3. Merge our dirty records onto the on-disk union.
+    const byKey = new Map(
+      onDisk.owned.map((r) => [OwnershipIndex.keyOf(r.extId, r.scope), r] as const),
+    );
+    for (const [k, rec] of this.dirty) {
+      if (rec === null) byKey.delete(k);
+      else byKey.set(k, rec);
+    }
+
+    // 4. Publish atomically, then verify our records landed.
+    const merged: OwnershipFile = { version: 1, owned: [...byKey.values()] };
+    writeOwnershipAtomic(this.filePath, merged);
+    const after = readOwnership(this.filePath, { strict: true });
+    const afterKeys = new Map(
+      after.owned.map((r) => [OwnershipIndex.keyOf(r.extId, r.scope), r] as const),
+    );
+    for (const [k, rec] of this.dirty) {
+      const cur = afterKeys.get(k);
+      const ok =
+        rec === null
+          ? cur === undefined
+          : cur !== undefined && JSON.stringify(cur) === JSON.stringify(rec);
+      // Clobbered by a concurrent writer between read and rename → re-merge.
+      if (!ok) throw new OwnershipConflictError(this.filePath);
+    }
+    this.data = { version: 1, owned: [...afterKeys.values()] };
+    this.statAtLoad = statFile(this.filePath);
+    this.dirty.clear();
   }
 
   /**

@@ -101,7 +101,77 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-describe('AC1 — two real OS processes installing DIFFERENT extensions both persist', () => {
+/**
+ * ownership-lock harness: two REAL processes run `iterations` rounds. Each round
+ * uses its own ownership.json (`own-<i>.json`) and a peer-to-peer file barrier
+ * (each worker publishes `rdy.<i>.<tag>` and spins until the peer's file exists),
+ * so both load the SAME on-disk snapshot and then race `save()` — the exact
+ * lost-update window. `noLock` injects the internal test seam (a no-op lock
+ * runner via the `lockRunner` load option; deliberately not an env var, ADR-0013).
+ */
+const ITERATIONS = 100;
+const ownershipSrc = path.join(hereDir, 'ownership.ts');
+
+function loopWorkerScript(): string {
+  return `
+const fs = require('node:fs');
+const path = require('node:path');
+const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// Fault injection ("slow disk"): stall each ownership.json publish by 0-8ms so the
+// read -> rename window is wide enough for the lost update to be observable in
+// ordinary runs. Applied in BOTH the locked and unlocked runs; the lock must hold
+// even under this stall. Patched BEFORE ownership.ts is loaded.
+const realRename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  if (String(to).endsWith('.json')) sleepMs(Math.random() * 8);
+  return realRename(from, to);
+};
+const { OwnershipIndex } = require(${JSON.stringify(ownershipSrc)});
+const [dir, tag, peer, iters, noLock] = process.argv.slice(2);
+const spin = () => sleepMs(0.05);
+for (let i = 0; i < Number(iters); i++) {
+  const own = path.join(dir, 'own-' + i + '.json');
+  fs.writeFileSync(path.join(dir, 'rdy.' + i + '.' + tag), '1');
+  const deadline = Date.now() + 30000;
+  while (!fs.existsSync(path.join(dir, 'rdy.' + i + '.' + peer))) {
+    if (Date.now() > deadline) { console.error('barrier timeout round ' + i); process.exit(3); }
+    spin();
+  }
+  const idx = OwnershipIndex.loadFromFile(own, noLock === '1'
+    ? { strict: true, lockRunner: (_p, fn) => fn() }
+    : { strict: true });
+  idx.addEntries('ext-' + tag, 'project', [{ kind: 'file-drop', path: path.join(dir, tag + '-' + i + '.md') }]);
+  idx.save();
+}
+`;
+}
+
+/** Run both loop workers to completion; returns the rounds whose file lost a record. */
+async function lostRounds(noLock: boolean): Promise<{ lost: number[]; codes: number[]; stderr: string[] }> {
+  const dir = path.join(root, 'rounds');
+  fs.mkdirSync(dir, { recursive: true });
+  const script = path.join(root, 'loop-worker.cjs');
+  fs.writeFileSync(script, loopWorkerScript());
+  const run = (tag: string, peer: string): Promise<{ code: number; stderr: string }> =>
+    new Promise((resolve) => {
+      const cp = spawn(tsxBin, [script, dir, tag, peer, String(ITERATIONS), noLock ? '1' : '0'], {
+        cwd: repoRoot,
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let err = '';
+      cp.stderr?.on('data', (d: Buffer) => { err += d.toString(); });
+      cp.on('exit', (c) => resolve({ code: c ?? -1, stderr: err }));
+    });
+  const [a, b] = await Promise.all([run('a', 'b'), run('b', 'a')]);
+  const lost: number[] = [];
+  for (let i = 0; i < ITERATIONS; i++) {
+    const ids = readOwnedIds(path.join(dir, `own-${i}.json`));
+    if (ids.join(',') !== 'ext-a,ext-b') lost.push(i);
+  }
+  return { lost, codes: [a.code, b.code], stderr: [a.stderr, b.stderr] };
+}
+
+describe('ownership-lock AC1 — two real OS processes installing DIFFERENT extensions both persist', () => {
   it('both records land in one ownership.json (exit-code keyed, file-signal barrier)', async () => {
     const oc = await race([
       { ownershipPath: own, extId: 'ext-a', artifactPath: path.join(root, 'a.md'), signal, readyTag: 'a', mode: 'install' },
@@ -113,6 +183,12 @@ describe('AC1 — two real OS processes installing DIFFERENT extensions both per
     expect(readOwnedIds(own)).toEqual(['ext-a', 'ext-b']);
   }, 30000);
 
+  it(`never loses a record over ${ITERATIONS} barrier-synchronized iterations`, async () => {
+    const r = await lostRounds(false);
+    expect(r.codes, r.stderr.join('\n')).toEqual([0, 0]);
+    expect(r.lost, `rounds that lost a record: ${r.lost.join(',')}`).toEqual([]);
+  }, 120000);
+
   it('NEGATIVE CONTROL: the old fixed-`.tmp` publisher loses a record under the SAME race', async () => {
     await race([
       { ownershipPath: own, extId: 'ext-a', artifactPath: path.join(root, 'a.md'), signal, readyTag: 'a', mode: 'install', legacyTmp: true },
@@ -123,6 +199,16 @@ describe('AC1 — two real OS processes installing DIFFERENT extensions both per
     // the harness could not have caught the original bug either.
     expect(ids).not.toEqual(['ext-a', 'ext-b']);
   }, 30000);
+});
+
+describe('ownership-lock AC2 — the SAME harness with the lock disabled goes RED', () => {
+  it(`lock disabled via the internal test seam: at least one of ${ITERATIONS} rounds loses a record`, async () => {
+    const r = await lostRounds(true);
+    expect(r.codes, r.stderr.join('\n')).toEqual([0, 0]); // no crash: the loss is silent
+    // This is the lost update the lock exists to prevent. If this were empty the
+    // AC1 loop above could not distinguish a working lock from no lock at all.
+    expect(r.lost.length).toBeGreaterThan(0);
+  }, 120000);
 });
 
 describe('AC2 — idempotent re-run and effect-then-marker ordering', () => {

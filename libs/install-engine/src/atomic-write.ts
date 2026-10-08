@@ -3,12 +3,19 @@
  * (D-B / substrate DESIGN §2 D3, invariant B-I1).
  *
  * The install/deploy layer writes plain files (`ownership.json`, `extensions.lock`,
- * host file-drops). Correctness of such a write is NOT the lock's job — it is a
+ * host file-drops). Freedom from TORN files is NOT the lock's job — it is a
  * unique per-process temp on the SAME filesystem, written O_EXCL, fsynced, then
  * ONE atomic `rename(2)`. A reader therefore sees either the whole old file or the
- * whole new file, never a torn half. An advisory lock (if a caller adds one) may
- * only bound duplicate work; a concurrent NON-COOPERATIVE writer cannot corrupt
- * the result (ADR-0012 parallel-process invariant; the rename is the mechanism).
+ * whole new file, never a torn half, and a concurrent NON-COOPERATIVE writer cannot
+ * corrupt the result (ADR-0012 parallel-process invariant; the rename is the
+ * mechanism).
+ *
+ * That guarantee does NOT extend to LOST UPDATES on a read-merge-write file: two
+ * writers that read the same snapshot each publish a whole, valid file and the
+ * later rename silently drops the earlier writer's records (its own verify still
+ * passes). For such a merge-union the lock IS load-bearing: `OwnershipIndex.save()`
+ * serializes its read→merge→rename→verify cycle with file-lock.ts
+ * (`ownership.json.lock`). Do not remove that lock as redundant with the rename.
  *
  * History: two fixed-`.tmp` publishers raced (`writeOwnershipAtomic` and
  * `writeLockfileAtomic`); a partial flip would leave one temp racing, so BOTH were

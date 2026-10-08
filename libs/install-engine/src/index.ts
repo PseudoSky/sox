@@ -119,6 +119,8 @@ export {
   OwnershipWriteError,
 } from './ownership.js';
 export type { OwnedEntry, OwnershipRecord, OwnershipFile } from './ownership.js';
+export { withFileLockSync, OwnershipLockTimeoutError } from './file-lock.js';
+export type { FileLockOptions, LockRunner } from './file-lock.js';
 
 // ─── D-B: parallel-safe publish primitive + drift/reconcile ────────────────────
 export { atomicWriteFileSync, withReconciledRetry } from './atomic-write.js';
