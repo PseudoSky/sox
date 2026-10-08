@@ -46,6 +46,10 @@ delete SAFE_GIT_ENV.GIT_DIR;
 delete SAFE_GIT_ENV.GIT_INDEX_FILE;
 delete SAFE_GIT_ENV.GIT_WORK_TREE;
 delete SAFE_GIT_ENV.GIT_COMMON_DIR;
+// A hook's `git -c ...` also leaks via GIT_CONFIG_* (same strip as test-run-guards-hook-index-fail-closed.mjs).
+for (const key of Object.keys(SAFE_GIT_ENV)) {
+  if (/^GIT_CONFIG/.test(key)) delete SAFE_GIT_ENV[key];
+}
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REAL_SCRIPT = path.join(ROOT, 'tools', 'verify-native-abi.mjs');
@@ -105,6 +109,9 @@ function run(scriptCwd) {
   return spawnSync(process.execPath, [path.join(scriptCwd, 'tools', 'verify-native-abi.mjs')], {
     cwd: scriptCwd,
     encoding: 'utf8',
+    // The child runs `git rev-parse` inside the synthetic repo; it must not inherit a hook's
+    // GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE (git prefers them over cwd discovery).
+    env: SAFE_GIT_ENV,
   });
 }
 
