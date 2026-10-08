@@ -6,8 +6,7 @@
  *
  * 1. DRIFT GATE (default mode, `runDriftGate`) — compares registry/index.json
  *    against a walk of the manifests on disk. It is NOT wired into any CI
- *    workflow, deliberately, and its remediation advice ("re-sync with
- *    registry:sync-index") must never be followed to "fix" a red gate.
+ *    workflow, deliberately.
  *    Registry-vs-disk equality is the WRONG invariant: the registry is a
  *    PUBLICATION PIN, not a mirror of the working tree. `resolveSource` below
  *    only emits `npm-package:` locators under SOX_REGISTRY_PUBLISH — a
@@ -65,20 +64,22 @@ import {
   type RegistryEntry,
 } from './lib/published-bytes.js';
 
-// BL-480: default root must mirror build-index.ts's git-common-dir resolution
-// (never `process.cwd()`) — this scanner recomputes `source` via the same
-// `file://${extDir}` derivation, so a divergent default here reintroduces
-// exactly the false-drift/worktree-path corruption BL-480 fixed in
-// build-index.ts, breaking the BL-33 mirror invariant this file's header
-// comment commits to.
+// Default root is the INVOKING checkout's own toplevel (`git rev-parse
+// --show-toplevel`), never `process.cwd()` and never the primary checkout —
+// the same resolution as build-index.ts's CLI tail, so this read-only mirror
+// verifies the registry of the checkout it runs from, which is the one
+// build-index writes and every other release step (embed-registry,
+// release-consumers, the clean-room smoke) reads (761c3f21, BL-480). Running
+// from a subdirectory still resolves to the toplevel; outside a git repo it
+// falls back to cwd.
 function resolveDefaultRoot(): string {
   try {
-    const gitCommonDir = execSync('git rev-parse --git-common-dir', {
+    return execSync('git rev-parse --show-toplevel', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    return path.resolve(gitCommonDir, '..');
   } catch {
+    // Not a git repo (or git unavailable) — fall back to cwd.
     return process.cwd();
   }
 }
@@ -554,10 +555,9 @@ async function runPublishedBytesGate(): Promise<boolean> {
     console.error(
       '  A MISMATCH means registry/index.json pins a checksum that npm does NOT serve for the version in its own\n' +
       '  locator — every install of that row dies with CHECKSUM MISMATCH (fbde8dda-d6ed-4b6b-9cde-9495351a7c35).\n' +
-      '  This is almost always a local rebuild without a version bump: `build-index`/`registry:sync-index`/\n' +
-      '  `release:prepared` re-pin the checksum from LOCAL disk bytes (3df6f848-c5c4-4cf3-92dc-6490fb043fde).\n' +
-      '  Fix by PUBLISHING a new version (see PUBLISHING.md) or by restoring the checksum of the published bytes.\n' +
-      '  Do NOT "fix" it by re-running a generator — that is what broke it.',
+      '  This is almost always a pin taken from LOCAL disk bytes without a version bump (3df6f848-c5c4-4cf3-92dc-6490fb043fde).\n' +
+      '  Fix by publishing a new version through the release flow (PUBLISHING.md), or by re-pinning the\n' +
+      '  already-published row to the bytes npm serves: `node tools/repin-registry-entry.mjs --id <id> --version <version>`.',
     );
     return false;
   }

@@ -28,6 +28,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const CURRENT_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-index.ts');
+const CHECK_SCRIPT = path.join(REPO_ROOT, 'scripts', 'check-registry-sync.ts');
 // Resolve tsx's absolute CLI entry once, from THIS repo's node_modules — the scratch
 // worktree fixtures below are bare mkdtemp git repos with no node_modules of their own,
 // so `npx tsx` invoked with cwd set to one of them would try (and, sandboxed, fail) to
@@ -96,8 +97,14 @@ function scratchMainRepoAndWorktree(id: string): { mainRepo: string; worktree: s
 async function runBuildIndexFromWorktree(
   scriptPath: string,
   worktree: string,
+  scriptArgs: string[] = [],
 ): Promise<{ code: number; out: string }> {
-  const child = spawn(process.execPath, [TSX_CLI, scriptPath], { cwd: worktree });
+  // CI='' so the gate's "CI must verify published bytes" refusal of --no-remote cannot
+  // fire: the check-registry-sync cases below must differ on ROOT, never on network policy.
+  const child = spawn(process.execPath, [TSX_CLI, scriptPath, ...scriptArgs], {
+    cwd: worktree,
+    env: { ...process.env, CI: '' },
+  });
   let out = '';
   child.stdout.on('data', (d: Buffer) => (out += d.toString()));
   child.stderr.on('data', (d: Buffer) => (out += d.toString()));
@@ -161,4 +168,75 @@ describe('[BL-480 / 761c3f21] build-index.ts CLI: default root is the invoking c
     expect(code, out).toBe(0);
     expect(fs.existsSync(path.join(dir, 'registry', 'index.json'))).toBe(true);
   }, 60_000);
+});
+
+// check-registry-sync.ts is the read-only mirror of build-index.ts (BL-33). It must resolve its
+// default root the same way, otherwise a worktree run of the release chain verifies one checkout
+// while build-index writes another. The sentinel: the worktree's registry/index.json is removed
+// (uncommitted), while the primary checkout still has one. A gate rooted at the invoking
+// checkout reports the worktree registry missing; a gate rooted at the primary reads the
+// primary's registry and never says so.
+describe('[BL-480 / 761c3f21] check-registry-sync.ts CLI: default root mirrors build-index.ts', () => {
+  const gateArgs = ['--published-bytes-only', '--no-remote'];
+  const MISSING = 'registry/index.json not found';
+
+  it('761c3f21 AC2: run from a worktree with no explicit root, the gate roots at the worktree, not the primary checkout', async () => {
+    const { mainRepo, worktree } = scratchMainRepoAndWorktree('bl480-check-agent');
+    fs.rmSync(path.join(worktree, 'registry', 'index.json'));
+    expect(fs.existsSync(path.join(mainRepo, 'registry', 'index.json'))).toBe(true);
+
+    const { code, out } = await runBuildIndexFromWorktree(CHECK_SCRIPT, worktree, gateArgs);
+    expect(code, out).toBe(1);
+    expect(out).toContain(MISSING);
+  }, 60_000);
+
+  it('761c3f21 AC2: run from a subdirectory of a worktree, the gate roots at that worktree toplevel', async () => {
+    const { worktree } = scratchMainRepoAndWorktree('bl480-check-agent-sub');
+    fs.rmSync(path.join(worktree, 'registry', 'index.json'));
+
+    const { code, out } = await runBuildIndexFromWorktree(
+      CHECK_SCRIPT,
+      path.join(worktree, 'extensions'),
+      gateArgs,
+    );
+    expect(code, out).toBe(1);
+    expect(out).toContain(MISSING);
+  }, 60_000);
+
+  it('761c3f21 AC2: outside any git repo the gate falls back to process.cwd()', async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bl480-check-nogit-')));
+    tempDirs.push(dir);
+    fs.mkdirSync(path.join(dir, 'registry'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'registry', 'index.json'), '[]\n');
+
+    const { out } = await runBuildIndexFromWorktree(CHECK_SCRIPT, dir, gateArgs);
+    expect(out).not.toContain(MISSING);
+  }, 60_000);
+});
+
+// Runtime advice must name only commands that exist and are safe to follow.
+describe('[761c3f21] release-chain advice names no nonexistent or generator-for-a-published-pin command', () => {
+  const read = (rel: string): string => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+
+  it('761c3f21 AC3: no source in the release chain mentions the nonexistent `registry:sync-index`', () => {
+    for (const rel of [
+      'scripts/check-registry-sync.ts',
+      'scripts/install.ts',
+      'apps/sox/scripts/registry-publish-gate.cjs',
+    ]) {
+      expect(read(rel), rel).not.toContain('registry:sync-index');
+    }
+  });
+
+  it('761c3f21 AC3: the MISMATCH remediation points at the release flow / repin tool, never at a generator', () => {
+    const src = read('scripts/check-registry-sync.ts');
+    expect(src).toContain('tools/repin-registry-entry.mjs');
+    const advice = src.slice(src.indexOf('A MISMATCH means'), src.indexOf('return false;', src.indexOf('A MISMATCH means')));
+    expect(advice).toContain('A MISMATCH means');
+    expect(advice).not.toMatch(/build-index|sync-index|release:prepared/);
+  });
+
+  it('761c3f21 AC3: the unresolvable-entry warning in install.ts no longer tells users to run build-index', () => {
+    expect(read('scripts/install.ts')).not.toContain("Run 'pnpm run build-index'");
+  });
 });

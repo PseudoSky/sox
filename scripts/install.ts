@@ -515,7 +515,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
           console.warn(
             `install: WARNING skipping "${entry.id}" @ "${entry.version ?? 'latest'}" — ` +
               `not found in registry/index.json and not found locally. ` +
-              `Run 'pnpm run build-index' to rebuild the registry, or remove this entry from the config.`,
+              `Check the id and version, or remove this entry from the config.`,
           );
           continue;
         }
