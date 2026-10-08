@@ -6,4 +6,8 @@
 - The author of a test never approves it; an implementer never edits a test it did not author.
 - Task routing and role holders: the routing block and `roles.md`. Gates: the gates block.
 - Obtain a change's class, rigor, and playbook: `/workspace-standards run testing`.
+
+{{CAPABILITY_ROW}}
+
+{{CLASS_TABLE}}
 <!-- workspace-standards:testing:end -->
