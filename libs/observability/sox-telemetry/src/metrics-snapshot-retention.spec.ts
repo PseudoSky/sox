@@ -35,6 +35,11 @@ import { DurableJsonlSink } from './sink.js';
 /** The real, production data root — no test may ever add a file here. */
 const REAL_ROOT = path.join(os.homedir(), '.adhd', 'sox-ecosystem');
 
+/** Service directories this spec's runtime cases create (`<root>/<service>/logs`). */
+const OWN_SERVICES: readonly string[] = ['dualm', 'over', 'both'];
+/** Component filename prefixes this spec's sink cases write (`<component>-<date>.jsonl`). */
+const OWN_COMPONENT_PREFIXES: readonly string[] = ['dualm.', 'over.', 'both.', 'floor', 'cap3-'];
+
 const dirs: string[] = [];
 let realRootBefore: string[] = [];
 
@@ -76,6 +81,25 @@ function listFilesRecursive(root: string): string[] {
   return out.sort();
 }
 
+/**
+ * 0fdaaef6 AC-guard — scoped leak check. Returns the files under `root` that
+ * (a) did not exist in `before` AND (b) carry one of THIS spec's own service
+ * dirs or component prefixes. Neighbouring workers legitimately rotate/prune
+ * (delete) or add unrelated files (e.g. `sox-tests.*`) in the real root during
+ * parallel `nx run-many -t test`; neither is a leak from this spec, so only an
+ * added, spec-owned artifact counts.
+ */
+function findOwnLeaks(root: string, before: readonly string[]): string[] {
+  const seen = new Set(before);
+  return listFilesRecursive(root).filter((p) => {
+    if (seen.has(p)) return false;
+    const rel = path.relative(root, p);
+    const first = rel.split(path.sep)[0] ?? '';
+    const base = path.basename(p);
+    return OWN_SERVICES.includes(first) || OWN_COMPONENT_PREFIXES.some((pre) => base.startsWith(pre));
+  });
+}
+
 /** Seed `offsets.length` correctly-anchored `<component>-<date>.jsonl` files.
  *  Names ascend with `offset`, so name order == chronological order; mtimes are
  *  set distinctly too, so "newest" is unambiguous either way (acceptance (3)). */
@@ -108,7 +132,9 @@ afterEach(() => {
   _resetTelemetryForTest();
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
   // Acceptance (6): nothing was written or pruned outside the resolved root.
-  expect(listFilesRecursive(REAL_ROOT)).toEqual(realRootBefore);
+  // Scoped: neighbouring workers may rotate/prune files here concurrently, so
+  // only an ADDED artifact owned by this spec is a leak (0fdaaef6 AC-guard).
+  expect(findOwnLeaks(REAL_ROOT, realRootBefore)).toEqual([]);
 });
 
 describe('S2 — two-tier snapshot retention cap (0fdaaef6…)', () => {
@@ -264,5 +290,38 @@ describe('S2 — two-tier snapshot retention cap (0fdaaef6…)', () => {
     // The pre-S2 contract: an explicit `maxFiles` governs both components.
     expect(snapFiles.length).toBe(5);
     expect(eventFiles.length).toBe(5);
+  });
+});
+
+describe('0fdaaef6 AC-guard — real-root leak guard is scoped to this spec', () => {
+  it('0fdaaef6 AC-guard AC1: flags a file this spec planted under a fake root (negative control)', () => {
+    const root = makeDir();
+    const before = listFilesRecursive(root);
+    seed(path.join(root, 'dualm', 'logs'), 'dualm.live-service.metrics-snapshot', [0]);
+    seed(root, 'cap3', [1]);
+    const leaks = findOwnLeaks(root, before);
+    expect(leaks.map((p) => path.relative(root, p)).sort()).toEqual([
+      path.join('cap3-2020-01-02.jsonl'),
+      path.join('dualm', 'logs', 'dualm.live-service.metrics-snapshot-2020-01-01.jsonl'),
+    ]);
+  });
+
+  it('0fdaaef6 AC-guard AC1b: a spec-owned file that already existed before is not a leak', () => {
+    const root = makeDir();
+    seed(path.join(root, 'over', 'logs'), 'over.live-service', [0]);
+    expect(findOwnLeaks(root, listFilesRecursive(root))).toEqual([]);
+  });
+
+  it('0fdaaef6 AC-guard AC2: deletion/rotation and unrelated additions by neighbours are not leaks (positive control)', () => {
+    const root = makeDir();
+    seed(root, 'sox-tests.test', [0, 1]);
+    const before = listFilesRecursive(root);
+    fs.rmSync(before[0]!); // neighbour's sink pruned a file
+    seed(root, 'sox-tests.test', [5]); // neighbour wrote a new, unrelated file
+    expect(findOwnLeaks(root, before)).toEqual([]);
+  });
+
+  it('0fdaaef6 AC-guard: a missing root yields no leaks', () => {
+    expect(findOwnLeaks(path.join(makeDir(), 'absent'), [])).toEqual([]);
   });
 });
