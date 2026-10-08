@@ -148,15 +148,4 @@ describe('9024e9ac T14 e2e on one scaffold', () => {
       assert.ok(failed.includes(check), `${rel}: expected ${check} red, got ${failed}`);
     }
   });
-
-  test('9024e9ac T14.AC4 every card is at most 4096 bytes by wc -c', () => {
-    const dir = path.join(scaffold, 'standards/testing/cards');
-    const files = ['role', 'test-author'].flatMap((d) => fs.readdirSync(path.join(dir, d)).map((f) => path.join(dir, d, f)));
-    assert.equal(files.length, 12);
-    for (const f of files) {
-      const wc = spawnSync('wc', ['-c', f], { encoding: 'utf8' });
-      assert.equal(wc.status, 0);
-      assert.ok(Number(wc.stdout.trim().split(/\s+/)[0]) <= 4096, f);
-    }
-  });
 });

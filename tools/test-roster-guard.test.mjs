@@ -4,20 +4,18 @@
  *
  * Unit tests inject a fake `git` and an in-memory fs, so nothing spawns a process. The AC2 red-proof
  * is driven from a committed snapshot of 27be064c (tools/fixtures/test-roster-guard/) and never
- * depends on repo history. One real-git check re-confirms it against the sha itself and SKIPS with a
- * printed reason when the sha is not in this clone.
+ * depends on repo history. The real-process check lives in test-roster-guard.e2e.test.mjs.
  *
  * Run: node tools/test-roster-guard.test.mjs
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DISPATCHER_REL, AGENTS_MD_REL, GuardError, parseDispatcherRoutes, parseAgentsMdTable,
-  makeSource, checkRoster, formatReport, main, realGit,
+  makeSource, checkRoster, formatReport, main,
 } from './test-roster-guard.mjs';
 
 const TOOLS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -234,22 +232,8 @@ test('3fe895f3 T10.AC1: an unexpected internal error prints a stack only when GU
   assert.match(run({ GUARD_DEBUG: '1' }).err, /\n\s+at /);
 });
 
-// The ONE real-git check. The pinned-snapshot test above is the red-proof; this re-confirms against
-// the sha itself and skips (with a printed reason) when the sha is not in this clone.
-test('3fe895f3 T10.AC2 (real git): the guard is red on the real 27be064c, matching the snapshot', (t) => {
-  try {
-    execFileSync('git', ['cat-file', '-e', `${SNAPSHOT_REF}^{commit}`], { cwd: TOOLS_DIR, stdio: 'pipe' });
-  } catch (e) {
-    const reason = `commit ${SNAPSHOT_REF} not present in this clone (git cat-file -e failed: ${String(e.stderr ?? e.message).trim() || 'no stderr'}); the pinned snapshot test is the AC2 red-proof`;
-    console.log(`SKIP: ${reason}`);
-    t.skip(reason);
-    return;
-  }
-  const out = [];
-  const err = [];
-  const code = main(['--ref', SNAPSHOT_REF, '--root', path.resolve(TOOLS_DIR, '..')], { out: (m) => out.push(m), err: (m) => err.push(m) }, realGit);
-  const msg = `stdout:\n${out.join('\n')}\nstderr:\n${err.join('\n')}`;
-  assert.equal(code, 1, msg);
-  const unresolved = [...out.join('\n').matchAll(/^UNRESOLVED: (\S+) /gm)].map((m) => m[1]).sort();
-  assert.deepEqual(unresolved, EXPECTED_RED, msg);
+test('3fe895f3 T10.AC4: the suite is registered as an nx target that the default lint run depends on', () => {
+  const project = JSON.parse(fs.readFileSync(path.join(TOOLS_DIR, '..', 'project.json'), 'utf8'));
+  assert.equal(project.targets['roster-guard-test']?.options?.command, 'node tools/test-roster-guard.test.mjs');
+  assert.ok(project.targets.lint.dependsOn.includes('roster-guard-test'), 'lint must depend on roster-guard-test');
 });
