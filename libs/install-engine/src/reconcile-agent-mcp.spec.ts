@@ -152,7 +152,7 @@ const opts = (over: Partial<Parameters<typeof reconcileAgentMcpCatalog>[1]> = {}
 });
 
 describe('reconcileAgentMcpCatalog (bug eb1ab168)', () => {
-  it('rewrites an anthropic row from local source; leaves openai rows; reports manifestless rows', async () => {
+  it('rewrites a drifted row from local source; reports manifestless rows (default: every row with a local manifest)', async () => {
     const summary = await reconcileAgentMcpCatalog(workspace, opts());
 
     expect(summary.changed).toBe(1);
@@ -166,8 +166,9 @@ describe('reconcileAgentMcpCatalog (bug eb1ab168)', () => {
     expect(researcher.after?.secret).toBe('ADHD_AGENT_DEEPSEEK_SECRET');
     expect(researcher.after?.type).not.toBe('anthropic');
 
+    // The anthropic-only default is retired: a row is judged by its local manifest, not its provider type.
     const openai = summary.rows.find((r) => r.name === 'researcher-deepseek')!;
-    expect(openai.outcome).toBe('skipped: non-anthropic');
+    expect(openai.outcome).toBe('skipped: no-local-manifest');
 
     const ghost = summary.rows.find((r) => r.name === 'ghost-agent')!;
     expect(ghost.outcome).toBe('skipped: no-local-manifest');
@@ -192,10 +193,12 @@ describe('reconcileAgentMcpCatalog (bug eb1ab168)', () => {
     expect(summary.rows.find((r) => r.name === 'researcher')!.outcome).toBe('rewritten');
   });
 
-  it('dry-run mutates nothing and plans the rewrite', async () => {
+  it('dry-run mutates nothing and reports the drift', async () => {
     const summary = await reconcileAgentMcpCatalog(workspace, opts({ dryRun: true }));
-    expect(summary.changed).toBe(0);
-    expect(summary.rows.find((r) => r.name === 'researcher')!.outcome).toBe('planned');
+    expect(summary.changed).toBe(1); // would change; nothing is written
+    const drift = summary.rows.find((r) => r.name === 'researcher')!;
+    expect(drift.outcome).toBe('drift');
+    expect(drift.changedFields).toContain('provider');
     expect(client.upserts).toHaveLength(0);
     expect((await client.read('researcher'))!.provider).toEqual({
       type: 'anthropic',

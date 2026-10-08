@@ -1,0 +1,15 @@
+---
+"@adhd/sox-host-registry": minor
+"@adhd/sox-install-engine": minor
+"@adhd/sox-manifest": minor
+---
+
+agent-mcp renderer fidelity (ticket 7ef0ee2c; `docs/spec/agent-mcp-renderer-fidelity.md`): the catalog row now carries what the agent IR actually declares instead of a bare `{provider, mcpServers: {}, permissions: {}}`.
+
+**host-registry** — the agent-mcp renderer emits `nativeTooling.{fs,shell,dispatch,hitl}` explicitly (least privilege: a built-in the IR `tools` omit is disabled; IR `permission` read/edit/write/glob/grep rules become server-qualified `fs.<tool>` gate rules; `task` -> `dispatch`/`allowedAgents`; `question` -> `hitl`), selects `mcpServers` from the IR `tools` via `render.agent-mcp.toolMap` (a stdio entry that launches agent-mcp is dropped; literal secrets fail the render; `~/` and `${HOME}` expand), replaces the substring provider heuristic with a typed `deepseek|openai|anthropic` profile table (unknown vendor throws, `provider: null` = unbound row, `claudecli` gets `allowedBuiltinTools`, `temperature` is emitted, env values must be `ADHD_AGENT_` pointers), and returns an `AgentRenderReport` (`lost[]`, `warnings`) alongside the payload. **Behavior change:** a bash `permission` map with command-pattern rules cannot be enforced (the gate matches tool names only, ADR-0008 D5), so shell is disabled fail-closed unless the manifest sets `render.agent-mcp.nativeTooling.shell` or `acceptLoss: true`. New exports: `AgentRenderError`, `PROVIDER_PROFILES`, `CatalogProvider`, `CatalogNativeTooling`, `AgentRenderReport`, `AgentRenderLoss`.
+
+**install-engine** — one agent-mcp server per command (`AgentMcpSession` / `withAgentMcpSession`; previously one spawn per tool call), `fullDefinition` reads, `catalogUpsert` returns `{outcome: created|updated|unchanged, row, nulledMcpKeys}` and makes **no write call** when the stored managed fields already equal the render, nulls owned `mcpServers` keys the render no longer carries (and the welded `agent` launcher on pre-existing rows), and the ledger records `ownedMcpKeys`/`managedFields`/`rowDigest`. `reconcile-agent-mcp` compares every managed field of every row with a local manifest (the anthropic-only default is retired) from a single `agent_list fullDefinition:true`; `--dry-run` lists the changed fields and loss report, apply over a lossy row needs `--accept-loss`, `--include-missing` creates absent local agents, pre-apply row snapshots are written, and the resolved catalog DB path is printed first. New exports: `renderAgentCatalogRow`, `renderAgentMcpRow`, `listLocalAgentMcpExtensions`, `describeAgentMcpCatalog`.
+
+**manifest** — `validate` checks `render.agent-mcp` against a closed key set: provider shape (per-type keys, `ADHD_AGENT_` env pointers, temperature in [0,1]), native-tooling root hints (absolute fs/shell roots rejected), `mcpServers` hygiene (no literal secrets, no absolute host paths, no welded catalog DB env, no stdio entry that launches agent-mcp).
+
+The 21 `extensions/agents/*` manifests are migrated to the new `render.agent-mcp` shape (portable launch configs, `toolMap`, no welded `agent` server or absolute `/Users/` path).

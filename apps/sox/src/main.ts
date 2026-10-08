@@ -144,6 +144,7 @@ import {
   parseArgs,
   readInstallRegistry,
   reconcileAgentMcpCatalog,
+  describeAgentMcpCatalog,
   registerUserMcpServer,
   removeInstallRecord,
   resolveFromRegistry,
@@ -601,10 +602,14 @@ Extension management:
                             --host=<host>  host for the --force reconcile (default: claude)
   uninstall          Remove an extension
                      Flags: --id=<ext-id>  --scope=<scope>
-  reconcile-agent-mcp  Heal the agent-mcp catalog: re-render + re-upsert each
-                       catalog row from repo source (agent-catalog rows are not
-                       lockfile consumers, so 'upgrade --all' cannot reach them)
-                     Flags: --dry-run  --json  --all (include non-anthropic rows)
+  reconcile-agent-mcp  Diff + heal the agent-mcp catalog: re-render each catalog
+                       row from repo source and re-upsert drifted ones (agent-catalog
+                       rows are not lockfile consumers, so 'upgrade --all' cannot
+                       reach them). One agent-mcp server serves the whole pass.
+                     Flags: --dry-run  --json  --accept-loss (write rows whose IR
+                            permission rules cannot be represented)
+                            --include-missing (also create local agents absent
+                            from the catalog)  --only-anthropic (legacy filter)
   enable             Enable a disabled extension
                      Flags: --id=<ext-id>  --scope=<scope>
   disable            Disable an extension
@@ -1513,11 +1518,25 @@ Options:
       } else if (r.dryRun === true) {
         process.stdout.write(`${CLI} install: would place  ${r.host}/${r.scope}  ${r.target}\n`);
       } else if (r.applied) {
-        process.stdout.write(`${CLI} install: placed   ${r.host}/${r.scope}  ${r.target}\n`);
+        const outcome = r.catalogOutcome !== undefined ? ` (${r.catalogOutcome})` : '';
+        process.stdout.write(`${CLI} install: placed   ${r.host}/${r.scope}  ${r.target}${outcome}\n`);
         anyApplied = true;
       } else {
         process.stdout.write(`${CLI} install: up-to-date  ${r.host}/${r.scope}  ${r.target}\n`);
         anyApplied = true;
+      }
+    }
+
+    // agent-catalog: surface the render report (unbound provider, dropped permission
+    // rules, disabled shell) — a lossy row is never silent.
+    for (const r of results) {
+      const rep = r.renderReport;
+      if (rep === undefined) continue;
+      if (rep.unbound) process.stdout.write(`${CLI} install: note  ${r.target} is unbound (no provider)\n`);
+      for (const w of rep.warnings) process.stdout.write(`${CLI} install: warn  ${r.target}: ${w}\n`);
+      const dropped = rep.lost.filter((l) => l.disposition === 'dropped');
+      if (dropped.length > 0) {
+        process.stdout.write(`${CLI} install: lost  ${r.target}: ${dropped.length} IR permission rule(s) not representable in the catalog\n`);
       }
     }
 
@@ -3365,52 +3384,73 @@ interface ConsumerOutcome {
 }
 
 /**
- * cmdReconcileAgentMcp — one-shot heal of the agent-mcp catalog (bug eb1ab168).
+ * cmdReconcileAgentMcp — one-shot diff + heal of the agent-mcp catalog.
  *
  * `upgrade --all` cannot fix these rows: the agent-catalog install path writes no
  * lockfile entry (install.ts gates lockfile sync to mcp-server|service) and the
- * row lives outside the ledger's file targets, so cmdUpgrade's consumer pass never
- * sees it. This verb re-renders each existing catalog row from the current repo
- * source through the same declarativeInstall path (idempotent upsert).
+ * row lives outside the ledger's file targets. This verb re-renders each catalog
+ * row from the current repo source through the same declarativeInstall path.
  *
- *   soxe reconcile-agent-mcp [--dry-run] [--json] [--all]
+ *   soxe reconcile-agent-mcp [--dry-run] [--json] [--accept-loss]
+ *                            [--include-missing] [--only-anthropic]
  *
- * Default policy: only rows whose provider.type === 'anthropic' (the provably
- * wrong set) are touched. `--all` processes every row, including already-correct
- * openai rows. Rows with no local manifest are reported, never deleted.
+ * Default policy: every row with a local manifest is compared on ALL managed
+ * fields; `--dry-run` lists the changed fields + loss report and mutates nothing.
+ * Applying over a lossy row needs `--accept-loss`. `--include-missing` also
+ * creates rows for local agents absent from the catalog. Rows with no local
+ * manifest are reported, never deleted. The resolved catalog DB path is printed
+ * BEFORE any mutation (R4/F11).
  *
  * Exit: non-zero when any row failed.
  */
 async function cmdReconcileAgentMcp(flags: Record<string, string>): Promise<void> {
-  const dryRun = flags['dry-run'] === 'true' || flags['dry-run'] === '';
-  const json = flags['json'] === 'true' || flags['json'] === '';
-  const all = flags['all'] === 'true' || flags['all'] === '';
+  const flag = (k: string): boolean => flags[k] === 'true' || flags[k] === '';
+  const dryRun = flag('dry-run');
+  const json = flag('json');
   const scope = (flags['scope'] ?? 'project') as DataScope;
   const root = process.cwd();
   const scopeRoot = dataRoot(scope, root);
 
+  let catalog: { databasePath: string; source: string } | undefined;
+  try {
+    catalog = describeAgentMcpCatalog();
+  } catch {
+    catalog = undefined;
+  }
+  if (catalog !== undefined && !json) {
+    process.stdout.write(`${CLI} reconcile-agent-mcp: catalog ${catalog.databasePath} (resolved via ${catalog.source})\n`);
+  }
+
   const summary = await reconcileAgentMcpCatalog(root, {
     dryRun,
-    onlyAnthropic: !all,
+    onlyAnthropic: flag('only-anthropic'),
+    acceptLoss: flag('accept-loss'),
+    includeMissing: flag('include-missing'),
     scope,
     scopeRoot,
     workspaceRoot: root,
   });
 
   if (json) {
-    process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ catalog, ...summary }, null, 2) + '\n');
   } else {
     const mode = dryRun ? ' (dry-run)' : '';
     process.stdout.write(
       `${CLI} reconcile-agent-mcp${mode}: ${summary.considered} row(s) — ` +
-        `rewritten=${summary.changed} unchanged=${summary.unchanged} skipped=${summary.skipped} failed=${summary.failed}\n`,
+        `changed=${summary.changed} unchanged=${summary.unchanged} skipped=${summary.skipped} failed=${summary.failed}\n`,
     );
     for (const r of summary.rows) {
-      const from = r.before === null ? '∅' : `${r.before.type ?? '?'}${r.before.model !== undefined ? `:${r.before.model}` : ''}`;
-      const to = r.after === null ? '∅' : `${r.after.type ?? '?'}${r.after.model !== undefined ? `:${r.after.model}` : r.after.secret !== undefined ? `:${r.after.secret}` : ''}`;
+      const fields = r.changedFields !== undefined && r.changedFields.length > 0 ? ` [${r.changedFields.join(', ')}]` : '';
       const detail = r.detail !== undefined ? ` — ${r.detail}` : '';
-      process.stdout.write(`  ${r.name}: ${r.outcome} (${from} → ${to})${detail}\n`);
+      process.stdout.write(`  ${r.name}: ${r.outcome}${fields}${detail}\n`);
+      if (r.unbound === true) process.stdout.write(`    note: unbound row (no provider)\n`);
+      for (const w of r.warnings ?? []) process.stdout.write(`    warn: ${w}\n`);
+      const dropped = (r.lost ?? []).filter((l) => l.disposition === 'dropped');
+      if (dropped.length > 0) {
+        process.stdout.write(`    lost: ${dropped.length} IR permission rule(s) not representable (e.g. ${dropped[0]?.source} ${JSON.stringify(dropped[0]?.pattern)}=${dropped[0]?.action})\n`);
+      }
     }
+    if (summary.snapshotDir !== undefined) process.stdout.write(`  pre-apply row snapshots: ${summary.snapshotDir}\n`);
   }
 
   if (summary.failed > 0) process.exit(1);

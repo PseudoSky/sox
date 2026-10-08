@@ -46,6 +46,8 @@ export type {
   AgentOverride,
   AgentToolRef,
   RenderedArtifact,
+  AgentRenderReport,
+  AgentRenderLoss,
   HostRenderer,
 } from './internal.js';
 export { expandHome, existsIn } from './internal.js';
@@ -112,5 +114,18 @@ export function resolveWorkspaceRoot(workspaceRoot?: string): string {
 export { claudeHost } from './claude.js';
 export { codexHost } from './codex.js';
 export { opencodeHost } from './opencode.js';
-export { agentMcpHost, defaultCatalogDbPath, resolveAgentMcpEnv } from './agent-mcp.js';
-export type { AgentCatalogPayload, AgentMcpEnv } from './agent-mcp.js';
+export {
+  agentMcpHost,
+  defaultCatalogDbPath,
+  resolveAgentMcpEnv,
+  AgentProviderUnderivableError,
+  AgentRenderError,
+  PROVIDER_PROFILES,
+} from './agent-mcp.js';
+export type {
+  AgentCatalogPayload,
+  AgentMcpEnv,
+  CatalogProvider,
+  CatalogNativeTooling,
+  CatalogNativeMember,
+} from './agent-mcp.js';

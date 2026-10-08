@@ -57,12 +57,17 @@ export {
   configEnvKey,
   findManifestForSource,
   readAgentRenderInputs,
+  renderAgentCatalogPayload,
+  renderAgentCatalogRow,
+  renderAgentMcpRow,
+  listLocalAgentMcpExtensions,
+  describeAgentMcpCatalog,
   resolveRegistryIndexForRoot,
   resolveDesiredPin,
   mergeLockEntry,
 } from './install.js';
 export type { DesiredPin } from './install.js';
-export type { InstallDescriptor, DeclarativeInstallResult, ConfigSchemaProperty, RequiredConfigSeed, AgentRenderInputs } from './install.js';
+export type { InstallDescriptor, DeclarativeInstallResult, ConfigSchemaProperty, RequiredConfigSeed, AgentRenderInputs, AgentRenderReportLocal } from './install.js';
 
 // ─── Re-export verify-integrity (ADR-0003 is-this-current primitive) ──────────
 
@@ -131,6 +136,29 @@ export type { ProjectSyncResult, SyncMcpOptions } from './mcp-project-sync.js';
 // ─── mcp-trust auto-management: Claude's per-project enabledMcpjsonServers ─────
 export { syncMcpTrustToProjects, reverseMcpTrustFromProjects } from './mcp-trust-sync.js';
 export type { TrustSyncResult, SyncTrustOptions } from './mcp-trust-sync.js';
+
+// ─── agent-mcp catalog client: one server per command, managed-field upsert ───
+export {
+  AgentMcpSession,
+  withAgentMcpSession,
+  currentAgentMcpSession,
+  resolveAgentMcpLaunch,
+  catalogList,
+  catalogRead,
+  catalogUpsert,
+  catalogDelete,
+  changedManagedFields,
+  staleMcpKeys,
+  digestOf,
+  canonicalJson,
+  LEGACY_SOX_MCP_KEYS,
+} from './agent-mcp-client.js';
+export type {
+  CatalogAgentDefinition,
+  CatalogUpsertOptions,
+  CatalogUpsertOutcome,
+  CatalogUpsertResult,
+} from './agent-mcp-client.js';
 
 // ─── bug eb1ab168: one-shot agent-mcp catalog reconcile ───────────────────────
 export { reconcileAgentMcpCatalog, defaultReconcileClient } from './reconcile-agent-mcp.js';

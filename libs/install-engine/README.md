@@ -613,6 +613,39 @@ parseArgs(['-s', 'user']);
 // { scope: 'user' }
 ```
 
+## agent-mcp catalog rows
+
+`declarativeInstall` with `--host=agent-mcp` upserts a catalog **row** over the agent-mcp MCP surface
+(`agent_read` / `agent_create` / `agent_update`), never by writing `agents.db`. Spec:
+[`docs/spec/agent-mcp-renderer-fidelity.md`](../../docs/spec/agent-mcp-renderer-fidelity.md).
+
+```typescript
+import { renderAgentMcpRow, withAgentMcpSession, reconcileAgentMcpCatalog } from '@adhd/sox-install-engine';
+
+// Pure render — the exact agent_create payload plus the loss/warning report. Touches no store.
+const { payload, report } = renderAgentMcpRow('typescript', 'extensions/agents/typescript');
+payload.nativeTooling; // { fs, shell, dispatch, hitl } — always explicit
+report.lost;           // IR permission rules the catalog cannot represent (bash command patterns, ...)
+
+// One agent-mcp server for everything inside (spawned lazily, always stopped).
+await withAgentMcpSession(async () => {
+  const summary = await reconcileAgentMcpCatalog(process.cwd(), {
+    dryRun: true,  // per row: changed managed fields + loss report; nothing is written
+    scope: 'project', scopeRoot: '.sox', workspaceRoot: process.cwd(),
+  });
+});
+```
+
+- **Session**: every catalog call inside `withAgentMcpSession` reuses one server (outside it each call spawns its
+  own). Point `SOX_AGENT_MCP_BIN` at a local build (`node /path/to/agent-mcp/dist/src/index.js`) to skip `npx`.
+- **Unchanged is free**: `catalogUpsert` compares the stored managed fields with the render and makes no write call
+  (outcome `unchanged`) when they match; otherwise it sends one `agent_update` that also nulls owned `mcpServers`
+  keys the render no longer carries (the ledger records `ownedMcpKeys`, `managedFields`, `rowDigest`).
+- **Lossy rows**: a row whose render dropped IR permission rules (bash command patterns) is only written by
+  `reconcile` with `acceptLoss` (CLI `--accept-loss`); otherwise it is `skipped: lossy`. `--include-missing`
+  also creates rows for local agents absent from the catalog; pre-apply row snapshots go to
+  `tmp/agent-mcp-reconcile/<timestamp>/`.
+
 ## Invariants / gotchas
 
 - **Identity is content-addressed, not version-addressed.** `id` + the sha256

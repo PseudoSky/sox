@@ -1613,6 +1613,7 @@ import { atomicWriteFileSync } from './atomic-write.js';
 // at the agent-catalog branch (see DECISION below) and its client defaults to the
 // MCP-over-stdio implementation. A caller (e.g. reconcile-agent-mcp) may inject one.
 import type { AgentCatalogClient, AgentCatalogPayload } from './capabilities/agent-catalog.js';
+import type { CatalogUpsertOutcome } from './agent-mcp-client.js';
 
 // ─── Host-registry: loaded at runtime from dist to avoid cross-lib rootDir ──
 // [ref:host-keyed-target]: all literal host paths live in libs/host-registry.
@@ -1636,7 +1637,25 @@ export interface AgentRenderLocal {
    * host's own render lacks both (bug eb1ab168). Mirrors HostRenderer.providerFrom.
    */
   providerFrom?: string;
-  render(ir: unknown, prose: string, overrides?: unknown): { kind: string; content?: string; value?: unknown };
+  render(
+    ir: unknown,
+    prose: string,
+    overrides?: unknown,
+  ): { kind: string; content?: string; value?: unknown; report?: AgentRenderReportLocal };
+}
+
+/** Local mirror of host-registry's `AgentRenderReport` (lazy-require boundary). */
+export interface AgentRenderReportLocal {
+  lost: Array<{
+    source: string;
+    pattern: string;
+    action: string;
+    reason: string;
+    disposition: 'dropped' | 'covered-by-override' | 'accepted';
+  }>;
+  warnings: string[];
+  unbound: boolean;
+  shellDisabledByLoss: boolean;
 }
 
 /** Minimal local shape for a host module (mirrors HostModule in host-registry). */
@@ -1725,11 +1744,24 @@ export class AgentNotRenderableError extends Error {
  * the SAME renderability decision apply will and cannot promise a rewrite apply
  * would reject (the finding: the dry-run hid the throw because it never rendered).
  */
-function renderAgentCatalogPayload(
+export function renderAgentCatalogPayload(
   descriptor: InstallDescriptor,
   hostName: string,
   render: AgentRenderLocal,
 ): AgentCatalogPayload {
+  return renderAgentCatalogRow(descriptor, hostName, render).payload;
+}
+
+/**
+ * {@link renderAgentCatalogPayload} plus the renderer's loss/warning report —
+ * the pure, store-free render reconcile `--dry-run` and the payload-bundle proof
+ * both drive (no catalog spawn, no ledger, no ownership write).
+ */
+export function renderAgentCatalogRow(
+  descriptor: InstallDescriptor,
+  hostName: string,
+  render: AgentRenderLocal,
+): { payload: AgentCatalogPayload; report: AgentRenderReportLocal } {
   if (descriptor.type !== 'agent') {
     throw new Error(
       `[declarative-install] agent-catalog is only defined for type=agent (got type=${descriptor.type} for ext=${descriptor.ext})`,
@@ -1761,7 +1793,69 @@ function renderAgentCatalogPayload(
       `[declarative-install] agent-catalog host '${hostName}' renderer must return a config-value (got kind=${rendered.kind})`,
     );
   }
-  return rendered.value as AgentCatalogPayload;
+  return {
+    payload: rendered.value as AgentCatalogPayload,
+    report: rendered.report ?? { lost: [], warnings: [], unbound: false, shellDisabledByLoss: false },
+  };
+}
+
+/**
+ * Render one local agent extension for the agent-mcp host, store-free: loads the
+ * host-registry renderer, applies the same `providerFrom` inheritance and
+ * renderability gate as a real install, and returns the exact `agent_create`
+ * payload plus the loss/warning report. No catalog spawn, no ledger, no write.
+ * Throws {@link AgentNotRenderableError} for a raw-passthrough agent.
+ */
+export function renderAgentMcpRow(
+  ext: string,
+  srcPath: string,
+): { payload: AgentCatalogPayload; report: AgentRenderReportLocal } {
+  const hostMod = loadHostRegistry().getHost('agent-mcp');
+  if (hostMod.render === undefined) {
+    throw new Error(`[declarative-install] host 'agent-mcp' exposes no renderer`);
+  }
+  return renderAgentCatalogRow({ ext, type: 'agent', hosts: ['agent-mcp'], srcPath }, 'agent-mcp', hostMod.render);
+}
+
+/**
+ * Local agent extensions (`extensions/agents/*`) that list `agent-mcp` in
+ * `install.hosts`, as `{ ext, srcPath, rowName }` — `rowName` is the catalog row
+ * name the renderer will use (`agent.name`, falling back to the extension id).
+ */
+export function listLocalAgentMcpExtensions(root: string): Array<{ ext: string; srcPath: string; rowName: string }> {
+  const dir = path.join(root, 'extensions', 'agents');
+  if (!fs.existsSync(dir)) return [];
+  const out: Array<{ ext: string; srcPath: string; rowName: string }> = [];
+  for (const entry of fs.readdirSync(dir).sort()) {
+    const srcPath = path.join(dir, entry);
+    const manifestPath = path.join(srcPath, 'extension.json');
+    if (!fs.existsSync(manifestPath)) continue;
+    try {
+      const m = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+        id?: string;
+        install?: { hosts?: unknown };
+        agent?: { name?: string };
+        render?: Record<string, { name?: string }>;
+      };
+      const hosts = m.install?.hosts;
+      if (!Array.isArray(hosts) || !hosts.includes('agent-mcp')) continue;
+      const ext = m.id ?? entry;
+      out.push({ ext, srcPath, rowName: m.render?.['agent-mcp']?.name ?? m.agent?.name ?? ext });
+    } catch {
+      // malformed manifest — skipped (validate-manifests reports it)
+    }
+  }
+  return out;
+}
+
+/** Where the agent-mcp catalog resolves to (R4/F11: print before mutating). */
+export function describeAgentMcpCatalog(): { databasePath: string; source: string } {
+  const hr = require('@adhd/sox-host-registry') as {
+    resolveAgentMcpEnv(): { databasePath?: string; source: string };
+    defaultCatalogDbPath(): string;
+  };
+  const env = hr.resolveAgentMcpEnv();
+  return { databasePath: env.databasePath ?? hr.defaultCatalogDbPath(), source: env.source };
 }
 
 /**
@@ -1840,6 +1934,16 @@ export interface DeclarativeInstallResult {
    * the result so the caller can see the lockfile is stale (never silent).
    */
   lockSyncWarning?: string;
+  /**
+   * agent-catalog only: what the upsert did to the catalog row. `unchanged` means
+   * the stored managed fields already equalled the render (no write call, no
+   * version bump — AC16).
+   */
+  catalogOutcome?: CatalogUpsertOutcome;
+  /** agent-catalog only: mcpServers keys nulled on the row (stale / welded agent-mcp launchers). */
+  nulledMcpKeys?: string[];
+  /** agent-catalog only: the renderer's loss/warning report (bash patterns, unbound provider, ...). */
+  renderReport?: AgentRenderReportLocal;
 }
 
 /**
@@ -2091,7 +2195,7 @@ export async function declarativeInstall(
             `[declarative-install] host '${hostName}' declares capability agent-catalog but exposes no renderer`,
           );
         }
-        renderAgentCatalogPayload(descriptor, hostName, hostMod.render);
+        const planned = renderAgentCatalogRow(descriptor, hostName, hostMod.render);
         results.push({
           host: hostName,
           scope,
@@ -2099,6 +2203,7 @@ export async function declarativeInstall(
           target: `agent-mcp catalog row '${descriptor.ext}'`,
           applied: false,
           dryRun: true,
+          renderReport: planned.report,
         });
         continue;
       }
@@ -2408,9 +2513,9 @@ export async function declarativeInstall(
       // f775d10c: the renderability gate lives in the helper, so apply and
       // --dry-run make the identical decision (a non-renderable passthrough
       // throws AgentNotRenderableError here, never reaching render() with {}).
-      const payload = renderAgentCatalogPayload(descriptor, hostName, hostMod.render);
+      const { payload, report: renderReport } = renderAgentCatalogRow(descriptor, hostName, hostMod.render);
       const { apply: agentCatalogApply } = await import('./capabilities/agent-catalog.js');
-      await agentCatalogApply({
+      const applyOutcome = await agentCatalogApply({
         host: hostName,
         scope,
         scopeRoot,
@@ -2430,6 +2535,9 @@ export async function declarativeInstall(
         capability: 'agent-catalog',
         target: `agent-mcp catalog row '${descriptor.ext}'`,
         applied: true,
+        catalogOutcome: applyOutcome.outcome,
+        nulledMcpKeys: applyOutcome.nulledMcpKeys,
+        renderReport,
       };
       if (surface.postInstallHint) {
         acResult.hints = [surface.postInstallHint];

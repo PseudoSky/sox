@@ -99,24 +99,18 @@
     },
     "agent-mcp": {
       "model": "deepseek/deepseek-flash",
+      "toolMap": {
+        "memory": "memory-server",
+        "code-intel": "gitnexus",
+        "search": "search",
+        "backlog": "backlog"
+      },
       "mcpServers": {
-        "agent": {
-          "transport": "stdio",
-          "command": "npx",
-          "args": [
-            "-y",
-            "@adhd/agent-mcp@latest"
-          ],
-          "env": {
-            "ADHD_AGENT_DATABASE_PATH": "/Users/nix/.adhd/agent-mcp/agents.db",
-            "ADHD_AGENT_REGISTRY_DB_PATH": "/Users/nix/.adhd/agent-mcp/registry.db"
-          }
-        },
         "search": {
           "transport": "stdio",
           "command": "node",
           "args": [
-            "/Users/nix/dev/ai/scratch/agent-browser/server.mjs",
+            "${HOME}/dev/ai/scratch/agent-browser/server.mjs",
             "--transport",
             "stdio",
             "--ns",
@@ -131,14 +125,20 @@
         },
         "gitnexus": {
           "transport": "stdio",
-          "command": "/Users/nix/.local/bin/gitnexus-singleton.sh",
-          "args": []
+          "command": "npx",
+          "args": [
+            "-y",
+            "gitnexus",
+            "mcp"
+          ]
         },
         "backlog": {
           "transport": "stdio",
-          "command": "node",
+          "command": "npx",
           "args": [
-            "/Users/nix/dev/node/adhd/entrypoint/backlog/dist/index.js",
+            "-y",
+            "--prefer-online=false",
+            "@adhd/backlog@latest",
             "serve",
             "--transport",
             "mcp"

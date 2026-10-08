@@ -288,6 +288,189 @@ export function isManifest(value: unknown): value is Manifest {
 
 // ─── Validator ────────────────────────────────────────────────────────────────
 
+
+// ─── render.agent-mcp validation (docs/spec/agent-mcp-renderer-fidelity.md §3/§4) ──
+
+/** The closed set of `render.agent-mcp` keys (an unknown key is a typo, never silently ignored). */
+const AGENT_MCP_RENDER_KEYS = new Set([
+  'name', 'description', 'model', 'temperature', 'mode', 'tools', 'permission', 'version',
+  'toolMap', 'fallbackPath', 'steps', 'provider', 'mcpServers', 'permissions',
+  'nativeTooling', 'toolAdvertisement', 'sanitization', 'nativeWebTools', 'acceptLoss',
+]);
+
+/** Keys each provider variant accepts (mirrors the server's strict provider union). */
+const AGENT_MCP_PROVIDER_KEYS: Record<string, readonly string[]> = {
+  anthropic: ['type', 'model', 'env', 'temperature', 'maxTokens', 'timeoutMs', 'retryConfig', 'models', 'billingScope', 'tripwire'],
+  openai: ['type', 'model', 'env', 'baseURL', 'temperature', 'maxTokens', 'timeoutMs', 'retryConfig', 'models', 'billingScope', 'tripwire'],
+  claudecli: ['type', 'model', 'claudePath', 'timeoutMs', 'allowedBuiltinTools', 'systemPromptIsAgentSpec', 'models', 'billingScope', 'tripwire'],
+};
+
+const AGENT_MCP_ENV_POINTER = /^ADHD_AGENT_[A-Z0-9_]+$/;
+const AGENT_MCP_SECRET_KEY = /secret|token|key|password/i;
+const AGENT_MCP_ENV_REF = /\$\{[A-Za-z_][A-Za-z0-9_]*\}|^\$[A-Za-z_][A-Za-z0-9_]*$/;
+const ABSOLUTE_HOME_PATH = /^(\/Users\/|\/home\/|[A-Za-z]:[\\/])/;
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function isAbsoluteHint(v: string): boolean {
+  return v.startsWith('/') || v.startsWith('~') || /^[A-Za-z]:[\\/]/.test(v);
+}
+
+/**
+ * Validate the `render.agent-mcp` block: closed key set, provider shape (env
+ * pointers only, per-type keys), native-tooling root hints (no absolute fs
+ * roots), and mcpServers hygiene (no literal secrets, no welded absolute home
+ * paths or catalog DB paths, no stdio entry that launches agent-mcp itself).
+ */
+function validateAgentMcpRender(block: Record<string, unknown>, errors: string[], warnings: string[]): void {
+  void warnings;
+  const at = 'render.agent-mcp';
+  for (const key of Object.keys(block)) {
+    if (!AGENT_MCP_RENDER_KEYS.has(key)) {
+      errors.push(`${at}.${key} is not a recognised key (allowed: ${Array.from(AGENT_MCP_RENDER_KEYS).join(', ')})`);
+    }
+  }
+
+  const provider = block['provider'];
+  if (provider !== undefined && provider !== null) {
+    if (!isPlainObject(provider) || typeof provider['type'] !== 'string') {
+      errors.push(`${at}.provider must be an object with a string "type" (or null for a deliberately unbound row)`);
+    } else {
+      const type = provider['type'];
+      const allowed = AGENT_MCP_PROVIDER_KEYS[type];
+      if (allowed === undefined) {
+        errors.push(`${at}.provider.type "${type}" must be one of: ${Object.keys(AGENT_MCP_PROVIDER_KEYS).join(', ')}`);
+      } else {
+        for (const k of Object.keys(provider)) {
+          if (!allowed.includes(k)) {
+            const hint = k === 'retryWindowMs' ? ' — retryWindowMs belongs inside provider.retryConfig' : '';
+            errors.push(`${at}.provider.${k} is not valid for provider type "${type}"${hint}`);
+          }
+        }
+        if (type === 'claudecli' && provider['env'] !== undefined) {
+          errors.push(`${at}.provider.env is not valid for type "claudecli" (no credential pointers are emitted)`);
+        }
+        if (type === 'claudecli' && provider['temperature'] !== undefined) {
+          errors.push(`${at}.provider.temperature is not valid for type "claudecli"`);
+        }
+      }
+      const t = provider['temperature'];
+      if (t !== undefined && (typeof t !== 'number' || t < 0 || t > 1)) {
+        errors.push(`${at}.provider.temperature must be a number in [0, 1]`);
+      }
+      const env = provider['env'];
+      if (env !== undefined) {
+        if (!isPlainObject(env)) {
+          errors.push(`${at}.provider.env must be an object of env-var NAME pointers`);
+        } else {
+          for (const [f, v] of Object.entries(env)) {
+            if (typeof v !== 'string' || !AGENT_MCP_ENV_POINTER.test(v)) {
+              errors.push(`${at}.provider.env.${f} must be an ADHD_AGENT_-prefixed env-var NAME pointer (${String(AGENT_MCP_ENV_POINTER)}) — a literal credential is never emitted`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const enums: Array<[string, readonly string[]]> = [
+    ['toolAdvertisement', ['names', 'full']],
+    ['sanitization', ['none', 'prefix', 'wrap']],
+  ];
+  for (const [k, allowed] of enums) {
+    const v = block[k];
+    if (v !== undefined && (typeof v !== 'string' || !allowed.includes(v))) {
+      errors.push(`${at}.${k} must be one of: ${allowed.join(' | ')}`);
+    }
+  }
+  for (const k of ['nativeWebTools', 'acceptLoss'] as const) {
+    if (block[k] !== undefined && typeof block[k] !== 'boolean') errors.push(`${at}.${k} must be a boolean`);
+  }
+
+  const toolMap = block['toolMap'];
+  if (toolMap !== undefined) {
+    if (!isPlainObject(toolMap) || Object.values(toolMap).some((v) => typeof v !== 'string')) {
+      errors.push(`${at}.toolMap must map logical capability names to server-key strings`);
+    }
+  }
+
+  const nt = block['nativeTooling'];
+  if (nt !== undefined) {
+    if (!isPlainObject(nt)) {
+      errors.push(`${at}.nativeTooling must be an object`);
+    } else {
+      for (const [member, val] of Object.entries(nt)) {
+        if (!['fs', 'shell', 'dispatch', 'hitl'].includes(member)) {
+          errors.push(`${at}.nativeTooling.${member} is not a native member (fs | shell | dispatch | hitl)`);
+          continue;
+        }
+        if (member === 'hitl') {
+          if (typeof val !== 'boolean') errors.push(`${at}.nativeTooling.hitl must be a boolean`);
+          continue;
+        }
+        if (typeof val === 'boolean' || !isPlainObject(val)) {
+          if (typeof val !== 'boolean') errors.push(`${at}.nativeTooling.${member} must be a boolean or an object`);
+          continue;
+        }
+        const roots = [val['root'], ...(Array.isArray(val['roots']) ? (val['roots'] as unknown[]) : [])];
+        for (const r of roots) {
+          if (typeof r === 'string' && isAbsoluteHint(r)) {
+            errors.push(`${at}.nativeTooling.${member} root "${r}" must be a portable hint (cwd-relative subpath or alias), not an absolute path`);
+          }
+        }
+        const patterns = val['allowPatterns'];
+        if (Array.isArray(patterns) && patterns.some((p) => typeof p === 'string' && p.includes(','))) {
+          errors.push(`${at}.nativeTooling.${member}.allowPatterns entries must not contain a comma (they are CSV-joined)`);
+        }
+      }
+    }
+  }
+
+  const servers = block['mcpServers'];
+  if (servers !== undefined) {
+    if (!isPlainObject(servers)) {
+      errors.push(`${at}.mcpServers must be an object`);
+    } else {
+      for (const [key, cfg] of Object.entries(servers)) {
+        if (!isPlainObject(cfg)) {
+          errors.push(`${at}.mcpServers.${key} must be an object`);
+          continue;
+        }
+        const parts = [cfg['command'], cfg['cwd'], ...(Array.isArray(cfg['args']) ? (cfg['args'] as unknown[]) : [])];
+        if (cfg['transport'] === 'stdio' && parts.some((p) => typeof p === 'string' && /(^|[/@\s])agent-mcp(\b|$)/.test(p))) {
+          errors.push(`${at}.mcpServers.${key} launches agent-mcp itself — drop it; the renderer carries dispatch via nativeTooling.dispatch`);
+        }
+        for (const p of parts) {
+          if (typeof p === 'string' && ABSOLUTE_HOME_PATH.test(p)) {
+            errors.push(`${at}.mcpServers.${key} carries an absolute host path "${p}" — use "~/" or "\${HOME}" (expanded at render time)`);
+          }
+        }
+        for (const block2 of ['env', 'headers'] as const) {
+          const m = cfg[block2];
+          if (m === undefined) continue;
+          if (!isPlainObject(m)) {
+            errors.push(`${at}.mcpServers.${key}.${block2} must be an object`);
+            continue;
+          }
+          for (const [k, v] of Object.entries(m)) {
+            if (k === 'ADHD_AGENT_DATABASE_PATH' || k === 'ADHD_AGENT_REGISTRY_DB_PATH') {
+              errors.push(`${at}.mcpServers.${key}.${block2}.${k} welds a catalog DB path into the row`);
+            }
+            if (AGENT_MCP_SECRET_KEY.test(k) && (typeof v !== 'string' || !AGENT_MCP_ENV_REF.test(v))) {
+              errors.push(`${at}.mcpServers.${key}.${block2}.${k} looks like a credential with a literal value — use an env reference ("\${NAME}")`);
+            }
+            if (typeof v === 'string' && ABSOLUTE_HOME_PATH.test(v)) {
+              errors.push(`${at}.mcpServers.${key}.${block2}.${k} carries an absolute host path "${v}"`);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 /**
  * Validate a manifest object against the libs/manifest contract.
  *
@@ -778,6 +961,8 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
         }
         if (typeof hostVal !== 'object' || hostVal === null || Array.isArray(hostVal)) {
           errors.push(`render.${hostKey} must be an object`);
+        } else if (hostKey === 'agent-mcp') {
+          validateAgentMcpRender(hostVal as Record<string, unknown>, errors, warnings);
         }
       }
     }

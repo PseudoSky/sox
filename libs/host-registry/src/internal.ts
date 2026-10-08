@@ -158,17 +158,72 @@ export interface AgentOverride {
    * When absent the agent-mcp renderer derives a provider from the IR/override
    * model. Kept structural (not imported) so host-registry stays dependency-free.
    */
-  provider?: Record<string, unknown>;
-  /** agent-catalog hosts only (agent-mcp). `mcpServers` map for the catalog row. */
+  provider?: Record<string, unknown> | null;
+  /**
+   * agent-catalog hosts only (agent-mcp). The LAUNCH CATALOG of MCP servers the
+   * row may mount, keyed by server key. The renderer mounts only the servers the
+   * agent's IR `tools` reference (via `toolMap`); when the IR declares no `tools`
+   * at all every declared server is mounted (legacy shape). A stdio entry that
+   * launches agent-mcp itself is never emitted — `nativeTooling.dispatch` carries
+   * the dispatch surface. `~/` and `${HOME}` in `command`/`args`/`cwd` expand at
+   * render time so manifests carry no absolute home path.
+   */
   mcpServers?: Record<string, unknown>;
   /** agent-catalog hosts only (agent-mcp). `permissions` block for the catalog row. */
   permissions?: Record<string, unknown>;
+  /**
+   * agent-catalog hosts only (agent-mcp). Explicit native-tooling members
+   * (`fs` / `shell` / `dispatch` / `hitl`) that REPLACE the member the renderer
+   * would otherwise derive from the IR `tools` / `permission`.
+   */
+  nativeTooling?: Record<string, unknown>;
+  /** agent-catalog hosts only (agent-mcp). `'names' | 'full'` tool advertisement. */
+  toolAdvertisement?: string;
+  /** agent-catalog hosts only (agent-mcp). `'none' | 'prefix' | 'wrap'` sanitization. */
+  sanitization?: string;
+  /** agent-catalog hosts only (agent-mcp). Explicit `nativeWebTools` toggle. */
+  nativeWebTools?: boolean;
+  /**
+   * agent-catalog hosts only (agent-mcp). The manifest author accepts that IR
+   * `permission` rules the catalog cannot represent (bash command patterns) are
+   * lost; the renderer then keeps shell enabled (allow-all, or an argv allowlist
+   * derived from the allow patterns) instead of failing closed (`shell:false`).
+   */
+  acceptLoss?: boolean;
 }
 
 /** Result of rendering an agent for one host. */
 export type RenderedArtifact =
   | { kind: 'file-body'; content: string }
-  | { kind: 'config-value'; value: unknown };
+  | { kind: 'config-value'; value: unknown; report?: AgentRenderReport };
+
+/** One IR `permission` rule the target host cannot represent. */
+export interface AgentRenderLoss {
+  /** IR permission key (e.g. `bash`, `external_directory`). */
+  source: string;
+  /** The IR pattern within the key ('' for a scalar). */
+  pattern: string;
+  /** The IR action (`allow` | `ask` | `deny`). */
+  action: string;
+  /** Why it cannot be represented. */
+  reason: string;
+  /**
+   * `dropped`: not enforced; `covered-by-override`: an explicit manifest
+   * `nativeTooling` member replaced the derived one; `accepted`: manifest
+   * `acceptLoss` kept the capability enabled.
+   */
+  disposition: 'dropped' | 'covered-by-override' | 'accepted';
+}
+
+/** Side channel of a render: losses and warnings the installer must surface. */
+export interface AgentRenderReport {
+  lost: AgentRenderLoss[];
+  warnings: string[];
+  /** True when the row carries no provider (`render.agent-mcp.provider: null`). */
+  unbound: boolean;
+  /** True when shell was disabled because bash rules could not be enforced (O2). */
+  shellDisabledByLoss: boolean;
+}
 
 /**
  * [def:agent-renderer] Per-host agent renderer. Composes header + prose +

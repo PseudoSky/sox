@@ -93,10 +93,10 @@ describe('agent-mcp — renderer', () => {
     const payload = payloadOf(
       agentMcpHost.render!.render({ name: 'dispatcher', model: 'opus' }, prose, { model: 'deepseek/deepseek-flash' }),
     );
-    expect(payload.provider.type).toBe('openai');
-    expect(payload.provider.type).not.toBe('anthropic');
-    expect(payload.provider.env?.['secret']).toBe('ADHD_AGENT_DEEPSEEK_SECRET');
-    expect(payload.provider.model).not.toBe('claude-sonnet-4-5');
+    expect(payload.provider?.type).toBe('openai');
+    expect(payload.provider?.type).not.toBe('anthropic');
+    expect(payload.provider?.env?.['secret']).toBe('ADHD_AGENT_DEEPSEEK_SECRET');
+    expect(payload.provider?.model).not.toBe('claude-sonnet-4-5');
   });
 
   // NEGATIVE CONTROL: no host model/provider ⇒ hard error, no payload. This must
@@ -117,9 +117,9 @@ describe('agent-mcp — renderer', () => {
   });
 
   it('derives an openai provider from a deepseek model override', () => {
-    const payload = payloadOf(agentMcpHost.render!.render(ir, prose, { model: 'deepseek-v4-flash' }));
-    expect(payload.provider.type).toBe('openai');
-    expect(payload.provider.env?.['secret']).toBe('ADHD_AGENT_DEEPSEEK_SECRET');
+    const payload = payloadOf(agentMcpHost.render!.render(ir, prose, { model: 'deepseek/deepseek-v4-flash' }));
+    expect(payload.provider?.type).toBe('openai');
+    expect(payload.provider?.env?.['secret']).toBe('ADHD_AGENT_DEEPSEEK_SECRET');
   });
 
   // NC companion to render-override.spec.ts: a bare logical tier inherited from a

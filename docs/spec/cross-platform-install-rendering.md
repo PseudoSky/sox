@@ -234,6 +234,18 @@ resolved as **both**, because they serve different needs):
 | `version` (display) | — | ✓ | claude display field; meaningless to others |
 | `steps` | ✓ | ✓ | step/turn budget — host-mapped, not host-verbatim: opencode renders `steps:` as-is; claude renders it as its own `maxTurns:` field (its harness-enforced turn cap — see `~/dev/ai/claude-agents` agents that already carry `maxTurns`, e.g. `architect-decision.md`); codex omits it (no known equivalent TOML field as of this spec — revisit if codex ships one) |
 
+**`agent-mcp` catalog-row fields** (the `agent-catalog` host; full mapping, owner decisions O1–O3 and acceptance criteria in [`agent-mcp-renderer-fidelity.md`](./agent-mcp-renderer-fidelity.md)). Every field below is emitted **explicitly** on each row — the catalog patch cannot clear a field, so nothing is left to server defaults:
+
+| Field | IR (shared) | `render.agent-mcp` | Rationale |
+|---|---|---|---|
+| `provider` | — | `model` slug (`deepseek/`, `openai/`, `anthropic/` profile table) or `provider` object, or `provider: null` (unbound row) | env refs are `ADHD_AGENT_` NAME pointers only; `temperature` (IR or render) lands in `provider.temperature` for anthropic/openai; `claudecli` derives `allowedBuiltinTools` from IR `tools`; `models[]`, `billingScope`, `tripwire`, `retryConfig` (incl. `retryWindowMs`) pass through |
+| `nativeTooling.{fs,shell,dispatch,hitl}` | derived from `tools` + `permission` | `nativeTooling` replaces a derived member | `tools` omitting a built-in disables it (least privilege); `question` -> `hitl`; `task`/`agent-catalog` -> `dispatch`; IR read/edit/write/glob/grep `deny`/`ask` become server-qualified `fs.<tool>` rules (never an unscoped `*`) |
+| shell + bash command patterns | `permission.bash` | `nativeTooling.shell`, `acceptLoss` | command text is never matched (ADR-0008 D5): a bash map with command-pattern rules cannot be enforced, so shell is **disabled** unless the manifest declares `nativeTooling.shell` or `acceptLoss: true`; every dropped rule is listed in the render report |
+| `mcpServers` | `tools` `{logical, server}` / logical names | `toolMap` (logical -> server key) + `mcpServers` (launch catalog) | only servers the IR references are mounted; a stdio entry launching agent-mcp is dropped (`nativeTooling.dispatch` carries dispatch); literal secrets in `env`/`headers` fail the render; `~/` and `${HOME}` expand at render time |
+| `permissions.allowedAgents` | `permission.task` (pattern map) | `permissions` | keys with `allow` under a `*: deny` baseline |
+| `maxToolLoops` | `steps` | `steps` | unchanged |
+| `toolAdvertisement`, `sanitization`, `nativeWebTools` | `permission.websearch`/`tools` (web) | same-named keys | passthrough when declared |
+
 ---
 
 ## 5. Rendering pipeline

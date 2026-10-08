@@ -26,9 +26,10 @@ const PAYLOAD: AgentCatalogPayload = {
   name: 'researcher',
   description: 'Discovery researcher',
   systemPrompt: 'You are the researcher.',
-  provider: { type: 'anthropic', model: 'claude-sonnet-4-5', env: { secret: 'ADHD_AGENT_ANTHROPIC_SECRET' } },
+  provider: { type: 'openai', model: 'deepseek-flash', env: { secret: 'ADHD_AGENT_DEEPSEEK_SECRET' } },
   mcpServers: {},
   permissions: {},
+  nativeTooling: { fs: true, shell: false, dispatch: false, hitl: true },
 };
 
 function fakeClient(overrides?: Partial<AgentCatalogClient>): {

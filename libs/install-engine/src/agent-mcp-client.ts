@@ -18,6 +18,8 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 
 export interface AgentMcpLaunch {
   command: string;
@@ -132,27 +134,31 @@ function decodeToolResult(result: unknown): unknown {
 }
 
 /**
- * Spawn the agent-mcp server, run the MCP handshake, call one tool, and return
- * the decoded result. The child is always killed before returning.
+ * One live agent-mcp stdio server: spawned LAZILY on the first `call`, handshaken
+ * once, and reused for every subsequent call until `close()`. A command that
+ * touches the catalog N times therefore pays ONE spawn + `initialize` instead of
+ * N (the old shape spawned a fresh `npx` server per tool call: ~1 + 3×rows
+ * processes for a reconcile).
  */
-export async function callAgentMcpTool(
-  tool: string,
-  args: Record<string, unknown> = {},
-  opts?: CallToolOptions,
-): Promise<unknown> {
-  const launch = opts?.launch ?? resolveAgentMcpLaunch();
-  const timeoutMs = opts?.timeoutMs ?? 120_000;
+export class AgentMcpSession {
+  private child: ChildProcessWithoutNullStreams | null = null;
+  private ready: Promise<void> | null = null;
+  private buffer = '';
+  private stderrTail = '';
+  private nextId = 1;
+  private readonly pending = new Map<number, { resolve: (m: JsonRpcMessage) => void; reject: (e: Error) => void }>();
+  private closed = false;
+  /** Number of tool calls made (diagnostics / perf accounting). */
+  public calls = 0;
+  /** Number of server processes spawned by this session (0 or 1). */
+  public spawns = 0;
 
-  const child: ChildProcessWithoutNullStreams = spawn(launch.command, launch.args, {
-    env: { ...process.env, ...launch.env },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  constructor(
+    private readonly launch: AgentMcpLaunch,
+    private readonly timeoutMs: number = 120_000,
+  ) {}
 
-  let buffer = '';
-  const pending = new Map<number, { resolve: (m: JsonRpcMessage) => void; reject: (e: Error) => void }>();
-  let nextId = 1;
-
-  const onLine = (line: string): void => {
+  private onLine(line: string): void {
     const trimmed = line.trim();
     if (trimmed === '') return;
     let msg: JsonRpcMessage;
@@ -162,74 +168,155 @@ export async function callAgentMcpTool(
       return; // non-protocol stdout line (e.g. dotenvx banner) — skip
     }
     if (msg.id === undefined) return; // notification
-    const waiter = pending.get(Number(msg.id));
+    const waiter = this.pending.get(Number(msg.id));
     if (waiter !== undefined) {
-      pending.delete(Number(msg.id));
+      this.pending.delete(Number(msg.id));
       waiter.resolve(msg);
     }
-  };
+  }
 
-  child.stdout.on('data', (chunk: Buffer) => {
-    buffer += chunk.toString();
-    let idx: number;
-    while ((idx = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 1);
-      onLine(line);
-    }
-  });
+  private send(msg: Record<string, unknown>): void {
+    this.child?.stdin.write(JSON.stringify(msg) + '\n');
+  }
 
-  let stderrTail = '';
-  child.stderr.on('data', (chunk: Buffer) => {
-    stderrTail = (stderrTail + chunk.toString()).slice(-2000);
-  });
-
-  const send = (msg: Record<string, unknown>): void => {
-    child.stdin.write(JSON.stringify(msg) + '\n');
-  };
-
-  const request = (method: string, params: Record<string, unknown>): Promise<JsonRpcMessage> => {
-    const id = nextId++;
+  private request(method: string, params: Record<string, unknown>, label: string): Promise<JsonRpcMessage> {
+    const id = this.nextId++;
     return new Promise<JsonRpcMessage>((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      send({ jsonrpc: '2.0', id, method, params });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`agent-mcp call '${label}' timed out after ${this.timeoutMs}ms`));
+        this.child?.kill('SIGKILL');
+      }, this.timeoutMs);
+      this.pending.set(id, {
+        resolve: (m) => { clearTimeout(timer); resolve(m); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+      this.send({ jsonrpc: '2.0', id, method, params });
     });
-  };
+  }
 
-  const timer = setTimeout(() => {
-    for (const [, waiter] of pending) waiter.reject(new Error(`agent-mcp call '${tool}' timed out after ${timeoutMs}ms`));
-    pending.clear();
-    child.kill('SIGKILL');
-  }, timeoutMs);
-
-  try {
-    const init = await request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'soxe', version: '0.0.0' },
+  private start(): Promise<void> {
+    if (this.ready !== null) return this.ready;
+    const child = spawn(this.launch.command, this.launch.args, {
+      env: { ...process.env, ...this.launch.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
-    if (init.error !== undefined) {
-      throw new Error(`agent-mcp initialize failed: ${init.error.message ?? JSON.stringify(init.error)}`);
-    }
-    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    this.child = child;
+    this.spawns += 1;
+    // setEncoding installs a streaming UTF-8 decoder: a multi-byte character (an
+    // em dash in a 60KB systemPrompt) split across two pipe chunks must not decode
+    // to U+FFFD — per-chunk `Buffer#toString()` did, which corrupted every large
+    // `agent_list`/`agent_read` response and made unchanged rows look drifted.
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      this.buffer += chunk;
+      let idx: number;
+      while ((idx = this.buffer.indexOf('\n')) >= 0) {
+        const line = this.buffer.slice(0, idx);
+        this.buffer = this.buffer.slice(idx + 1);
+        this.onLine(line);
+      }
+    });
+    child.stderr.on('data', (chunk: string) => {
+      this.stderrTail = (this.stderrTail + chunk).slice(-2000);
+    });
+    child.on('exit', () => {
+      for (const [, waiter] of this.pending) {
+        waiter.reject(new Error(`agent-mcp server exited before replying${this.stderrTail !== '' ? `\n[agent-mcp stderr] ${this.stderrTail}` : ''}`));
+      }
+      this.pending.clear();
+    });
+    this.ready = (async () => {
+      const init = await this.request(
+        'initialize',
+        { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'soxe', version: '0.0.0' } },
+        'initialize',
+      );
+      if (init.error !== undefined) {
+        throw new Error(`agent-mcp initialize failed: ${init.error.message ?? JSON.stringify(init.error)}`);
+      }
+      this.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    })();
+    return this.ready;
+  }
 
-    const res = await request('tools/call', { name: tool, arguments: args });
+  /** Call one tool on the (lazily started) shared server and return the decoded result. */
+  async call(tool: string, args: Record<string, unknown> = {}): Promise<unknown> {
+    if (this.closed) throw new Error('agent-mcp session is closed');
+    await this.start();
+    this.calls += 1;
+    const res = await this.request('tools/call', { name: tool, arguments: args }, tool);
     if (res.error !== undefined) {
       throw new Error(
         `agent-mcp tool '${tool}' failed: ${res.error.message ?? JSON.stringify(res.error)}` +
-          (stderrTail !== '' ? `\n[agent-mcp stderr] ${stderrTail}` : ''),
+          (this.stderrTail !== '' ? `\n[agent-mcp stderr] ${this.stderrTail}` : ''),
       );
     }
     return decodeToolResult(res.result);
-  } finally {
-    clearTimeout(timer);
-    pending.clear();
+  }
+
+  /** Stop the server (idempotent). Always called by {@link withAgentMcpSession}. */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    const child = this.child;
+    this.pending.clear();
+    if (child === null) return;
     child.stdin.end();
     child.kill('SIGTERM');
     // Best-effort hard kill if it ignores SIGTERM.
     setTimeout(() => {
       if (!child.killed) child.kill('SIGKILL');
     }, 2000).unref?.();
+  }
+}
+
+/** The ambient session of the enclosing {@link withAgentMcpSession} scope, if any. */
+const sessionStore = new AsyncLocalStorage<AgentMcpSession>();
+
+/** The ambient session (or undefined) — exposed for diagnostics and tests. */
+export function currentAgentMcpSession(): AgentMcpSession | undefined {
+  return sessionStore.getStore();
+}
+
+/**
+ * Run `fn` with ONE shared agent-mcp server: every catalog call made inside
+ * (directly or transitively, including the install engine's default client)
+ * reuses it. The server is spawned on the first call and ALWAYS stopped on exit.
+ * Nesting reuses the outer session.
+ */
+export async function withAgentMcpSession<T>(
+  fn: (session: AgentMcpSession) => Promise<T>,
+  opts?: CallToolOptions,
+): Promise<T> {
+  const outer = sessionStore.getStore();
+  if (outer !== undefined) return fn(outer);
+  const session = new AgentMcpSession(opts?.launch ?? resolveAgentMcpLaunch(), opts?.timeoutMs);
+  try {
+    return await sessionStore.run(session, () => fn(session));
+  } finally {
+    session.close();
+  }
+}
+
+/**
+ * Call one agent-mcp tool. Uses the ambient {@link withAgentMcpSession} server
+ * when there is one (and no explicit `launch`), else spawns a one-shot server
+ * that is always killed before returning.
+ */
+export async function callAgentMcpTool(
+  tool: string,
+  args: Record<string, unknown> = {},
+  opts?: CallToolOptions,
+): Promise<unknown> {
+  const ambient = opts?.launch === undefined ? sessionStore.getStore() : undefined;
+  if (ambient !== undefined) return ambient.call(tool, args);
+  const session = new AgentMcpSession(opts?.launch ?? resolveAgentMcpLaunch(), opts?.timeoutMs);
+  try {
+    return await session.call(tool, args);
+  } finally {
+    session.close();
   }
 }
 
@@ -242,19 +329,27 @@ export interface CatalogAgentDefinition {
   systemPrompt?: string;
   mcpServers?: Record<string, unknown>;
   permissions?: Record<string, unknown>;
+  nativeTooling?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
-/** `agent_list` — every stored agent definition. */
-export async function catalogList(opts?: CallToolOptions): Promise<CatalogAgentDefinition[]> {
-  const out = await callAgentMcpTool('agent_list', {}, opts);
+export interface CatalogReadOptions extends CallToolOptions {
+  /** Return the FULL definition including `systemPrompt` (default: a summary without it). */
+  fullDefinition?: boolean;
+}
+
+/** `agent_list` — every stored agent definition (full definitions on request). */
+export async function catalogList(opts?: CatalogReadOptions): Promise<CatalogAgentDefinition[]> {
+  const args = opts?.fullDefinition === true ? { fullDefinition: true } : {};
+  const out = await callAgentMcpTool('agent_list', args, opts);
   return Array.isArray(out) ? (out as CatalogAgentDefinition[]) : [];
 }
 
 /** `agent_read` — one stored agent by name, or null when absent. */
-export async function catalogRead(name: string, opts?: CallToolOptions): Promise<CatalogAgentDefinition | null> {
+export async function catalogRead(name: string, opts?: CatalogReadOptions): Promise<CatalogAgentDefinition | null> {
   try {
-    const out = await callAgentMcpTool('agent_read', { name }, opts);
+    const args = opts?.fullDefinition === true ? { name, fullDefinition: true } : { name };
+    const out = await callAgentMcpTool('agent_read', args, opts);
     if (out !== null && typeof out === 'object' && !Array.isArray(out) && (out as Record<string, unknown>)['name'] !== undefined) {
       return out as CatalogAgentDefinition;
     }
@@ -265,22 +360,157 @@ export async function catalogRead(name: string, opts?: CallToolOptions): Promise
   }
 }
 
+// ── Managed-field comparison + stale-key bookkeeping ─────────────────────────
+
+/** Stable JSON (sorted keys) so structurally-equal values compare equal. */
+export function canonicalJson(value: unknown): string {
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (v !== null && typeof v === 'object') {
+      const o = v as Record<string, unknown>;
+      return Object.fromEntries(Object.keys(o).sort().filter((k) => o[k] !== undefined).map((k) => [k, walk(o[k])]));
+    }
+    return v;
+  };
+  return JSON.stringify(walk(value));
+}
+
+/** sha256 hex of the canonical JSON of `value`. */
+export function digestOf(value: unknown): string {
+  return createHash('sha256').update(canonicalJson(value)).digest('hex');
+}
+
+/** True when an mcpServers entry is a stdio launcher of the agent-mcp server itself. */
+export function isAgentMcpLauncher(cfg: unknown): boolean {
+  if (cfg === null || typeof cfg !== 'object') return false;
+  const c = cfg as Record<string, unknown>;
+  if (c['transport'] !== 'stdio') return false;
+  const parts = [c['command'], ...(Array.isArray(c['args']) ? (c['args'] as unknown[]) : [])];
+  return parts.some((p) => typeof p === 'string' && /(^|[/@\s])agent-mcp(\b|$)/.test(p));
+}
+
+/** Fields whose value the renderer owns wholesale (replaced by `agent_update`). */
+const REPLACED_FIELDS = [
+  'description',
+  'systemPrompt',
+  'provider',
+  'nativeTooling',
+  'maxToolLoops',
+  'sanitization',
+  'toolAdvertisement',
+  'nativeWebTools',
+] as const;
+
 /**
- * Idempotent upsert: `agent_update` when the row exists, else `agent_create`.
- * Returns the stored definition.
+ * mcpServers keys a patch must null so the stored map ends up equal to the
+ * rendered one: keys soxe recorded as owned (`ownedMcpKeys`, from the ledger)
+ * that are no longer rendered, plus any stored stdio entry that launches
+ * agent-mcp itself (the welded `agent` entry older rows carry — older ledger
+ * entries recorded no ownership, so this is detected structurally). Keys soxe
+ * does not own are never touched.
+ */
+export function staleMcpKeys(
+  existing: CatalogAgentDefinition,
+  rendered: Record<string, unknown> | undefined,
+  ownedMcpKeys: readonly string[] | undefined,
+): string[] {
+  const stored = existing.mcpServers ?? {};
+  const keep = new Set(Object.keys(rendered ?? {}));
+  const owned = new Set(ownedMcpKeys ?? []);
+  return Object.keys(stored)
+    .filter((k) => !keep.has(k) && (owned.has(k) || isAgentMcpLauncher(stored[k])))
+    .sort();
+}
+
+/**
+ * The managed fields whose stored value differs from what the payload renders
+ * (plus `mcpServers` when a stale owned key must be nulled). Compares the MANAGED
+ * subset only — server-added defaults and keys soxe does not render never count —
+ * so an empty result means an `agent_update` would be a no-op.
+ */
+export function changedManagedFields(
+  existing: CatalogAgentDefinition,
+  payload: CatalogAgentDefinition,
+  stale: readonly string[],
+): string[] {
+  const changed: string[] = [];
+  for (const f of REPLACED_FIELDS) {
+    if (payload[f] === undefined) continue; // not rendered: left untouched by the patch
+    if (canonicalJson(payload[f]) !== canonicalJson(existing[f])) changed.push(f);
+  }
+  const serversDiffer =
+    stale.length > 0 ||
+    Object.entries(payload.mcpServers ?? {}).some(
+      ([k, v]) => canonicalJson(v) !== canonicalJson((existing.mcpServers ?? {})[k]),
+    );
+  if (serversDiffer) changed.push('mcpServers');
+  const permsDiffer = Object.entries(payload.permissions ?? {}).some(
+    ([k, v]) => canonicalJson(v) !== canonicalJson((existing.permissions ?? {})[k]),
+  );
+  if (permsDiffer) changed.push('permissions');
+  return changed;
+}
+
+/** True when the stored row already carries every managed field the payload renders. */
+export function rowMatchesPayload(
+  existing: CatalogAgentDefinition,
+  payload: CatalogAgentDefinition,
+  stale: readonly string[],
+): boolean {
+  return changedManagedFields(existing, payload, stale).length === 0;
+}
+
+/**
+ * mcpServers keys the pre-ownership sox manifests wrote on every agent row. An
+ * older ledger entry (or none) records no `ownedMcpKeys`, so these are treated as
+ * soxe-owned when deciding which keys to null on a re-render — otherwise a row
+ * keeps the servers its agent no longer mounts (and the welded `agent` entry).
+ */
+export const LEGACY_SOX_MCP_KEYS: readonly string[] = ['agent', 'search', 'memory-server', 'gitnexus', 'backlog'];
+
+export type CatalogUpsertOutcome = 'created' | 'updated' | 'unchanged';
+
+export interface CatalogUpsertResult {
+  outcome: CatalogUpsertOutcome;
+  /** The stored definition after the call (the pre-existing row when unchanged). */
+  row: CatalogAgentDefinition;
+  /** mcpServers keys sent as `null` (stale owned / welded agent-mcp launchers). */
+  nulledMcpKeys: string[];
+}
+
+export interface CatalogUpsertOptions extends CallToolOptions {
+  /** mcpServers keys the ledger recorded as soxe-owned on the previous apply. */
+  ownedMcpKeys?: readonly string[];
+  /** A pre-read FULL row (e.g. from one `agent_list`), saving the per-row read. */
+  existing?: CatalogAgentDefinition | null;
+}
+
+/**
+ * Idempotent upsert: `agent_create` when absent; otherwise `agent_update` with a
+ * patch that nulls stale owned mcpServers keys — or NO call at all when the
+ * stored row already equals the rendered managed fields (unchanged).
  */
 export async function catalogUpsert(
   payload: CatalogAgentDefinition,
-  opts?: CallToolOptions,
-): Promise<CatalogAgentDefinition> {
-  const existing = await catalogRead(payload.name, opts);
+  opts?: CatalogUpsertOptions,
+): Promise<CatalogUpsertResult> {
+  const existing =
+    opts?.existing !== undefined ? opts.existing : await catalogRead(payload.name, { ...opts, fullDefinition: true });
   if (existing !== null) {
-    const { name, ...patch } = payload;
+    const stale = staleMcpKeys(existing, payload.mcpServers, opts?.ownedMcpKeys);
+    if (rowMatchesPayload(existing, payload, stale)) {
+      return { outcome: 'unchanged', row: existing, nulledMcpKeys: [] };
+    }
+    const { name, ...rest } = payload;
+    const patch: Record<string, unknown> = { ...rest };
+    if (stale.length > 0 || payload.mcpServers !== undefined) {
+      patch['mcpServers'] = { ...(payload.mcpServers ?? {}), ...Object.fromEntries(stale.map((k) => [k, null])) };
+    }
     const out = await callAgentMcpTool('agent_update', { name, patch }, opts);
-    return out as CatalogAgentDefinition;
+    return { outcome: 'updated', row: out as CatalogAgentDefinition, nulledMcpKeys: stale };
   }
   const out = await callAgentMcpTool('agent_create', payload as unknown as Record<string, unknown>, opts);
-  return out as CatalogAgentDefinition;
+  return { outcome: 'created', row: out as CatalogAgentDefinition, nulledMcpKeys: [] };
 }
 
 /** `agent_delete` — retire the agent (idempotent: absent is success). */

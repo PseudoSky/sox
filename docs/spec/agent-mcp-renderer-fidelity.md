@@ -1,6 +1,6 @@
 # SPEC — agent-mcp renderer fidelity: provider binding, permissions, mcpServers, native items
 
-Status: PROPOSED (architect, 2026-10-07; dispatch-2026-10-06-48dc). Ticket: TBD (filed by dispatcher's backlog-operator).
+Status: IMPLEMENTED on branch `feat/agent-mcp-renderer-fidelity` (dispatch-2026-10-06-48dc; ticket 7ef0ee2c-9e0a-46f7-adca-48097fca8392). O1–O3 resolved to the recommended defaults. Amended by the adhd dependency landing (adhd `beb25964`): `ProviderConfig` now carries `models[]`/`billingScope`/`tripwire`/`retryConfig.retryWindowMs`, `agentPatchSchema` is strict and includes `toolAdvertisement`, and `agent_update` no-ops when unchanged — so **AC13 is an emit criterion** (those keys are validated and emitted, `retryWindowMs` lives inside `retryConfig`), `toolAdvertisement` is emitted on update as well as create (F7 closed), and F10 no longer holds.
 Placement: `docs/spec/` is this repo's existing design-spec home (`docs/spec/cross-platform-install-rendering.md` is the governing renderer spec; this amends its §4.4 field table). No code was changed to produce this spec; no gates were run.
 ADRs honoured: 0002 (soxe writes via the host's public surface), 0013 (no env feature switch; one-shot actions are explicit invocations), 0026 (bodies name capabilities, never tools; no inference of bindings from host MCP config). No ADR is violated; none is superseded.
 
