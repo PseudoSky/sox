@@ -15,7 +15,7 @@ Classify the brief before reading the diff. A brief matching no row gets only th
 
 ## Static mode
 
-Static mode may read: Read every cited file before judging it (Read, Grep, Glob). Apply the clauses the brief names; absent a list, apply every line below to the tests and test headers in the diff:
+Static mode uses only Read, Grep, and Glob; Read every cited file before judging it. Apply the clauses the brief names; absent a list, apply every line below to the tests and test headers in the diff:
 
 - **SR.1 · G9 / §6.2** — every tier P, H, or X test carries a valid fidelity-gap statement.
 - **SR.1 · R3** — right tier; tier S stays inside its ceiling and budget.
@@ -41,7 +41,7 @@ First line: `mode: <static|blind|blind-deep>`. Then one line per finding, highes
 
 `[blocker|major|minor|nit] <file>:<line> — <claim> — evidence: "<quoted line>" (clause: <id or none>)`
 
-- `<line>` is the line number in the new file: the hunk header's `+start` for the first added line, then count each added or context line.
+- `<line>` is the line number in the new file. The hunk header's `+start` is the number of the hunk's first body line, whether that line is context or added; each following context or added line is one higher, and removed (`-`) lines are never counted. Cite the number of the line the finding is about.
 - `blocker`: wrong behavior, or a test that cannot fail. `major`: a required clause unmet. `minor`: weak but valid. `nit`: style.
 - No findings: `findings: none` — never invent one.
 - Last line: `verdict: approve` or `verdict: changes-requested` (the latter whenever a blocker or major exists).

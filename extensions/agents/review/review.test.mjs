@@ -264,8 +264,8 @@ test('2f81569f T11.AC2 blind and blind-deep modes make NO tool calls; static mod
   assert.match(blind, /judge only what is in the brief/);
   assert.match(blind, /blind and blind-deep/);
   assert.match(blind, /specification and tests/);
-  assert.match(prose, /Static mode may read/);
-  assert.ok(prose.indexOf('Static mode may read') < prose.indexOf('## Blind modes'));
+  assert.match(prose, /Static mode uses only Read, Grep, and Glob/);
+  assert.ok(prose.indexOf('Static mode uses only Read') <prose.indexOf('## Blind modes'));
 });
 
 test('2f81569f T11.AC2 blind-deep refuses UNLABELED implementer rationale in specification or tests', () => {
@@ -412,4 +412,12 @@ test('2f81569f T11.AC5 every declared SR id has a checklist line in review.md, a
   for (const id of ids) assert.match(st, new RegExp(`^- \\*\\*${id.replace('.', '\\.')}\\b`, 'm'), `${id} has a checklist line`);
   assert.match(st, /SR\.2 · §6\.5.*recorded red run on a failed assertion/);
   assert.match(st, /SR\.4 · G12.*planning record is present/);
+});
+
+// ---- review correction (blind-review C2) ----------------------------------------------------
+test('2f81569f T11 review.md: static-tools sentence is well formed and the +start rule covers a context first line', () => {
+  assert.doesNotMatch(prose, /Static mode may read:/);
+  assert.match(prose, /Static mode uses only Read, Grep, and Glob; Read every cited file before judging it\./);
+  assert.match(prose, /`\+start` is the number of the hunk's first body line, whether that line is context or added/);
+  assert.match(prose, /removed \(`-`\) lines are never counted/);
 });
