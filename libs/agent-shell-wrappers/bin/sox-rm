@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+'use strict';
+let policy;
+try {
+  policy = require('../dist/policy.js');
+} catch (err) {
+  process.stderr.write('sox-rm: build missing (run: npx nx build agent-shell-wrappers)\n');
+  process.exit(3);
+}
+process.exitCode = policy.runRmCli(process.argv.slice(2));
