@@ -6,10 +6,12 @@
  * "Installed extension" = a directory under extensions/agents/ whose extension.json `id` is the name.
  *
  * Routed names come from two sources:
- *   1. The dispatcher's routing rule (extensions/agents/dispatcher/dispatcher.md): every
- *      backticked agent-shaped token in the rule that carries the `Work class → executor` rows,
- *      from "Route each bucket" up to "If no row matches ..." (rows, the `general` last-resort
- *      guard, and the verification aliases it names are all names a reader will route to).
+ *   1. The dispatcher's routing rule (extensions/agents/dispatcher/dispatcher.md), from
+ *      "Route each bucket" up to "If no row matches ...":
+ *        - the rows after `Work class → executor:`: only the backticked token right after an arrow
+ *          (`→ \`name\``), so a backticked non-agent word in a row is never flagged;
+ *        - the preamble before the rows: its backticked agent-shaped tokens (the `general`
+ *          last-resort guard and the verification aliases it names are names a reader routes to).
  *   2. The task-to-agent routing table in the repo-root AGENTS.md — a markdown table whose header
  *      has a task/work-class/intent column AND an agent/executor column. When AGENTS.md has no
  *      such table the guard SAYS SO on stdout and still checks source 1; it never passes silently.
@@ -35,8 +37,11 @@ export const AGENTS_MD_REL = 'AGENTS.md';
 const IDENT = /^[a-z][a-z0-9-]*$/;
 const START_MARK = 'Route each bucket';
 const END_MARK = 'If no row matches';
-/** Backticked tokens inside the routing rule that are not agent names (model tiers). */
+/** Backticked tokens in the preamble that are not agent names (model tiers). */
 const NOT_AGENTS = new Set(['sonnet', 'opus', 'haiku']);
+const ROWS_MARK = /Work class\s*→\s*executor\s*:?/;
+/** The executor of a routing row: the backticked token directly after an arrow. */
+const ROW_EXECUTOR = /→\s*`([^`\n]+)`/g;
 
 /** Thrown for "the guard cannot run" (exit 2), as opposed to "roster is wrong" (exit 1). */
 export class GuardError extends Error {}
@@ -55,12 +60,17 @@ export function parseDispatcherRoutes(markdown) {
   const end = markdown.indexOf(END_MARK, start);
   if (end === -1) throw new GuardError(`dispatcher routing rule not found: no "${END_MARK}" after "${START_MARK}"`);
   const rule = markdown.slice(start, end);
-  if (!/Work class\s*→\s*executor/.test(rule)) {
-    throw new GuardError('dispatcher routing rule has no "Work class → executor" rows');
-  }
+  const marker = ROWS_MARK.exec(rule);
+  if (marker === null) throw new GuardError('dispatcher routing rule has no "Work class → executor" rows');
+  const preamble = rule.slice(0, marker.index);
+  const rows = rule.slice(marker.index + marker[0].length);
+  const candidates = [
+    ...backticked(preamble),
+    ...[...rows.matchAll(ROW_EXECUTOR)].map((m) => m[1].trim()),
+  ];
   const seen = new Set();
   const out = [];
-  for (const tok of backticked(rule)) {
+  for (const tok of candidates) {
     if (!IDENT.test(tok) || NOT_AGENTS.has(tok) || seen.has(tok)) continue;
     seen.add(tok);
     out.push({ name: tok, source: DISPATCHER_REL });
@@ -75,12 +85,15 @@ function splitRow(line) {
 
 /**
  * Parse a task-to-agent routing table out of AGENTS.md.
- * @returns {{ found: boolean, names: { name: string, source: string }[] }}
+ * Agent cells that are neither backticked identifiers nor bare identifiers are reported in
+ * `warnings` (the CLI prints them to stderr) instead of being dropped silently.
+ * @returns {{ found: boolean, names: { name: string, source: string }[], warnings: string[] }}
  */
 export function parseAgentsMdTable(markdown) {
   const lines = markdown.split('\n');
   const names = [];
   const seen = new Set();
+  const warnings = [];
   let found = false;
   for (let i = 0; i + 1 < lines.length; i++) {
     if (!lines[i].includes('|') || !/^\s*\|?\s*:?-{3,}/.test(lines[i + 1]) || !lines[i + 1].includes('|')) continue;
@@ -94,14 +107,16 @@ export function parseAgentsMdTable(markdown) {
       const toks = backticked(cell);
       const cands = toks.length > 0 ? toks : [cell];
       for (const c of cands) {
-        if (IDENT.test(c) && !seen.has(c)) {
+        if (!IDENT.test(c)) {
+          warnings.push(`${AGENTS_MD_REL}:${j + 1}: agent cell ${JSON.stringify(cell)} is neither a backticked nor a bare agent identifier; not checked`);
+        } else if (!seen.has(c)) {
           seen.add(c);
           names.push({ name: c, source: AGENTS_MD_REL });
         }
       }
     }
   }
-  return { found, names };
+  return { found, names, warnings };
 }
 
 /**
@@ -164,7 +179,7 @@ export function listInstalled(source) {
 /**
  * Pure check over a source. Returns the full result; never prints, never exits.
  * @returns {{ routed, installed:Set<string>, unresolved:{name:string,source:string}[],
- *             agentsMdTable:'found'|'absent'|'no-file', warnings:string[], label:string }}
+ *             agentsMdTable:'found'|'absent'|'no-file', warnings:string[], tableWarnings:string[], label:string }}
  */
 export function checkRoster(source) {
   const dispatcherText = source.readFile(DISPATCHER_REL);
@@ -172,8 +187,10 @@ export function checkRoster(source) {
   const routed = [...parseDispatcherRoutes(dispatcherText)];
   const agentsMd = source.readFile(AGENTS_MD_REL);
   let agentsMdTable = 'no-file';
+  const tableWarnings = [];
   if (agentsMd !== null) {
     const t = parseAgentsMdTable(agentsMd);
+    tableWarnings.push(...t.warnings);
     agentsMdTable = t.found ? 'found' : 'absent';
     const have = new Set(routed.map((r) => r.name));
     for (const n of t.names) {
@@ -185,7 +202,7 @@ export function checkRoster(source) {
   }
   const { installed, warnings } = listInstalled(source);
   const unresolved = routed.filter((r) => !installed.has(r.name));
-  return { routed, installed, unresolved, agentsMdTable, warnings, label: source.label };
+  return { routed, installed, unresolved, agentsMdTable, warnings, tableWarnings, label: source.label };
 }
 
 export function formatReport(result) {
@@ -206,9 +223,28 @@ export function formatReport(result) {
   return lines.join('\n');
 }
 
-const realGit = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+/** Real git; failures become one-line GuardErrors that carry git's own stderr. */
+export const realGit = (args, cwd) => {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    const detail = String(e.stderr ?? e.message).trim().replace(/\s*\n\s*/g, ' ');
+    throw new GuardError(`git ${args[0]} failed: ${detail}`);
+  }
+};
 
-export function main(argv, io = { out: console.log, err: console.error }, git = realGit) {
+/** Fail with exit-2 semantics when `ref` does not name a commit. */
+function verifyRef(git, root, ref) {
+  if (ref.startsWith('-')) throw new GuardError(`unknown --ref "${ref}": a ref must not start with "-"`);
+  try {
+    git(['rev-parse', '--verify', `${ref}^{commit}`], root);
+  } catch (e) {
+    const detail = e instanceof GuardError ? e.message : String(e.message);
+    throw new GuardError(`unknown --ref "${ref}": ${detail}`);
+  }
+}
+
+export function main(argv, io = { out: console.log, err: console.error }, git = realGit, env = process.env) {
   const flag = (name) => {
     const i = argv.indexOf(name);
     if (i === -1) return null;
@@ -218,11 +254,16 @@ export function main(argv, io = { out: console.log, err: console.error }, git = 
   };
   try {
     const root = path.resolve(flag('--root') ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
-    const result = checkRoster(makeSource({ root, ref: flag('--ref'), git }));
+    const ref = flag('--ref');
+    if (ref !== null) verifyRef(git, root, ref);
+    const result = checkRoster(makeSource({ root, ref, git }));
+    for (const w of result.tableWarnings) io.err(`roster-guard: warning: ${w}`);
     io.out(formatReport(result));
     return result.unresolved.length === 0 ? 0 : 1;
   } catch (e) {
-    io.err(`roster-guard: cannot run: ${e instanceof GuardError ? e.message : (e.stack ?? String(e))}`);
+    if (e instanceof GuardError) io.err(`roster-guard: cannot run: ${e.message}`);
+    else if (env.GUARD_DEBUG) io.err(`roster-guard: cannot run: ${e.stack ?? String(e)}`);
+    else io.err(`roster-guard: cannot run: ${e?.message ?? String(e)} (set GUARD_DEBUG=1 for the stack)`);
     return 2;
   }
 }
