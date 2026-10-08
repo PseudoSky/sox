@@ -1,0 +1,14 @@
+{
+  "name": "@adhd/sox-extension-workspace-standards",
+  "version": "0.1.0",
+  "description": "One skill that reviews, runs, and applies every workspace standard (testing first) over the routing and gates foundations.",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "workspace-standards",
+    "testing-strategy",
+    "routing",
+    "gates"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workspace-standards/roles-covered",
+  "title": "roles-covered declaration (T14.AC10)",
+  "description": "Normalized form of an agent's roles-covered list. On disk each id is one capabilities entry of the form roles-covered:<id> in extension.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agent", "roles-covered"],
+  "properties": {
+    "agent": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "roles-covered": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Z]{2}\\.[0-9]+$" }
+    }
+  },
+  "$defs": {
+    "capabilityEntry": { "type": "string", "pattern": "^roles-covered:[A-Z]{2}\\.[0-9]+$" }
+  }
+}

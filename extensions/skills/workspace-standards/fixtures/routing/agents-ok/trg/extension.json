@@ -1,0 +1,9 @@
+{
+  "id": "trg",
+  "version": "1.0.0",
+  "type": "agent",
+  "capabilities": [
+    "roles-covered:TR.1",
+    "other-capability"
+  ]
+}

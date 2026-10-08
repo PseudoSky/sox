@@ -1,0 +1,55 @@
+{
+  "$comment": "T14.AC1 registry. Paths are relative to the skill root. status: active = every verb playbook present; planned = listed, nothing authored yet (review all reports it).",
+  "version": 1,
+  "foundations": [
+    {
+      "id": "routing",
+      "status": "active",
+      "summary": "Which agent holds which role: roles.md, the task-to-agent table, role resolution by the roles-covered declarations.",
+      "playbooks": {
+        "review": "foundations/routing/review.md",
+        "run": "foundations/routing/run.md",
+        "apply": "foundations/routing/apply.md"
+      }
+    },
+    {
+      "id": "gates",
+      "status": "active",
+      "summary": "Which checks block which stage: the gate registry, stage bindings, and the one domain-neutral gate runner.",
+      "playbooks": {
+        "review": "foundations/gates/review.md",
+        "run": "foundations/gates/run.md",
+        "apply": "foundations/gates/apply.md"
+      }
+    }
+  ],
+  "standards": [
+    {
+      "id": "testing",
+      "status": "active",
+      "summary": "Test size tiers, change classes and rigor, retention, flakes, gates G1-G12, and the roles that apply them.",
+      "policy": { "document": "docs/testing/STRATEGY.md", "location": "the adopting repository (portable; names no agent)" },
+      "binding": "docs/standards/testing.md",
+      "declaration": "standards/testing/standard.json",
+      "roles": "standards/testing/roles.md",
+      "playbooks": {
+        "review": "standards/testing/playbooks/review.md",
+        "run": "standards/testing/playbooks/run.md",
+        "apply": "standards/testing/playbooks/apply.md"
+      },
+      "modes": {
+        "run": {
+          "retention-audit": "standards/testing/playbooks/retention-audit.md",
+          "flake-triage": "standards/testing/playbooks/flake-triage.md"
+        }
+      },
+      "conformance": "standards/testing/conformance.spec.json",
+      "applyTemplate": "standards/testing/templates/agents-block.md"
+    },
+    { "id": "deployment", "status": "planned" },
+    { "id": "implementation", "status": "planned" },
+    { "id": "documentation", "status": "planned" },
+    { "id": "organization", "status": "planned" },
+    { "id": "styling", "status": "planned" }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "nodecl",
+  "version": "1.0.0",
+  "type": "agent",
+  "capabilities": [
+    "other-capability"
+  ]
+}

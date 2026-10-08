@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "foundations": [
+    {
+      "id": "routing",
+      "status": "active",
+      "summary": "f",
+      "playbooks": {
+        "review": "f-routing/review.md",
+        "run": "f-routing/run.md",
+        "apply": "f-routing/apply.md"
+      }
+    }
+  ],
+  "standards": [
+    {
+      "id": "alpha",
+      "status": "active",
+      "summary": "fixture",
+      "declaration": "alpha/standard.json",
+      "playbooks": {
+        "review": "alpha/review.md",
+        "run": "alpha/run.md",
+        "apply": "alpha/apply.md"
+      },
+      "conformance": "alpha/conformance.spec.json",
+      "applyTemplate": "alpha/apply-template.md"
+    }
+  ]
+}

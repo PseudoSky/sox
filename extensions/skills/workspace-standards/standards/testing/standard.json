@@ -1,0 +1,42 @@
+{
+  "standard": "testing",
+  "policy": "docs/testing/STRATEGY.md",
+  "roles": [
+    "risk-owner", "classifier", "planner", "test-author", "implementer", "static-reviewer", "auditor",
+    "triager", "verifier", "record-keeper", "strategy-owner", "mechanism-owner", "coordinator"
+  ],
+  "workClasses": [
+    { "id": "new-behavior", "defaultRigor": "standard", "card": "cards/test-author/author-new-behavior.md" },
+    { "id": "defect-fix", "defaultRigor": "standard", "card": "cards/test-author/author-regression.md" },
+    { "id": "refactor", "defaultRigor": "light", "card": "cards/test-author/characterize.md" },
+    { "id": "configuration", "defaultRigor": "light", "card": "cards/test-author/select-checks.md" },
+    { "id": "dependency", "defaultRigor": "light", "card": "cards/test-author/select-checks.md" },
+    { "id": "boundary-contract", "defaultRigor": "deep", "card": "cards/test-author/author-contract.md" },
+    { "id": "no-code", "defaultRigor": "none", "card": null },
+    { "id": "test-maintenance", "defaultRigor": "standard", "card": "cards/test-author/maintain.md" }
+  ],
+  "gates": [
+    { "id": "G1", "threshold": "required tests pass; a quarantined test past its deadline fails the build", "mechanism": "mechanical", "stage": ["D", "E", "G"] },
+    { "id": "G2", "threshold": "every test belongs to exactly one tier and runs in at least one stage", "mechanism": "mechanical", "stage": ["D"] },
+    { "id": "G3", "threshold": "no test exceeds its tier ceiling", "mechanism": "mechanical", "stage": ["D"] },
+    { "id": "G4", "threshold": "every skip, todo, disabled, characterization marker and review-debt entry has a tracking item and an unexpired date", "mechanism": "mechanical", "stage": ["D"] },
+    { "id": "G5", "threshold": "at most 1% of a tier's runs flaky (starting value); no unrecorded retry", "mechanism": "mechanical", "stage": ["D", "F", "G"] },
+    { "id": "G6", "threshold": "a defect fix carries a test that failed before the fix; every new behavioral test records a red run on a failed assertion", "mechanism": "review", "stage": ["D"] },
+    { "id": "G7", "threshold": "per-test and per-stage budgets hold; p95 not more than 10% above the median of the previous five mainline runs (starting value)", "mechanism": "mechanical", "stage": ["D", "E"] },
+    { "id": "G8", "threshold": "surviving mutants and uncovered lines in the changed code are reviewed; no repository-wide percentage target", "mechanism": "mechanical", "stage": ["D", "F"] },
+    { "id": "G9", "threshold": "every tier P, H, or X test carries a valid fidelity-gap statement", "mechanism": "mechanical", "stage": ["D"] },
+    { "id": "G10", "threshold": "the built artifact loads and its primary journey runs as a consumer runs it", "mechanism": "mechanical", "stage": ["D", "G"] },
+    { "id": "G11", "threshold": "changes to test infrastructure and gates cite the strategy and the exception log", "mechanism": "review", "stage": ["D"] },
+    { "id": "G12", "threshold": "every change has a class and rigor record; Standard and Deep have a not-testing list; every new test has a header", "mechanism": "mechanical", "stage": ["D"] }
+  ],
+  "carriers": {
+    "P1": "field", "P2": "check", "P3": "card", "P4": "card", "P5": "field", "P6": "check", "P7": "card",
+    "P8": "check", "P9": "field", "P10": "check", "P11": "check", "P12": "card", "P13": "check", "P14": "check",
+    "G1": "check", "G2": "check", "G3": "check", "G4": "check", "G5": "check", "G6": "card", "G7": "check",
+    "G8": "check", "G9": "check", "G10": "check", "G11": "card", "G12": "check",
+    "R1": "card", "R2": "card", "R3": "card", "R4": "card", "R5": "check", "R6": "check",
+    "§6.1.1": "field", "§6.1.2": "card", "§6.1.3": "field", "§6.2": "card", "§6.4": "card", "§6.5": "card",
+    "§6.6": "field", "§6.7": "field", "§7": "check", "§8.3": "card", "§8.4": "field", "§8.5": "field",
+    "§8.6": "field", "§9": "check", "§10": "check", "§13.1": "brief-slice", "§13.2": "brief-slice", "§14": "brief-slice"
+  }
+}

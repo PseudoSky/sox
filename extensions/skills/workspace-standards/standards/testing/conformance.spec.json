@@ -1,0 +1,41 @@
+{
+  "$comment": "T14.AC2 conformance specification, run by scripts/conformance.mjs. Proves T14.AC4 (cards), T14.AC5 (playbooks), T14.AC6 (formats), T14.AC7 (roles).",
+  "standard": "testing",
+  "checks": [
+    { "id": "C1", "kind": "declaration-valid" },
+    { "id": "C2", "kind": "roles-valid", "expectedRoles": 13 },
+    { "id": "C3", "kind": "carriers-complete", "ranges": ["P1-P14", "G1-G12", "R1-R6"] },
+    { "id": "C4", "kind": "gates-complete", "ids": ["G1-G12"] },
+    {
+      "id": "C5",
+      "kind": "cards",
+      "dir": "cards",
+      "maxBytes": 4096,
+      "required": [
+        "role/classifier.md", "role/implementer-light.md", "role/static-reviewer.md", "role/auditor.md", "role/triager.md",
+        "test-author/plan-bucket.md", "test-author/author-new-behavior.md", "test-author/author-regression.md",
+        "test-author/author-contract.md", "test-author/characterize.md", "test-author/select-checks.md", "test-author/maintain.md"
+      ]
+    },
+    {
+      "id": "C6",
+      "kind": "playbooks-end-in-record",
+      "files": [
+        "playbooks/run.md", "playbooks/apply.md", "playbooks/review.md",
+        "playbooks/retention-audit.md", "playbooks/flake-triage.md"
+      ]
+    },
+    {
+      "id": "C7",
+      "kind": "formats",
+      "dir": "formats",
+      "formats": {
+        "test-header.md": ["guards", "tier", "gap", "cites", "tags", "teeth"],
+        "audit-record.md": ["test", "auditor", "authorship-check", "verdict", "action", "confirmed-by"],
+        "escape-record.md": ["defect", "found-at-stage", "earliest-stage", "lowest-tier", "missing-test", "change-class", "rigor"],
+        "removal-record.md": ["test", "failed-question", "covering-test", "reviewer", "exception"],
+        "testing-record.md": ["change-class", "rigor", "triggers", "ac", "not-testing", "plan", "expires"]
+      }
+    }
+  ]
+}

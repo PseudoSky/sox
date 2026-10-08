@@ -1,0 +1,8 @@
+{
+  "id": "aud",
+  "version": "1.0.0",
+  "type": "agent",
+  "capabilities": [
+    "roles-covered:AU.1"
+  ]
+}

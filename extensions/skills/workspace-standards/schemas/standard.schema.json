@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workspace-standards/standard",
+  "title": "standard declaration (T14.AC2)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["standard", "policy", "roles", "workClasses", "gates", "carriers"],
+  "properties": {
+    "standard": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "policy": { "type": "string" },
+    "own": { "type": "array", "uniqueItems": true, "items": { "enum": ["routing", "gates"] }, "description": "Optional. routing: own / gates: own, written as the foundations the standard owns itself." },
+    "roles": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "workClasses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "defaultRigor"],
+        "properties": {
+          "id": { "type": "string" },
+          "defaultRigor": { "enum": ["none", "light", "standard", "deep"] },
+          "card": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "threshold", "mechanism", "stage"],
+        "properties": {
+          "id": { "type": "string" },
+          "threshold": { "type": "string" },
+          "mechanism": { "enum": ["mechanical", "review"] },
+          "stage": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[A-H]$" } }
+        }
+      }
+    },
+    "carriers": {
+      "type": "object",
+      "additionalProperties": { "enum": ["check", "field", "brief-slice", "card"] }
+    }
+  }
+}

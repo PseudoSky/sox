@@ -1,0 +1,68 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "workspace-standards",
+  "version": "0.1.0",
+  "type": "skill",
+  "title": "workspace-standards — one entry point to review, run, and apply every workspace standard",
+  "description": "Use this when a workspace standard (testing first) must be reviewed, run for a change, or applied to a repository, or when role routing or gates need review. The command /workspace-standards with a verb (review, run, or apply) and a target loads that target's playbook; a target is a foundation (routing, gates) or a registered standard (testing).",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "workspace-standards",
+    "testing-strategy",
+    "routing",
+    "gates",
+    "roles",
+    "playbooks"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "verb": {
+          "type": "string",
+          "enum": [
+            "review",
+            "run",
+            "apply"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "description": "A foundation (routing, gates), a registered standard (testing), or all (review and apply only)."
+        }
+      },
+      "required": [
+        "verb",
+        "target"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "playbook": {
+          "type": "string",
+          "description": "Skill-relative path of the playbook the verb loaded, or a named error code."
+        }
+      }
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  },
+  "tags": [
+    "standards",
+    "testing",
+    "authoring",
+    "skill"
+  ]
+}
