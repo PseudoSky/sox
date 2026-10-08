@@ -852,6 +852,9 @@ function deriveTooling(ir: AgentIr, override: AgentOverride | undefined, report:
       report.warnings.push(`mcpServers.${k} not mounted: IR permission denies its tools`);
       continue;
     }
+    // The builtin dispatch server key is mounted by nativeTooling.dispatch (ADR-0008 D1),
+    // never by an mcpServers entry: skip silently — no "not mounted" warning, no entry.
+    if (k === 'agent-mcp' && dispatch !== false) continue;
     const cfg = launch[k];
     if (cfg === undefined) {
       report.warnings.push(`mcpServers.${k}: the IR references it but render.agent-mcp.mcpServers declares no launch config — not mounted`);
