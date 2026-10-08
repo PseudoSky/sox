@@ -1,5 +1,29 @@
 # @adhd/sox-manifest
 
+## 1.1.0
+
+### Minor Changes
+
+- 93371ce: agent-mcp renderer fidelity (ticket 7ef0ee2c; `docs/spec/agent-mcp-renderer-fidelity.md`): the catalog row now carries what the agent IR actually declares instead of a bare `{provider, mcpServers: {}, permissions: {}}`.
+
+  **host-registry** — the agent-mcp renderer emits `nativeTooling.{fs,shell,dispatch,hitl}` explicitly (least privilege: a built-in the IR `tools` omit is disabled; IR `permission` read/edit/write/glob/grep rules become server-qualified `fs.<tool>` gate rules; `task` -> `dispatch`/`allowedAgents`; `question` -> `hitl`), selects `mcpServers` from the IR `tools` via `render.agent-mcp.toolMap` (a stdio entry that launches agent-mcp is dropped; literal secrets fail the render; `~/` and `${HOME}` expand), replaces the substring provider heuristic with a typed `deepseek|openai|anthropic` profile table (unknown vendor throws, `provider: null` = unbound row, `claudecli` gets `allowedBuiltinTools`, `temperature` is emitted, env values must be `ADHD_AGENT_` pointers), and returns an `AgentRenderReport` (`lost[]`, `warnings`) alongside the payload. **Behavior change:** a bash `permission` map with command-pattern rules cannot be enforced (the gate matches tool names only, ADR-0008 D5), so shell is disabled fail-closed unless the manifest sets `render.agent-mcp.nativeTooling.shell` or `acceptLoss: true`. New exports: `AgentRenderError`, `PROVIDER_PROFILES`, `CatalogProvider`, `CatalogNativeTooling`, `AgentRenderReport`, `AgentRenderLoss`.
+
+  **install-engine** — one agent-mcp server per command (`AgentMcpSession` / `withAgentMcpSession`; previously one spawn per tool call), `fullDefinition` reads, `catalogUpsert` returns `{outcome: created|updated|unchanged, row, nulledMcpKeys}` and makes **no write call** when the stored managed fields already equal the render, nulls owned `mcpServers` keys the render no longer carries (and the welded `agent` launcher on pre-existing rows), and the ledger records `ownedMcpKeys`/`managedFields`/`rowDigest`. `reconcile-agent-mcp` compares every managed field of every row with a local manifest (the anthropic-only default is retired) from a single `agent_list fullDefinition:true`; `--dry-run` lists the changed fields and loss report, apply over a lossy row needs `--accept-loss`, `--include-missing` creates absent local agents, pre-apply row snapshots are written, and the resolved catalog DB path is printed first. New exports: `renderAgentCatalogRow`, `renderAgentMcpRow`, `listLocalAgentMcpExtensions`, `describeAgentMcpCatalog`.
+
+  **manifest** — `validate` checks `render.agent-mcp` against a closed key set: provider shape (per-type keys, `ADHD_AGENT_` env pointers, temperature in [0,1]), native-tooling root hints (absolute fs/shell roots rejected), `mcpServers` hygiene (no literal secrets, no absolute host paths, no welded catalog DB env, no stdio entry that launches agent-mcp).
+
+  The 21 `extensions/agents/*` manifests are migrated to the new `render.agent-mcp` shape (portable launch configs, `toolMap`, no welded `agent` server or absolute `/Users/` path).
+
+- 50c2c65: Install/uninstall safety, host-attributed uninstall, and fail-closed agent-mcp web-tool rendering (tickets 6fd94192, 6c9fbf52, e46db6ed, e00c47bb).
+
+  **manifest** — `validate` now rejects unknown keys in the `agent` block (closed key set `AGENT_IR_KEYS`, plus `AGENT_IR_TOOL_REF_KEYS` for symbolic tool refs); the JSON-schema `additionalProperties: false` was never executed before. `agent.steps` must be a positive integer. New exports: `AGENT_IR_KEYS`, `AGENT_IR_TOOL_REF_KEYS`.
+
+  **install-engine** — install refuses an existing destination that no ledger entry owns, before any write (agent, skill and hook; BUG-028), and `--force` adopts it with a warning. Uninstall is host-attributed: `uninstall --host X` reverses only that host, shared targets survive until the last claiming host is removed (order-independent), and an unsafe uninstall raises `UninstallAbortedError`; project-scope ledger resolution is fixed. `ownership.json` saves are serialized with an O_EXCL lock file (`withFileLockSync`, `OwnershipLockTimeoutError`), fixing a lost-update race.
+
+  **host-registry** — the agent-mcp renderer treats an explicit single web-tool deny with the sibling allowed as `nativeWebTools: false` (fail-closed) and records a `dropped` loss; an explicit `render.agent-mcp.nativeWebTools` override records `covered-by-override`. Both web tools denied with unspecified `tools` is closed too. Migration note: `docs/spec/agent-mcp-renderer-fidelity.md`.
+
+  **cli** — `uninstall --host <h>` takes exactly one host; MCP project-sync and trust reversals use the host(s) actually being removed instead of the record's last writer; previously untraced catches now log, and `uninstall` reports aborts and any reversals already completed.
+
 ## 1.0.0
 
 ### Major Changes
