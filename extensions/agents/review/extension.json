@@ -28,6 +28,12 @@
   "requires": {
     "tool_calling": true
   },
+  "capabilities": [
+    "roles-covered:SR.1",
+    "roles-covered:SR.2",
+    "roles-covered:SR.3",
+    "roles-covered:SR.4"
+  ],
   "agent": {
     "name": "review",
     "description": "Read-only reviewer with static and blind modes. Returns findings by severity with file:line evidence; blind mode accepts only a diff and the word Review. Cannot edit, write, or run commands.",
@@ -38,14 +44,6 @@
       "read",
       "glob",
       "grep"
-    ],
-    "roles-covered": [
-      "static-reviewer:G9",
-      "static-reviewer:R3",
-      "static-reviewer:R4",
-      "static-reviewer:G12",
-      "static-reviewer:6.2",
-      "static-reviewer:6.5"
     ],
     "permission": {
       "read": "allow",

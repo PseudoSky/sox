@@ -109,12 +109,19 @@ test('2f81569f T11.AC4 manifest declares claude, opencode and agent-mcp with mat
 });
 
 // ---- AC5 -------------------------------------------------------------------------------
-test('2f81569f T11.AC5 declares roles-covered as machine-readable static-reviewer obligation ids', () => {
-  const rc = manifest.agent['roles-covered'];
-  assert.ok(Array.isArray(rc) && rc.length > 0);
-  for (const id of rc) assert.match(id, /^static-reviewer:[A-Za-z0-9.§]+$/);
-  assert.equal(new Set(rc).size, rc.length);
-  for (const required of ['G9', 'R3', 'R4', 'G12']) assert.ok(rc.includes(`static-reviewer:${required}`));
+test('2f81569f T11.AC5 declares roles-covered:<ID> capabilities that validate against workspace-standards roles.md', () => {
+  const schema = JSON.parse(readFileSync(new URL('../../skills/workspace-standards/schemas/roles-covered.schema.json', import.meta.url), 'utf8'));
+  const entry = new RegExp(schema.$defs.capabilityEntry.pattern);
+  const caps = (manifest.capabilities ?? []).filter((c) => c.startsWith('roles-covered:'));
+  assert.ok(caps.length > 0);
+  for (const c of caps) assert.match(c, entry);
+  const ids = caps.map((c) => c.slice('roles-covered:'.length));
+  assert.equal(new Set(ids).size, ids.length);
+  const roles = readFileSync(new URL('../../skills/workspace-standards/standards/testing/roles.md', import.meta.url), 'utf8');
+  const sr = roles.slice(roles.indexOf('## role: static-reviewer'), roles.indexOf('## role: auditor'));
+  for (const id of ids) assert.ok(sr.includes(`- ${id}:`), `${id} is a static-reviewer obligation`);
+  assert.deepEqual(ids, ['SR.1', 'SR.2', 'SR.3', 'SR.4']);
+  assert.equal(manifest.agent['roles-covered'], undefined); // agent schema rejects unknown keys
 });
 
 test('2f81569f T11.AC5 blind-deep receives specification and tests and refuses implementer reasoning (D22)', () => {

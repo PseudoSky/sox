@@ -5,8 +5,7 @@
 - Initial release (2f81569f T11). Read-only `review` agent with static and blind modes
   (blind-deep at Deep rigor: diff, specification, tests; never the implementer's reasoning, D22).
 - Tools: read, glob, grep only; `edit`/`write`/`bash` denied (renders `disallowedTools` on claude).
-- Declares `agent.roles-covered` (D23): Static reviewer obligations G9, R3, R4, G12, §6.2, §6.5.
-  Reconciliation against T14's `roles.md` is pending that merge.
+- Declares `capabilities: roles-covered:SR.1..SR.4` (D23), the Static reviewer obligations in workspace-standards `roles.md`.
 - Blind templates in `templates/` carry only `{{diff}}` (plus `{{specification}}`/`{{tests}}` for blind-deep).
 
 ### Evidence (0.1.0)

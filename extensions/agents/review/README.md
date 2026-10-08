@@ -18,7 +18,7 @@ Any other brief, or a blind brief carrying rationale, ACs, or prior state, retur
 
 ## Roles
 
-`agent.roles-covered` in `extension.json` lists the Static reviewer obligation ids (D23).
+`capabilities` in `extension.json` declares `roles-covered:SR.1`..`SR.4`, the Static reviewer obligations of workspace-standards `roles.md` (D23).
 
 ## Usage
 
