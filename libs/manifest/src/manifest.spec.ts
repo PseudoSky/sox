@@ -13,7 +13,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isManifest, ManifestSchema, validate } from './index.js';
+import { AGENT_IR_KEYS, AGENT_IR_TOOL_REF_KEYS, isManifest, ManifestSchema, validate } from './index.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1501,6 +1501,20 @@ describe('agent IR closed-key check (6fd94192)', () => {
     }
   });
 
+  it('6fd94192 AC2: every extension.json ANYWHERE under extensions/** that carries an `agent` block validates', () => {
+    const root = join(__dirname, '..', '..', '..', 'extensions');
+    const all = (readdirSync(root, { recursive: true }) as string[])
+      .filter((rel) => rel.endsWith('extension.json') && !rel.split('/').some((seg) => seg === 'node_modules' || seg === 'dist'))
+      .map((rel) => join(root, rel));
+    const parsed = all.map((p) => ({ p, json: JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown> }));
+    const withAgent = parsed.filter(({ json }) => json['agent'] !== undefined);
+    expect(withAgent.length).toBeGreaterThanOrEqual(20);
+    for (const { p, json } of withAgent) {
+      const result = validate(json);
+      expect({ p, errors: result.errors }).toEqual({ p, errors: [] });
+    }
+  }, 30_000);
+
   it('6fd94192 AC4: an unknown agent.* key fails closed, naming the key path', () => {
     const errs = errors(agentManifest({ name: 'x', bogus: 1 }));
     expect(errs.some((e) => e.includes('agent.bogus'))).toBe(true);
@@ -1524,7 +1538,28 @@ describe('agent IR closed-key check (6fd94192)', () => {
     expect(errs).toEqual([]);
   });
 
-  it('6fd94192: agent.steps must be a number', () => {
-    expect(errors(agentManifest({ steps: '20' })).some((e) => e.includes('agent.steps'))).toBe(true);
+  it('6fd94192 AC4: agent.steps must be a positive integer (message names the key)', () => {
+    for (const bad of ['20', 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const errs = errors(agentManifest({ steps: bad }));
+      expect({ bad, hit: errs.some((e) => e.includes('agent.steps') && e.includes('positive integer')) }).toEqual({ bad, hit: true });
+    }
+    for (const good of [1, 4, 100]) expect(errors(agentManifest({ steps: good }))).toEqual([]);
+  });
+
+  it('6fd94192 AC4: the "allowed" lists in the closed-key messages are derived from the key sets', () => {
+    const agentMsg = errors(agentManifest({ bogus: 1 })).find((e) => e.includes('agent.bogus')) ?? '';
+    expect(agentMsg).toContain(`(allowed: ${[...AGENT_IR_KEYS].join(', ')})`);
+    const toolMsg = errors(agentManifest({ tools: [{ logical: 'm', server: 's', extra: 1 }] })).find((e) => e.includes('agent.tools[].extra')) ?? '';
+    expect(toolMsg).toContain(`(allowed: ${[...AGENT_IR_TOOL_REF_KEYS].join(', ')})`);
+  });
+
+  // The runtime key sets and the declared JSON schema are two copies of one contract; this pins them together so a
+  // key added to one and not the other (the original 6fd94192 drift) fails here.
+  it('6fd94192 AC3: AGENT_IR_KEYS and AGENT_IR_TOOL_REF_KEYS equal the ManifestSchema agent property keys', () => {
+    const props = (ManifestSchema as { properties: Record<string, any> }).properties;
+    const agentProps = props['agent'].properties as Record<string, any>;
+    expect([...AGENT_IR_KEYS].sort()).toEqual(Object.keys(agentProps).sort());
+    const toolRef = (agentProps['tools'].items.oneOf as Array<Record<string, any>>).find((o) => o['type'] === 'object');
+    expect([...AGENT_IR_TOOL_REF_KEYS].sort()).toEqual(Object.keys(toolRef?.['properties'] ?? {}).sort());
   });
 });

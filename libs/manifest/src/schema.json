@@ -486,7 +486,8 @@
           "type": "string"
         },
         "steps": {
-          "type": "number"
+          "type": "integer",
+          "minimum": 1
         },
         "tools": {
           "type": "array",

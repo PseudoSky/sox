@@ -299,12 +299,12 @@ const AGENT_MCP_RENDER_KEYS = new Set([
 ]);
 
 /** The closed set of `agent` IR keys (an unknown key is a typo, never silently ignored). */
-const AGENT_IR_KEYS = new Set([
+export const AGENT_IR_KEYS: ReadonlySet<string> = new Set([
   'name', 'description', 'model', 'mode', 'temperature', 'steps', 'tools', 'permission',
 ]);
 
 /** The closed set of keys a symbolic `agent.tools` entry accepts. */
-const AGENT_IR_TOOL_REF_KEYS = new Set(['logical', 'server']);
+export const AGENT_IR_TOOL_REF_KEYS: ReadonlySet<string> = new Set(['logical', 'server']);
 
 /** Keys each provider variant accepts (mirrors the server's strict provider union). */
 const AGENT_MCP_PROVIDER_KEYS: Record<string, readonly string[]> = {
@@ -914,8 +914,8 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
           errors.push(`agent.${k} is not a recognized agent key (allowed: ${[...AGENT_IR_KEYS].join(', ')})`);
         }
       }
-      if (a['steps'] !== undefined && (typeof a['steps'] !== 'number' || !Number.isFinite(a['steps']))) {
-        errors.push(`agent.steps must be a number when present`);
+      if (a['steps'] !== undefined && (typeof a['steps'] !== 'number' || !Number.isInteger(a['steps']) || a['steps'] < 1)) {
+        errors.push(`agent.steps must be a positive integer when present`);
       }
       for (const k of ['name', 'description', 'model', 'mode']) {
         const v = a[k];
@@ -937,7 +937,7 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
               const o = t as Record<string, unknown>;
               for (const k of Object.keys(o)) {
                 if (!AGENT_IR_TOOL_REF_KEYS.has(k)) {
-                  errors.push(`agent.tools[].${k} is not a recognized symbolic tool key (allowed: logical, server)`);
+                  errors.push(`agent.tools[].${k} is not a recognized symbolic tool key (allowed: ${[...AGENT_IR_TOOL_REF_KEYS].join(', ')})`);
                 }
               }
               if (typeof o['logical'] !== 'string' || typeof o['server'] !== 'string') {
@@ -1344,7 +1344,7 @@ export const ManifestSchema: Record<string, unknown> = {
         model: { type: 'string' },
         temperature: { type: 'number' },
         mode: { type: 'string' },
-        steps: { type: 'number' },
+        steps: { type: 'integer', minimum: 1 },
         tools: {
           type: 'array',
           items: {
