@@ -75,12 +75,24 @@ process.exit(fs.existsSync(${JSON.stringify(distMarker)}) ? 0 : 1);
     `import * as fs from 'node:fs';
 import * as path from 'node:path';
 fs.appendFileSync(${JSON.stringify(buildLog)}, process.argv[2] + '\\n');
+fs.appendFileSync(${JSON.stringify(path.join(dir, 'order.log'))}, 'build\\n');
 if (${builderOk ? 'true' : 'false'}) {
   fs.mkdirSync(path.dirname(${JSON.stringify(distMarker)}), { recursive: true });
   fs.writeFileSync(${JSON.stringify(distMarker)}, '');
   process.exit(0);
 }
 console.error('simulated build failure');
+process.exit(1);
+`,
+  );
+  // Injected tree-state runner: logs to the same ordering log as the builder.
+  const orderLog = path.join(dir, 'order.log');
+  const treeState = path.join(dir, 'fixture-tree-state.mjs');
+  fs.writeFileSync(
+    treeState,
+    `import * as fs from 'node:fs';
+fs.appendFileSync(${JSON.stringify(orderLog)}, 'tree-state ' + process.argv[3] + '\\n');
+console.log('check-suite-tree-state: FIXTURE-DIRTY — 1 uncommitted path in ' + process.argv[3]);
 process.exit(1);
 `,
   );
@@ -97,11 +109,11 @@ process.exit(1);
   const run = () =>
     spawnSync(
       process.execPath,
-      [RUNNER, '--tier1', '--manifest', manifest, '--cwd', dir, '--build-runner', builder],
+      [RUNNER, '--tier1', '--manifest', manifest, '--cwd', dir, '--build-runner', builder, '--tree-state-runner', treeState],
       { encoding: 'utf8' },
     );
   const read = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean) : []);
-  return { dir, run, builds: () => read(buildLog), guardRuns: () => read(ranLog), distExists: () => fs.existsSync(distMarker) };
+  return { dir, run, order: () => read(orderLog), builds: () => read(buildLog), guardRuns: () => read(ranLog), distExists: () => fs.existsSync(distMarker) };
 }
 
 // AC1 — c2e1c0c3 AC1: dist absent + staged SKILL.md -> builds first, exits 0.
@@ -112,6 +124,34 @@ process.exit(1);
   report('c2e1c0c3 AC1: fresh checkout starts with host-registry dist absent', before === false);
   report('c2e1c0c3 AC1: run-guards --tier1 exits 0 with staged SKILL.md', res.status === 0, `exit=${res.status} ${res.stdout}${res.stderr}`);
   report('c2e1c0c3 AC1: host-registry was built (exactly once) before the guard ran', JSON.stringify(s.builds()) === '["host-registry"]' && s.guardRuns().length === 1, JSON.stringify(s.builds()));
+  fs.rmSync(s.dir, { recursive: true, force: true });
+}
+
+// M2 (blind-review correction): the hook-triggered build is preceded by a tree-state notice on stderr.
+{
+  const s = scenario({ needsBuild: true, builderOk: true });
+  const res = s.run();
+  report(
+    'c2e1c0c3 M2: tree-state notice is emitted on stderr naming host-registry, and does not fail the run',
+    res.status === 0 && /\[NOTICE\] pre-build tree-state host-registry: check-suite-tree-state: FIXTURE-DIRTY/.test(res.stderr),
+    `exit=${res.status} ${res.stderr}`,
+  );
+  report(
+    'c2e1c0c3 M2: notice precedes the build (tree-state, then build)',
+    JSON.stringify(s.order()) === '["tree-state host-registry","build"]',
+    JSON.stringify(s.order()),
+  );
+  fs.rmSync(s.dir, { recursive: true, force: true });
+}
+{
+  const s = scenario({ needsBuild: true, builderOk: true });
+  git(['reset', '-q', 'extensions/skills/foo/SKILL.md'], s.dir);
+  const res = s.run();
+  report(
+    'c2e1c0c3 M2: nothing staged -> no tree-state notice and no build',
+    res.status === 0 && s.order().length === 0 && !/pre-build tree-state/.test(res.stderr),
+    JSON.stringify(s.order()),
+  );
   fs.rmSync(s.dir, { recursive: true, force: true });
 }
 

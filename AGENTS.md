@@ -380,6 +380,18 @@ elsewhere in the repo cannot reach that suite and is deliberately not reported. 
 does not make the run wrong; it makes it **unattributable**. Re-run in an isolated worktree (the
 structural fix, already the dispatch default) or publish the dirt alongside the result.
 
+**The pre-commit tier-1 guard builds `host-registry` (c2e1c0c3).** When any staged
+`extensions/skills|agents|bundles` file triggers the `skill-headers` guard, `tools/run-guards.mjs`
+runs `npx nx build host-registry` (`needsBuild` in `tools/guards-manifest.mjs`), because the guard
+renders skill headers through `libs/host-registry/dist` and fails closed when that is absent. That
+is a real build with the hazard above: it rewrites `libs/host-registry/dist` (a live artifact in a
+shared checkout) from whatever source is on disk, including another agent's uncommitted edits. To
+keep the evidence with the commit, the hook first prints one stderr line,
+`[NOTICE] pre-build tree-state host-registry: …`, from
+`node tools/check-suite-tree-state.mjs --project host-registry`. The notice is informational and
+never fails the commit; if it reports a dirty dependency set, treat the guard result as
+unattributable and re-run in an isolated worktree.
+
 ## ⛔ AGENT CONSTRAINT — NEVER PASS `--skip-nx-cache` WITHOUT APPROVAL
 
 **Default BANNED (user directive 2026-08-12).** Agents must NOT pass `--skip-nx-cache` to nx

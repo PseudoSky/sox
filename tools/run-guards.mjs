@@ -24,6 +24,8 @@
  *   --build-runner <script>  (testing only, c2e1c0c3) replace `npx nx build <dep>` with
  *                            `node <script> <dep> <cwd>`; exit 0 = built. Lets unit tests prove the
  *                            build prerequisite without spawning a real nx build.
+ *   --tree-state-runner <script>  (testing only) replace tools/check-suite-tree-state.mjs for the
+ *                            pre-build tree-state notice (stderr, one line, never fails the run).
  *
  * `needsBuild` (guards-manifest.mjs) is honoured by BOTH tiers (c2e1c0c3): a Tier 1 guard that is in
  * scope builds its dependencies once before running, and a failed build is a FAIL (fail-closed — the
@@ -75,6 +77,7 @@ function parseArgs(argv) {
   args.manifest = flagVal('--manifest');
   args.cwd = flagVal('--cwd');
   args.buildRunner = flagVal('--build-runner');
+  args.treeStateRunner = flagVal('--tree-state-runner');
   return args;
 }
 
@@ -208,7 +211,26 @@ function record(id, status, detail, ms = 0) {
 // --------------------------------------------------------------------------------------------
 // Build prerequisites (shared by Tier 1 and Tier 2)
 // --------------------------------------------------------------------------------------------
+/**
+ * Pre-build evidence (c2e1c0c3 review M2, BL-235/BL-456): `nx build` mutates dist/ and compiles
+ * whatever dirty source is on disk, so the commit log must record the dependency set's tree state
+ * BEFORE the build runs. One summary line to stderr; informational, never fails the run.
+ * `--tree-state-runner <script>` (testing only) replaces tools/check-suite-tree-state.mjs.
+ */
+function reportTreeState(depName, cwd) {
+  const script = args.treeStateRunner
+    ? path.resolve(args.treeStateRunner)
+    : path.join(TOOLS_DIR, 'check-suite-tree-state.mjs');
+  const res = spawnSync(process.execPath, [script, '--project', depName], { cwd, encoding: 'utf8' });
+  const line = (res.stdout || '').split('\n').find((l) => l.trim() !== '');
+  const summary = line
+    ? line.trim()
+    : `unavailable (exit ${res.status}): ${(res.stderr || '').split('\n').find((l) => l.trim() !== '') || 'no output'}`;
+  console.error(`[NOTICE] pre-build tree-state ${depName}: ${summary}`);
+}
+
 function nxBuild(depName, cwd) {
+  reportTreeState(depName, cwd);
   const t0 = Date.now();
   const res = args.buildRunner
     ? spawnSync(process.execPath, [path.resolve(args.buildRunner), depName, cwd], { cwd, encoding: 'utf8' })
