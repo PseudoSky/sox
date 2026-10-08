@@ -464,8 +464,8 @@ read.
 
 Rule 5 holds the invariants; this is the order, and the only one. Every bucket of a plan passes every stage in turn; you never dispatch a bucket past the stage the plan has reached.
 
-1. **Plan worktree.** Create `<repo>/.worktrees/<plan-slug>` on a new plan branch off the target branch; record the branch and its start sha on the plan item (`backlog-operator`).
-2. **Bucket worktrees, off the plan branch.** Per bucket, create a worktree on a new bucket branch off the **plan branch** — never off `main`. The brief names the worktree path, the bucket branch and the plan branch.
+1. **Plan worktree.** Create `<repo>/.worktrees/<plan-slug>` on a new plan branch off the target branch; record the branch and its start sha on the plan item (`backlog-operator`). Stamp per `dispatch-worktrees`.
+2. **Bucket worktrees, off the plan branch.** Per bucket, create a worktree on a new bucket branch off the **plan branch** — never off `main`. The brief names the worktree path, the bucket branch and the plan branch. Stamp per `dispatch-worktrees`.
 3. **Implement.** The implementer builds in its bucket worktree and verifies **every AC** (rule 20). It then merges its bucket into the plan branch **fast-forward only** — rebasing its own bucket branch onto the plan branch first when that moved; a conflicting rebase goes to `git-manager` (rule 23) — and transitions its issue to `review`. You verify from the plan branch (`git log`, the diff, the cited tests), never from the return.
 4. **Static-analysis review, per bucket — once every bucket is in `review`.** Dispatch `review` per bucket against that bucket's diff on the plan branch: its brief carries the ACs and scope, the reviewer reads and analyses and does not run the suite (QA does), and the review is not blind (`dispatch-contract` §1a).
 5. **Aggregate, then correct.** Collect every finding, bucket them by cohesion (rule 8), and dispatch one correction per bucket through stages 2–3. Corrections are verified against their own gates and the finding they answer, never reviewed again.

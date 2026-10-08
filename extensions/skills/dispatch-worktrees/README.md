@@ -5,8 +5,9 @@
 ## Overview
 
 Stamps each worktree with its owner (run id + backlog uid) at creation, classifies any worktree
-read-only (merged / landed / unmerged / diverged × clean / dirty), maps each class to exactly one
-allowed action, and sweeps at run start and close so worktrees neither accumulate nor lose work.
+read-only through an ordered decision list (excluded / ambiguous / merged / landed / unmerged /
+diverged × clean / dirty), maps each class to exactly one allowed action (git writes run through
+`git-manager`), and sweeps at run start and close so worktrees neither accumulate nor lose work.
 
 ## When to use
 
