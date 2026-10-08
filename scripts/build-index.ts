@@ -958,27 +958,24 @@ if (isMainModule) {
     }
   }
   const consumedIdxs = new Set<number>(outIdx !== -1 ? [outIdx, outIdx + 1] : []);
-  // BL-480: default root must resolve to the SHARED repo root (`git
-  // rev-parse --git-common-dir` + '..'), never `process.cwd()`. The
-  // `registry:sync-index` nx target runs with `cwd: "."`, which nx resolves
-  // against whichever checkout the command was invoked from — including a
-  // `.worktrees/**` checkout. `process.cwd()` there produces `file://` source
-  // entries and extension-discovery paths rooted in a directory that is
-  // convention-deleted once the worktree's branch merges (see CLAUDE.md's
-  // git-worktree section), silently corrupting every OTHER extension's
-  // `source` field for entries this invocation happened to also touch.
-  // `tools/check-backlog-markers.mjs` established this exact pattern for the
-  // same reason (BL-416) — mirrored here rather than reinvented.
+  // Default root is the INVOKING checkout's own toplevel (`git rev-parse
+  // --show-toplevel`), never `process.cwd()` and never the primary checkout.
+  // Every other release step (embed-registry, release-consumers, the clean-room
+  // smoke, `nx build sox`) roots at its own checkout, so a run from a
+  // `.worktrees/**` checkout must hash, dirty-gate, read pins from and write
+  // only that checkout's registry/index.json. Resolving the primary checkout
+  // (`--git-common-dir`) let a worktree run overwrite another checkout's
+  // registry (761c3f21). Running from a subdirectory still resolves to the
+  // toplevel; outside a git repo it falls back to cwd.
   const explicitRoot = args.find((a, i) => !consumedIdxs.has(i) && !a.startsWith('--'));
   let defaultRoot = process.cwd();
   try {
-    const gitCommonDir = execSync('git rev-parse --git-common-dir', {
+    defaultRoot = execSync('git rev-parse --show-toplevel', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    defaultRoot = path.resolve(gitCommonDir, '..');
   } catch {
-    // Not a git repo (or git unavailable) — fall back to cwd, same as before.
+    // Not a git repo (or git unavailable) — fall back to cwd.
   }
   const root = explicitRoot ?? defaultRoot;
   try {

@@ -1,32 +1,23 @@
 /**
- * build-index-cli-root.bl480.test.ts — BL-480 regression test.
+ * build-index-cli-root.bl480.test.ts — CLI default-root regression test
+ * (BL-480, inverted by 761c3f21).
  *
- * Defect: `scripts/build-index.ts`'s CLI entry point defaulted its `root` to
- * `process.cwd()`. The `registry:sync-index` nx target runs with `cwd: "."`,
- * which nx resolves against whichever checkout the command was invoked from —
- * including a `.worktrees/**` checkout. Run from a worktree with no explicit
- * root arg, this wrote EVERY extension's `source` field (not just the one the
- * invoking branch touched) as a `file://` path rooted inside the worktree —
- * a directory this repo's own convention deletes once the branch merges
- * (see CLAUDE.md's git-worktree section). Discovered in PKT-60/BL-441 review:
- * commit a52d39cf silently rewrote 15 unrelated extensions' `source` fields
- * to `.worktrees/pkt60-memory-ontology-seam/...`.
+ * History: BL-480 moved the CLI default root from `process.cwd()` to the SHARED
+ * (primary) checkout via `git rev-parse --git-common-dir`, to keep worktree-rooted
+ * `file://` locators out of the registry. That rationale no longer applies: every
+ * write-capable mode now emits `npm-package:` locators or refuses. The shared-root
+ * default meant a run from a git worktree hashed, dirty-gated, read pins from and
+ * WROTE the primary checkout's registry/index.json while every other release step
+ * (embed-registry, release-consumers, clean-room-smoke) rooted at its own checkout.
  *
- * Fix: the CLI default now resolves `root` via `git rev-parse
- * --git-common-dir` + `'..'` (mirroring `tools/check-backlog-markers.mjs`'s
- * BL-416 fix and `scripts/allocate-bl-id.mjs`'s BL-416 fix) — the SAME
- * absolute path regardless of which worktree invoked the build, never a
- * worktree-relative path. `scripts/check-registry-sync.ts` carries the
- * identical fix to preserve its BL-33 "must mirror build-index.ts exactly"
- * invariant — a working build-index.ts paired with an unfixed
- * check-registry-sync.ts would make every worktree-invoked sync look "out of
- * sync" against its own (correct) output.
+ * Current contract: with no explicit root argument the CLI roots at the INVOKING
+ * checkout's own toplevel (`git rev-parse --show-toplevel`). A worktree run reads and
+ * writes only the worktree; the primary checkout's registry is never touched.
  *
- * This spawns the REAL `scripts/build-index.ts` (and, for the RED arm, a
- * pinned pre-fix copy materialized via `git show`) as a subprocess with cwd
- * set to a scratch git WORKTREE and no explicit root argument — exercising
- * exactly the invocation shape `npx nx run registry:sync-index` produces
- * inside `.worktrees/**`.
+ * This spawns the REAL `scripts/build-index.ts` as a subprocess with cwd set to a
+ * scratch git WORKTREE (temp repo + `git worktree add` in os.tmpdir()) and no
+ * explicit root — exactly the invocation shape `npx nx run registry:sync-index`
+ * produces inside `.worktrees/**`.
  */
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -84,6 +75,9 @@ function scratchMainRepoAndWorktree(id: string): { mainRepo: string; worktree: s
   sh(['config', 'user.email', 'test@test.com'], mainRepo);
   sh(['config', 'user.name', 'test'], mainRepo);
   seedExtension(mainRepo, id);
+  // A committed registry in the primary checkout: the sentinel a mis-rooted run would clobber.
+  fs.mkdirSync(path.join(mainRepo, 'registry'), { recursive: true });
+  fs.writeFileSync(path.join(mainRepo, 'registry', 'index.json'), '[]\n');
   sh(['add', '.'], mainRepo);
   sh(['commit', '-q', '-m', 'chore: seed'], mainRepo);
 
@@ -111,90 +105,60 @@ async function runBuildIndexFromWorktree(
   return { code, out };
 }
 
-describe('[BL-480] build-index.ts CLI: default root must resolve to the shared git-common-dir root, not process.cwd()', () => {
-  it('GREEN (current build-index.ts): running from a worktree with no explicit root writes registry/index.json to the MAIN checkout, with source paths rooted there — never the worktree', async () => {
+describe('[BL-480 / 761c3f21] build-index.ts CLI: default root is the invoking checkout, never the primary checkout', () => {
+  it('761c3f21 AC2: run from a worktree with no explicit root, the PRIMARY registry/index.json is byte-unchanged and the worktree is the one rooted/written', async () => {
     const id = 'bl480-fixture-agent';
     const { mainRepo, worktree } = scratchMainRepoAndWorktree(id);
+
+    const mainRegistryPath = path.join(mainRepo, 'registry', 'index.json');
+    const before = fs.readFileSync(mainRegistryPath);
 
     const { code, out } = await runBuildIndexFromWorktree(CURRENT_SCRIPT, worktree);
     expect(code, out).toBe(0);
 
-    const mainRegistryPath = path.join(mainRepo, 'registry', 'index.json');
-    expect(fs.existsSync(mainRegistryPath), 'registry/index.json must land in the MAIN checkout').toBe(
-      true,
-    );
-    const entries = JSON.parse(fs.readFileSync(mainRegistryPath, 'utf8')) as Array<{
-      id: string;
-      source: string;
-    }>;
-    const entry = entries.find((e) => e.id === id);
-    expect(entry, `fixture extension "${id}" must appear in the registry`).toBeDefined();
-    expect(entry!.source).toBe(`file://${path.join(mainRepo, 'extensions', 'agents', id)}`);
-    expect(entry!.source).not.toContain(worktree);
+    expect(
+      fs.readFileSync(mainRegistryPath).equals(before),
+      'primary registry/index.json must be byte-unchanged',
+    ).toBe(true);
 
-    // The worktree's OWN copy (it has none — extensions/ isn't committed there, it's the
-    // same working tree content via git worktree, but registry/ should not be written there).
     const worktreeRegistryPath = path.join(worktree, 'registry', 'index.json');
-    // git worktree shares the same tracked files; registry/index.json isn't tracked in the
-    // fixture, so if build-index had written into `worktree` instead of `mainRepo`, this
-    // path (not `mainRepo`'s) would exist as a SEPARATE, un-committed file.
-    if (fs.existsSync(worktreeRegistryPath)) {
-      const wtRealpath = fs.realpathSync(worktreeRegistryPath);
-      const mainRealpath = fs.realpathSync(mainRegistryPath);
-      expect(wtRealpath, 'a registry/index.json under the worktree path must be the SAME file as the main checkout copy (git worktree tracked-file sharing), not an independently-written one').toBe(
-        mainRealpath,
-      );
-    }
-  }, 60_000);
-
-  it('RED (pre-BL-480 build-index.ts): the same invocation writes source paths rooted inside the worktree', async () => {
-    // Materialize the pre-fix revision of build-index.ts (the immediate parent commit,
-    // before the BL-480 fix landed) into a scratch file and run THAT under the same harness.
-    const preFixSource = execFileSync(
-      'git',
-      ['show', 'HEAD:scripts/build-index.ts'],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
-    );
-    // Guard: if HEAD already lacks the pre-fix default-root pattern (e.g. this test is run
-    // post-fix-commit against a HEAD that already has the fix), fall back to reconstructing
-    // the pre-fix CLI tail directly rather than silently passing.
-    const hadBug = /const root = args\.find\(\(a\) => !a\.startsWith\('--'\)\) \?\? process\.cwd\(\);/.test(
-      preFixSource,
-    );
-    // realpathSync the scratch dir: on macOS, os.tmpdir() is under `/tmp`, a symlink to
-    // `/private/tmp`. `import.meta.url` resolves through the symlink; a bare
-    // `process.argv[1]` does not — the CLI's `isMainModule` string-equality check would
-    // silently mismatch and the whole CLI tail would no-op (discovered running this test).
-    const scratchScriptDir = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), 'bl480-prefix-script-')),
-    );
-    tempDirs.push(scratchScriptDir);
-    const scratchScriptPath = path.join(scratchScriptDir, 'build-index-prefix.ts');
-    const prefixContent = hadBug
-      ? preFixSource
-      : preFixSource.replace(
-          /const explicitRoot[\s\S]*?const root = explicitRoot \?\? defaultRoot;/,
-          `const root = args.find((a) => !a.startsWith('--')) ?? process.cwd();`,
-        );
-    fs.writeFileSync(scratchScriptPath, prefixContent);
-
-    const id = 'bl480-fixture-agent-red';
-    const { worktree } = scratchMainRepoAndWorktree(id);
-
-    const { code, out } = await runBuildIndexFromWorktree(scratchScriptPath, worktree);
-    expect(code, out).toBe(0);
-
-    // Pre-fix: root defaults to process.cwd() = worktree, so registry/index.json (and the
-    // extension source it records) is rooted in the WORKTREE, not the main checkout.
-    const worktreeRegistryPath = path.join(worktree, 'registry', 'index.json');
-    expect(fs.existsSync(worktreeRegistryPath), out).toBe(true);
+    expect(fs.realpathSync(worktreeRegistryPath)).not.toBe(fs.realpathSync(mainRegistryPath));
     const entries = JSON.parse(fs.readFileSync(worktreeRegistryPath, 'utf8')) as Array<{
       id: string;
       source: string;
     }>;
     const entry = entries.find((e) => e.id === id);
-    expect(entry).toBeDefined();
-    expect(entry!.source).toBe(`file://${path.join(worktree, 'extensions', 'agents', id)}`);
+    expect(entry, `fixture extension "${id}" must appear in the worktree registry`).toBeDefined();
     expect(entry!.source).toContain(worktree);
+    expect(entry!.source).not.toContain(mainRepo);
+  }, 60_000);
+
+  it('761c3f21 AC2: run from a subdirectory of a checkout, the root is that checkout toplevel (not the subdirectory, not the primary)', async () => {
+    const id = 'bl480-fixture-agent-sub';
+    const { mainRepo, worktree } = scratchMainRepoAndWorktree(id);
+    const mainRegistryPath = path.join(mainRepo, 'registry', 'index.json');
+    const before = fs.readFileSync(mainRegistryPath);
+    const subdir = path.join(worktree, 'extensions');
+
+    const { code, out } = await runBuildIndexFromWorktree(CURRENT_SCRIPT, subdir);
+    expect(code, out).toBe(0);
+
+    expect(fs.readFileSync(mainRegistryPath).equals(before)).toBe(true);
+    expect(fs.existsSync(path.join(subdir, 'registry', 'index.json'))).toBe(false);
+    const entries = JSON.parse(
+      fs.readFileSync(path.join(worktree, 'registry', 'index.json'), 'utf8'),
+    ) as Array<{ id: string }>;
+    expect(entries.some((e) => e.id === id)).toBe(true);
+  }, 60_000);
+
+  it('761c3f21 AC2: outside any git repo the default root falls back to process.cwd()', async () => {
+    const id = 'bl480-fixture-agent-nogit';
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bl480-nogit-')));
+    tempDirs.push(dir);
+    seedExtension(dir, id);
+
+    const { code, out } = await runBuildIndexFromWorktree(CURRENT_SCRIPT, dir);
+    expect(code, out).toBe(0);
+    expect(fs.existsSync(path.join(dir, 'registry', 'index.json'))).toBe(true);
   }, 60_000);
 });
