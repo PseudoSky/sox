@@ -41,8 +41,11 @@ const SHELL_AGENTS: Record<string, Tier> = {
   ui: 'implementer',
 };
 
-/** The 4 agents whose IR has no shell; they must stay free of a shell block. */
-const NO_SHELL_AGENTS = ['doc-cartographer', 'doc-consumer', 'doc-evangelist', 'doc-reviewer'];
+/**
+ * The 5 agents whose IR has no shell; they must stay free of a shell block.
+ * `review` is read-only by contract (tools read/glob/grep, bash: deny).
+ */
+const NO_SHELL_AGENTS = ['doc-cartographer', 'doc-consumer', 'doc-evangelist', 'doc-reviewer', 'review'];
 
 const WRAPPERS = ['sox-git-ro', 'sox-git-impl', 'sox-git-merge', 'sox-rm'] as const;
 
@@ -90,7 +93,7 @@ function render(name: string): { payload: AgentCatalogPayload; report: AgentRend
 }
 
 describe('faa8064b AC1: tiered shell allowlist in the 17 agent manifests', () => {
-  it('faa8064b AC1: every manifest in extensions/agents is covered (17 shell + 4 no-shell = 21)', () => {
+  it('faa8064b AC1: every manifest in extensions/agents is covered (17 shell + 5 no-shell = 22)', () => {
     const dirs = readdirSync(AGENTS_DIR).filter((d) => existsSync(join(AGENTS_DIR, d, 'extension.json'))).sort();
     expect(dirs).toEqual([...Object.keys(SHELL_AGENTS), ...NO_SHELL_AGENTS].sort());
     expect(Object.keys(SHELL_AGENTS)).toHaveLength(17);
@@ -146,7 +149,7 @@ describe('faa8064b AC1: tiered shell allowlist in the 17 agent manifests', () =>
     }
   });
 
-  it('faa8064b AC1: the four no-shell agents have no shell block and render shell:false', () => {
+  it('faa8064b AC1: the five no-shell agents have no shell block and render shell:false', () => {
     for (const name of NO_SHELL_AGENTS) {
       expect(readManifest(name).render['agent-mcp'].nativeTooling?.shell).toBeUndefined();
       expect(render(name).payload.nativeTooling.shell).toBe(false);
