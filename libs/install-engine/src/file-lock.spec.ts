@@ -212,6 +212,76 @@ describe('ownership-lock AC7 — a holder whose lock was taken over never unlink
   });
 });
 
+describe('ownership-lock AC7 — release has no check-then-act window (rename-aside + re-verify)', () => {
+  const successor = (): { pid: number; token: string; startedAtMs: number } =>
+    ({ pid: process.pid, token: 'successor-token', startedAtMs: Date.now() });
+
+  it('a successor that replaced our lock before release is restored byte-for-byte, no aside file left', () => {
+    const next = successor();
+    withFileLockSync(lock, () => undefined, {
+      releaseHook: (step) => {
+        if (step === 'before-rename') {
+          fs.unlinkSync(lock);
+          writeLock(next);
+        }
+      },
+    });
+    expect(JSON.parse(fs.readFileSync(lock, 'utf8'))).toEqual(next);
+    expect(leftovers()).toEqual(['ownership.json.lock']);
+  });
+
+  it('a successor created in the slot between verify and unlink is never deleted', () => {
+    const next = successor();
+    withFileLockSync(lock, () => undefined, {
+      releaseHook: (step) => {
+        // Our lock is already renamed aside and verified; the slot is free, so a
+        // contender legitimately acquires it right now.
+        if (step === 'after-verify') writeLock(next);
+      },
+    });
+    expect(JSON.parse(fs.readFileSync(lock, 'utf8'))).toEqual(next);
+    expect(leftovers()).toEqual(['ownership.json.lock']);
+  });
+
+  it('restoring a displaced foreign lock never clobbers a lock that took the slot meanwhile', () => {
+    const displaced = { pid: process.pid, token: 'displaced-token', startedAtMs: Date.now() };
+    const third = { pid: process.pid, token: 'third-token', startedAtMs: Date.now() };
+    withFileLockSync(lock, () => undefined, {
+      releaseHook: (step) => {
+        if (step === 'before-rename') {
+          fs.unlinkSync(lock);
+          writeLock(displaced);
+        } else {
+          writeLock(third);
+        }
+      },
+    });
+    expect(JSON.parse(fs.readFileSync(lock, 'utf8'))).toEqual(third);
+    expect(leftovers()).toEqual(['ownership.json.lock']);
+  });
+});
+
+describe('ownership-lock — reap-guard thresholds are options', () => {
+  /** A dead-pid lock plus an empty reap guard whose mtime is 300ms old. */
+  function seedStaleLockAndOldGuard(): void {
+    writeLock({ pid: deadPid(), token: 'dead', startedAtMs: Date.now() - 60_000 });
+    const guard = `${lock}.reap`;
+    fs.writeFileSync(guard, '');
+    const old = new Date(Date.now() - 300);
+    fs.utimesSync(guard, old, old);
+  }
+
+  it('guardEmptyStaleMs lets a tight deployment reclaim an abandoned guard quickly', () => {
+    seedStaleLockAndOldGuard();
+    expect(withFileLockSync(lock, () => 'ok', { timeoutMs: 1_000, guardEmptyStaleMs: 20 })).toBe('ok');
+  });
+
+  it('the default 1s guard threshold still treats a 300ms-old empty guard as live (times out)', () => {
+    seedStaleLockAndOldGuard();
+    expect(() => withFileLockSync(lock, () => 'ok', { timeoutMs: 100 })).toThrow(OwnershipLockTimeoutError);
+  });
+});
+
 describe('ownership-lock AC8 — a no-op save() creates neither ownership.json nor a lock', () => {
   it('load + save with nothing dirty touches nothing', () => {
     const own = path.join(root, 'sub', 'ownership.json');

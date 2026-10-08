@@ -15,7 +15,7 @@
  *   - Stale holder (reclaimable) when ANY of:
  *       a) its pid is dead (`process.kill(pid, 0)` → ESRCH; EPERM means alive);
  *       b) the content is empty/unparseable AND the file mtime is older than
- *          `emptyStaleMs` (2s) — a fresh empty file is a holder between `open`
+ *          `emptyStaleMs` (`emptyStaleMs`, 2s) — a fresh empty file is a holder between `open`
  *          and `write`, so it is waited on, never stolen;
  *       c) the lock is older than the hard ceiling (30s) even with a live pid
  *          (pid reuse / wedged holder).
@@ -28,9 +28,23 @@
  *     the guard, a reclaimer that inspected a dead holder can never delete the
  *     fresh lock that another reclaimer's winner has since created (the failure
  *     mode of a bare inspect-then-rename).
- *   - Release (finally): unlink only if the lock file still carries OUR token, so
- *     a holder whose lock was taken over never deletes the new holder's lock.
+ *   - Release (finally): rename the lock aside, re-verify it carries OUR token, then
+ *     unlink it; a foreign lock found there (ours was taken over) is restored with the
+ *     no-clobber `link`. A holder whose lock was taken over never deletes the new
+ *     holder's lock, and there is no read-then-unlink window (see `release`).
  *   - Backoff: synchronous `Atomics.wait`, 5ms doubling to a 50ms cap + jitter.
+ *
+ * SCOPE LIMIT: this lock is local-filesystem and same-PID-namespace only. Liveness
+ * is decided by `process.kill(pid, 0)` (`pidAlive`), which is meaningless across
+ * containers (separate PID namespaces), hosts, or network filesystems (NFS/SMB, where
+ * O_EXCL and rename atomicity are also not guaranteed). Do not place the lock on such
+ * a mount or share it between PID namespaces.
+ *
+ * KNOWN LIMIT (reap guard): the guard's thresholds (`guardEmptyStaleMs` 1s,
+ * `guardHardCeilingMs` 2s; options, see FileLockOptions) assume it is held for
+ * microseconds. A reclaimer stalled for >2s while holding the guard can have the guard
+ * stolen by another reclaimer. The in-guard re-inspection plus the move-aside re-verify
+ * still prevent deleting a live lock, but the two reclaimers can overlap.
  *
  * Leaf module: node builtins only. Every catch either handles a specific errno
  * and rethrows everything else, or rethrows — there are no swallowed errors.
@@ -65,10 +79,32 @@ export interface FileLockOptions {
   emptyStaleMs?: number;
   /** A lock older than this is stale even if its pid is alive (default 30_000). */
   hardCeilingMs?: number;
+  /**
+   * Reap-guard (`<lock>.reap`) staleness thresholds. The guard is held for microseconds,
+   * so these are far tighter than the lock's own: empty/unparseable content older than
+   * `guardEmptyStaleMs` (default 1_000) or a guard older than `guardHardCeilingMs`
+   * (default 2_000) is reclaimed. KNOWN LIMIT: a reclaimer stalled for longer than
+   * `guardHardCeilingMs` while holding the guard can have the guard stolen; its
+   * in-guard re-inspection of the lock still prevents deleting a fresh lock, but two
+   * reclaimers may then overlap inside the guard.
+   */
+  guardEmptyStaleMs?: number;
+  guardHardCeilingMs?: number;
+  /**
+   * Test seam, called at fixed points inside release: 'before-rename' (the lock is
+   * still in its slot) and 'after-verify' (it has been renamed aside and read, not yet
+   * unlinked/restored). Lets a test deterministically interleave another process.
+   */
+  releaseHook?: ReleaseHook;
 }
+
+export type ReleaseHook = (step: 'before-rename' | 'after-verify') => void;
 
 /** The shape every lock runner (real or test-injected) satisfies. */
 export type LockRunner = <T>(lockPath: string, fn: () => T) => T;
+
+/** Options with every threshold resolved; the release seam stays optional. */
+type ResolvedOptions = Required<Omit<FileLockOptions, 'releaseHook'>> & { releaseHook?: ReleaseHook };
 
 interface LockPayload {
   pid: number;
@@ -81,7 +117,13 @@ type Holder =
   | { state: 'live'; pid: number | undefined }
   | { state: 'stale'; raw: string; mtimeMs: number };
 
-const DEFAULTS = { timeoutMs: 10_000, emptyStaleMs: 2_000, hardCeilingMs: 30_000 } as const;
+const DEFAULTS = {
+  timeoutMs: 10_000,
+  emptyStaleMs: 2_000,
+  hardCeilingMs: 30_000,
+  guardEmptyStaleMs: 1_000,
+  guardHardCeilingMs: 2_000,
+} as const;
 const BACKOFF_START_MS = 5;
 const BACKOFF_CAP_MS = 50;
 
@@ -129,7 +171,7 @@ function pidAlive(pid: number): boolean {
 }
 
 /** Pure classification of a lock's observed (content, mtime). */
-function classify(raw: string, mtimeMs: number, now: number, o: Required<FileLockOptions>): Holder {
+function classify(raw: string, mtimeMs: number, now: number, o: ResolvedOptions): Holder {
   const payload = parsePayload(raw);
   if (payload === undefined) {
     return now - mtimeMs > o.emptyStaleMs
@@ -141,7 +183,7 @@ function classify(raw: string, mtimeMs: number, now: number, o: Required<FileLoc
   return { state: 'live', pid: payload.pid };
 }
 
-function inspect(lockPath: string, o: Required<FileLockOptions>): Holder {
+function inspect(lockPath: string, o: ResolvedOptions): Holder {
   let raw: string;
   let mtimeMs: number;
   try {
@@ -162,7 +204,7 @@ function inspect(lockPath: string, o: Required<FileLockOptions>): Holder {
  * the reap guard (or are reclaiming the guard itself), so the restore path is
  * reachable only by a pathological self-releasing holder (ceiling/empty cases).
  */
-function moveAsideIfStale(lockPath: string, seen: { raw: string }, ownToken: string, o: Required<FileLockOptions>): void {
+function moveAsideIfStale(lockPath: string, seen: { raw: string }, ownToken: string, o: ResolvedOptions): void {
   const stalePath = `${lockPath}.stale.${ownToken}`;
   try {
     fs.renameSync(lockPath, stalePath);
@@ -199,11 +241,11 @@ function moveAsideIfStale(lockPath: string, seen: { raw: string }, ownToken: str
  * Reclaim a stale lock under the reap guard. Re-inspects after winning the guard
  * so a lock that was reclaimed-and-recreated by someone else is left alone.
  */
-function reclaim(lockPath: string, ownToken: string, deadline: number, o: Required<FileLockOptions>): void {
+function reclaim(lockPath: string, ownToken: string, deadline: number, o: ResolvedOptions): void {
   const reapPath = `${lockPath}.reap`;
   const reapPayload: LockPayload = { pid: process.pid, token: ownToken, startedAtMs: Date.now() };
   // The guard is held for microseconds: age it out fast and reclaim it by rename.
-  const guardOpts: Required<FileLockOptions> = { ...o, emptyStaleMs: 1_000, hardCeilingMs: 2_000 };
+  const guardOpts: ResolvedOptions = { ...o, emptyStaleMs: o.guardEmptyStaleMs, hardCeilingMs: o.guardHardCeilingMs };
   let backoff = 1;
   while (!tryCreate(reapPath, reapPayload)) {
     const g = inspect(reapPath, guardOpts);
@@ -221,7 +263,7 @@ function reclaim(lockPath: string, ownToken: string, deadline: number, o: Requir
     const h = inspect(lockPath, o);
     if (h.state === 'stale') moveAsideIfStale(lockPath, h, ownToken, o);
   } finally {
-    release(reapPath, ownToken);
+    release(reapPath, ownToken, o.releaseHook);
   }
 }
 
@@ -254,16 +296,45 @@ function tryCreate(lockPath: string, payload: LockPayload): boolean {
   return true;
 }
 
-/** Unlink the lock only if it still carries our token. */
-function release(lockPath: string, token: string): void {
-  let raw: string;
+/**
+ * Release the lock only if it still carries our token, without a check-then-act
+ * window: the lock is renamed aside FIRST (so whatever sits in the slot is now ours
+ * to examine and nobody can swap it under us), its token is re-verified, and only
+ * then is the aside file unlinked. If the renamed file is NOT ours (our lock was
+ * taken over before release), it is put back with the atomic no-clobber `link`.
+ * Residual window: between rename and restore a foreign live lock is briefly absent
+ * from the slot, so a third contender could create the lock in that gap; the restore
+ * then finds EEXIST and the displaced file is discarded (see `moveAsideIfStale`, which
+ * accepts the same trade-off). The previous read-then-unlink instead deleted a
+ * successor's lock outright if it appeared between the read and the unlink.
+ */
+function release(lockPath: string, token: string, hook?: ReleaseHook): void {
+  const asidePath = `${lockPath}.release.${token}`;
+  hook?.('before-rename');
   try {
-    raw = fs.readFileSync(lockPath, 'utf8');
+    fs.renameSync(lockPath, asidePath);
   } catch (e) {
     if (errno(e) === 'ENOENT') return;
     throw e;
   }
-  if (parsePayload(raw)?.token === token) unlinkQuiet(lockPath);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(asidePath, 'utf8');
+  } catch (e) {
+    if (errno(e) === 'ENOENT') return;
+    throw e;
+  }
+  hook?.('after-verify');
+  if (parsePayload(raw)?.token === token) {
+    unlinkQuiet(asidePath);
+    return;
+  }
+  try {
+    fs.linkSync(asidePath, lockPath);
+  } catch (e) {
+    if (errno(e) !== 'EEXIST') throw e;
+  }
+  unlinkQuiet(asidePath);
 }
 
 /**
@@ -272,10 +343,13 @@ function release(lockPath: string, token: string): void {
  * `OwnershipLockTimeoutError` if the lock cannot be acquired in `timeoutMs`.
  */
 export function withFileLockSync<T>(lockPath: string, fn: () => T, opts: FileLockOptions = {}): T {
-  const o: Required<FileLockOptions> = {
+  const o: ResolvedOptions = {
     timeoutMs: opts.timeoutMs ?? DEFAULTS.timeoutMs,
     emptyStaleMs: opts.emptyStaleMs ?? DEFAULTS.emptyStaleMs,
     hardCeilingMs: opts.hardCeilingMs ?? DEFAULTS.hardCeilingMs,
+    guardEmptyStaleMs: opts.guardEmptyStaleMs ?? DEFAULTS.guardEmptyStaleMs,
+    guardHardCeilingMs: opts.guardHardCeilingMs ?? DEFAULTS.guardHardCeilingMs,
+    ...(opts.releaseHook !== undefined ? { releaseHook: opts.releaseHook } : {}),
   };
   const token = crypto.randomBytes(12).toString('hex');
   const payload: LockPayload = { pid: process.pid, token, startedAtMs: Date.now() };
@@ -300,6 +374,6 @@ export function withFileLockSync<T>(lockPath: string, fn: () => T, opts: FileLoc
   try {
     return fn();
   } finally {
-    release(lockPath, token);
+    release(lockPath, token, o.releaseHook);
   }
 }

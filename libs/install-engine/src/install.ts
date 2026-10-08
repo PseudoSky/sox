@@ -1996,7 +1996,14 @@ function guardUnownedDestination(
   workspaceRoot: string,
   force: boolean | undefined,
 ): { forced: boolean } {
-  if (!fs.existsSync(destPath)) return { forced: false };
+  // lstat, not existsSync: existsSync follows symlinks, so a DANGLING symlink reports
+  // "absent", the guard is skipped, and the write then follows the link to its target.
+  try {
+    fs.lstatSync(destPath);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { forced: false };
+    throw e;
+  }
   const ownedByThis = OwnershipIndex.loadFromFile(ownershipPathFor(scope, workspaceRoot))
     .get(ext, scope)
     ?.entries?.some((e) => e.kind === 'file-drop' && e.path === destPath);

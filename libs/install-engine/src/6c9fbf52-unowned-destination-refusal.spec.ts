@@ -232,6 +232,30 @@ function ownedEntryFor(c: Case, dest: string): boolean {
   );
 }
 
+// ─── dangling symlink at the destination ──────────────────────────────────────
+
+describe('6c9fbf52 — a DANGLING symlink at the destination counts as an existing unowned path', () => {
+  it('6c9fbf52 AC1: is refused, the link is untouched and its target is never created', async () => {
+    const c = CASES[0]!;
+    const srcPath = c.makeSrc();
+    const dest = await resolveDest(c, srcPath);
+    expect(dest.startsWith(sandboxRoot + path.sep)).toBe(true);
+    const linkTarget = path.join(base, 'elsewhere', 'target.md');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.symlinkSync(linkTarget, dest);
+    expect(fs.existsSync(dest)).toBe(false); // dangling: existsSync follows the link
+
+    await expect(
+      declarativeInstall(descriptorFor(c, srcPath), 'user', workspace, dataDir),
+    ).rejects.toThrow(/refusing to overwrite unowned file/);
+
+    expect(fs.lstatSync(dest).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(dest)).toBe(linkTarget);
+    expect(fs.existsSync(linkTarget)).toBe(false);
+    expect(ownedEntryFor(c, dest)).toBe(false);
+  });
+});
+
 // ─── AC1 / AC2 / AC3 — refusal ────────────────────────────────────────────────
 
 describe.each(CASES)('6c9fbf52 — unowned existing $label destination is refused', (c) => {
