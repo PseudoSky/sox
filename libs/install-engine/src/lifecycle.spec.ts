@@ -849,6 +849,59 @@ describe('e46db6ed — uninstall --host H reverses only H', () => {
     expect(record('svc', 'project')).toBeUndefined();
   });
 
+  describe.each([
+    { first: 'claude', second: 'opencode' },
+    { first: 'opencode', second: 'claude' },
+  ])('e46db6ed AC7 — a target owned by another host ONLY via its stamp (remove $first, then $second)', ({ first, second }) => {
+    function seedStampOnly(): { shared: string; cfg: string; arr: string } {
+      seed({ ext: 'tui', hosts: ['claude', 'opencode'], scope: 'project' });
+      const shared = path.join(ws, '.shared', 'tui.md');
+      const cfg = path.join(ws, '.shared', 'settings.json');
+      const arr = path.join(ws, '.shared', 'perm.json');
+      fs.mkdirSync(path.dirname(shared), { recursive: true });
+      fs.writeFileSync(shared, 'shared\n');
+      fs.writeFileSync(cfg, JSON.stringify({ foreign: 1, mcpServers: { tui: { command: 'x' } } }));
+      fs.writeFileSync(arr, JSON.stringify({ allow: ['keep', 'a'] }));
+      // Only CLAUDE has ledger actions for these targets; the sole evidence that
+      // OPENCODE owns them is the ownership stamp.
+      const ledger = Ledger.load(dataDir, { isProject: true });
+      ledger.record({ ext: 'tui', host: 'claude', scope: 'project',
+        action: { cap: 'file-drop', file: path.relative(ws, shared), keyPath: '', appliedHash: 'sha256:x' } });
+      ledger.record({ ext: 'tui', host: 'claude', scope: 'project',
+        action: { cap: 'config-merge', file: path.relative(ws, cfg), keyPath: 'mcpServers.tui', appliedHash: 'sha256:x' } });
+      ledger.record({ ext: 'tui', host: 'claude', scope: 'project',
+        action: { cap: 'array-merge', file: path.relative(ws, arr), keyPath: 'allow', values: ['a'], appliedHash: 'sha256:x' } });
+      ledger.save();
+      const own = OwnershipIndex.loadFromFile(ownFile());
+      own.addEntries('tui', 'project', [
+        { kind: 'file-drop', path: shared, host: 'opencode' },
+        { kind: 'config-key', file: cfg, keyPath: 'mcpServers.tui', host: 'opencode' },
+        { kind: 'array-values', file: arr, keyPath: 'allow', values: ['a'], host: 'opencode' },
+      ], { host: 'opencode' });
+      own.save();
+      return { shared, cfg, arr };
+    }
+    const readJson = (f: string): unknown => JSON.parse(fs.readFileSync(f, 'utf8'));
+
+    it('is never reversed by the other host, and goes when its stamped owner and the claimant are both gone', async () => {
+      const { shared, cfg, arr } = seedStampOnly();
+
+      await run('tui', 'project', first);
+
+      expect(fs.existsSync(shared)).toBe(true);
+      expect(readJson(cfg)).toEqual({ foreign: 1, mcpServers: { tui: { command: 'x' } } });
+      expect(readJson(arr)).toEqual({ allow: ['keep', 'a'] });
+
+      const r2 = await run('tui', 'project', second);
+
+      expect(r2.full).toBe(true);
+      expect(fs.existsSync(shared)).toBe(false);
+      expect(readJson(cfg)).toEqual({ foreign: 1, mcpServers: {} });
+      expect(readJson(arr)).toEqual({ allow: ['keep'] });
+      expect(record('tui', 'project')).toBeUndefined();
+    });
+  });
+
   it('e46db6ed AC7 — hosts appending DIFFERENT array values to one key each remove only their own', async () => {
     const cfg = path.join(ws, '.shared', 'perm.json');
     fs.mkdirSync(path.dirname(cfg), { recursive: true });

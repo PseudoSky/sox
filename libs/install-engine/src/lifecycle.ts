@@ -653,6 +653,45 @@ function actionIdentity(a: LedgerAction, ext: string, workspaceRoot: string): st
   }
 }
 
+/**
+ * True when `a` mutates the target `e` records. Unlike `ledgerHostsClaiming` (path level),
+ * array/object-array entries also require the action's own values to be among the entry's,
+ * so a host appending different values to the same array is not mistaken for the owner.
+ */
+function actionBackedByEntry(
+  a: LedgerAction,
+  e: HostBearingEntry,
+  ext: string,
+  workspaceRoot: string,
+): boolean {
+  const sameFile = (f: string): boolean => resolveLedgerFile(a.file, workspaceRoot) === f;
+  switch (e.kind) {
+    case 'file-drop':
+      return a.cap === 'file-drop' && sameFile(e.path);
+    case 'config-key':
+      return a.cap === 'config-merge' && a.keyPath === e.keyPath && sameFile(e.file);
+    case 'array-values':
+      return (
+        a.cap === 'array-merge' &&
+        a.keyPath === e.keyPath &&
+        sameFile(e.file) &&
+        (a.values ?? []).every((v) => e.values.includes(v))
+      );
+    case 'object-array-values': {
+      if (a.cap !== 'object-array-merge' || a.keyPath !== e.keyPath || !sameFile(e.file)) return false;
+      const mine = a.meta?.['entries'];
+      if (!Array.isArray(mine)) return false;
+      const theirs = new Set(e.entries.map((x) => JSON.stringify(x)));
+      return mine.every((x) => theirs.has(JSON.stringify(x)));
+    }
+    case 'agent-catalog': {
+      if (a.cap !== 'agent-catalog') return false;
+      const rowName = a.meta?.['rowName'];
+      return e.name === (typeof rowName === 'string' && rowName !== '' ? rowName : ext);
+    }
+  }
+}
+
 interface ComputedPlan {
   plan: OwnedUninstallPlan;
   /** Per host-attributable entry: every host that owns it (stamp ∪ ledger claimants). */
@@ -808,8 +847,26 @@ export async function uninstallOwned(
     if (plan.hosts.includes(h)) continue;
     for (const a of actions) keptIdentities.add(actionIdentity(a, ext, input.workspaceRoot));
   }
+  // Targets another host owns by OWNERSHIP STAMP alone (no ledger action of that host
+  // claims them): computePlan keeps these entries, so the target host's own ledger
+  // action on the same target must not reverse them either.
+  const stampOnlyKept: HostBearingEntry[] = [];
+  if (input.host !== undefined) {
+    const target = input.host;
+    for (const e of ownership.get(ext, scope)?.entries ?? []) {
+      if (!isHostAttributable(e) || e.host === undefined || e.host === target) continue;
+      const o = owners.get(entryId(e));
+      if (o === undefined || !o.includes(e.host)) continue;
+      const claimants = ledgerHostsClaiming(ext, e, ledgerByHost, input.workspaceRoot);
+      if (!claimants.includes(e.host)) stampOnlyKept.push(e);
+    }
+  }
+  const stampOwnerOf = (a: LedgerAction): string | undefined =>
+    keptIdentities.has(actionIdentity(a, ext, input.workspaceRoot))
+      ? undefined
+      : stampOnlyKept.find((e) => actionBackedByEntry(a, e, ext, input.workspaceRoot))?.host;
   const retain = (a: LedgerAction): boolean =>
-    keptIdentities.has(actionIdentity(a, ext, input.workspaceRoot));
+    keptIdentities.has(actionIdentity(a, ext, input.workspaceRoot)) || stampOwnerOf(a) !== undefined;
 
   const removeEntryPath = (e: OwnedEntry): void => {
     if (e.kind !== 'file-drop' && e.kind !== 'materialize') return;
@@ -848,6 +905,14 @@ export async function uninstallOwned(
   };
 
   for (const h of plan.hosts) {
+    // A retained stamp-only target has no other ledger entry to reverse it later: the
+    // departing host's entry is about to be removed, so hand each such action to the
+    // stamp owner, which is the host that stays and will reverse it on its own removal.
+    const handoffs: Array<{ host: string; action: LedgerAction }> = [];
+    for (const a of ledger.actionsFor(ext, h, scope)) {
+      const owner = stampOwnerOf(a);
+      if (owner !== undefined) handoffs.push({ host: owner, action: a });
+    }
     try {
       await uninstall({
         ext,
@@ -860,6 +925,10 @@ export async function uninstallOwned(
         onFileRemoved: (p) => removedPaths.push(p),
         ...(input.catalogClient !== undefined ? { catalogClient: input.catalogClient } : {}),
       });
+      if (handoffs.length > 0) {
+        for (const x of handoffs) ledger.record({ ext, host: x.host, scope, action: x.action });
+        ledger.save();
+      }
       reversedHosts.push(h);
       persistProgress();
     } catch (e) {

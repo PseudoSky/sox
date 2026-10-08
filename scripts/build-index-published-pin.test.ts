@@ -196,7 +196,11 @@ function materializePreFixScript(): string {
         }`,
     );
   }
-  const dest = path.join(REPO_ROOT, 'scripts', `.build-index.prefix.${process.pid}.ts`);
+  // `.mts`, not `.ts`: this transient file lives in scripts/ only so the pre-fix script's relative
+  // imports resolve, and scripts/lint-coverage.test.mjs walks scripts/ for LINTABLE_EXTENSIONS
+  // (.ts/.tsx/.js/.jsx/.mjs/.cjs). A `.ts` temp file raced that walk (integ AC4); `.mts` is never
+  // listed, and tsx runs it as ESM, which the script's `import.meta.url` main-module check needs.
+  const dest = path.join(REPO_ROOT, 'scripts', `.build-index.prefix.${process.pid}.mts`);
   fs.writeFileSync(dest, source);
   tempDirs.push(dest); // rmSync(recursive) removes a plain file too
   return dest;

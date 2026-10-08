@@ -1,0 +1,28 @@
+{
+  "name": "@adhd/sox-agent-shell-wrappers",
+  "version": "0.1.0",
+  "description": "Argv-policed git and rm wrappers (sox-git-ro, sox-git-impl, sox-git-merge, sox-rm) that make per-agent shell allowlists enforceable by command name",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "main": "./dist/policy.js",
+  "types": "./dist/policy.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/policy.d.ts",
+      "default": "./dist/policy.js"
+    }
+  },
+  "bin": {
+    "sox-git-ro": "bin/sox-git",
+    "sox-git-impl": "bin/sox-git",
+    "sox-git-merge": "bin/sox-git",
+    "sox-rm": "bin/sox-rm"
+  }
+}
