@@ -83,11 +83,20 @@
         }
       ]
     },
+    "roster-guard-test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node tools/test-roster-guard.test.mjs",
+        "cwd": "."
+      },
+      "cache": false
+    },
     "lint": {
       "executor": "@nx/eslint:lint",
       "dependsOn": [
         "check-skill-headers",
-        "check-skill-headers-test"
+        "check-skill-headers-test",
+        "roster-guard-test"
       ],
       "options": {
         "lintFilePatterns": [
