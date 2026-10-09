@@ -124,6 +124,17 @@ export type { StageDeclaration, StageMap } from './stages.js';
 export { DurableJsonlSink } from './sink.js';
 export type { JsonlSinkOptions } from './sink.js';
 
+// c536ce29 (0.5.0): redaction, bounded body capture, async log context, and the
+// raw log channel. Purely additive.
+export { createRedactor, identityRedactor, DEFAULT_REDACTION_RULES } from './redact.js';
+export type { Redactor, RedactionRule, RedactInput } from './redact.js';
+export { BodyCapture, captureBody } from './body.js';
+export type { CapturedBody } from './body.js';
+export { withLogContext, currentLogContext } from './context.js';
+export type { LogContext } from './context.js';
+export { createLogChannel } from './channel.js';
+export type { LogChannel, LogChannelOptions } from './channel.js';
+
 export { newTraceId, currentTraceId, traceIdOrNew, withTrace, runWithNewTrace } from './trace.js';
 
 /** Truncate a value for safe, size-bounded logging (SQL text, error messages). */

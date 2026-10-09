@@ -27,6 +27,7 @@ import { createHash } from 'node:crypto';
 import { DurableJsonlSink, type JsonlSinkOptions } from './sink.js';
 import { NOOP_OTEL, type OtelMetricPoint, type OtelRuntime, type OtelState } from './otel-types.js';
 import { currentTraceId } from './trace.js';
+import type { Redactor } from './redact.js';
 import { aggregateSnapshots, type MetricsSnapshotRecord, type RollupRow } from './rollup.js';
 
 export type Role = 'live-service' | 'test' | 'cli' | 'harness';
@@ -148,6 +149,10 @@ export interface InitTelemetryOptions {
   /** Directory for the file sink. Defaults to
    *  `~/.adhd/sox-ecosystem/<service>/logs`. */
   logDir?: string;
+  /** c536ce29: credential redactor applied to every record `log.*` emits (both the
+   *  structured fields and the serialized line) before it reaches the sink.
+   *  Absent = records are written unchanged (the pre-0.5.0 behaviour). */
+  redactor?: Redactor;
   maxBytes?: number;
   maxFiles?: number;
   /**
@@ -286,6 +291,8 @@ interface RuntimeState {
   /** S3 (`5ac0a1a8…`): normalised release identity; always all-three-present
    *  (each `string | null`), so the snapshot record never carries `undefined`. */
   release: ReleaseIdentity;
+  /** c536ce29: optional record redactor installed by `initTelemetry({ redactor })`. */
+  redactor?: Redactor;
 }
 
 // BL-404: previously all three branches returned 'test' unconditionally —
@@ -619,6 +626,7 @@ function initTelemetryInternal(opts: InitTelemetryOptions): {
     otel: NOOP_OTEL,
     otelState: wantOtel ? 'pending' : 'disabled',
     release: resolveRelease(opts.release),
+    ...(opts.redactor !== undefined ? { redactor: opts.redactor } : {}),
   };
   rt.snapshotEveryRecords = opts.snapshotEveryRecords ?? resolveSnapshotEveryRecords();
   rt.snapshotEveryMs = resolveSnapshotEveryMs(opts.snapshotEveryMs);
@@ -831,7 +839,11 @@ function emitRecord(event: string, level: 'debug' | 'info' | 'warn' | 'error', f
       pid: process.pid,
       ...fields,
     };
-    const line = JSON.stringify(record) + '\n';
+    // c536ce29: redact both the structured fields and the serialized line; a
+    // redactor fault must not lose the record, so it fails closed per the
+    // redactor's own contract and the surrounding catch drops only on throw.
+    const red = st.redactor;
+    const line = red ? red.redactLine(JSON.stringify(red.redactValue(record))) + '\n' : JSON.stringify(record) + '\n';
     if (st.logSink === 'file' && st.sink) {
       st.sink.write(line);
     } else if (st.logSink === 'stderr') {
