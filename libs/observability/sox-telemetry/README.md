@@ -308,6 +308,91 @@ need a second, independently-rotated JSONL stream outside the main telemetry rec
 synchronous (`durable: true`) by default because a fire-and-forget stream loses buffered records on
 a hard kill — `write()` returning means the line is already on disk.
 
+### Raw log channel — `createLogChannel`, `createRedactor`, `captureBody`, `withLogContext`
+
+A log channel is a second, independently retained JSONL stream beside the span/event stream. It is
+for *raw* records: structured ops events (`logEvent`) and wire records with full headers and bodies
+(`logRaw`). It never reads an environment variable; the caller resolves the directory.
+
+```javascript
+const { createLogChannel, createRedactor, captureBody, withLogContext } = require('@adhd/sox-telemetry');
+const os = require('node:os');
+const path = require('node:path');
+
+const redactor = createRedactor();                 // header values, key-shaped strings, secret-named keys
+const channel = createLogChannel({
+  dir: path.join(os.homedir(), '.adhd', 'my-service', 'logs'),
+  component: 'my-service.api',                      // file prefix; separate parts with '.', never '-'
+  durability: { mode: 'hybrid', syncMaxBytes: 65536 },
+  redactor,
+});
+channel.registerSecret('my-live-api-key-1234');     // exact-value scrub (>= 8 chars) from now on
+
+// Correlation ids set here are merged into every record written inside the callback,
+// across awaits, even if two copies of this package are installed.
+await withLogContext({ request_id: 'req-42' }, async () => {
+  const body = captureBody(JSON.stringify({ prompt: 'hello' }), { maxBytes: 4 * 1024 * 1024 });
+  channel.logRaw('provider.request', {
+    method: 'POST',
+    url: 'https://api.example.test/v1/chat',
+    headers: { authorization: 'Bearer my-live-api-key-1234', accept: 'application/json' },
+    body,                                           // -> body, body_bytes, body_sha256, truncated
+  });
+  channel.logEvent('provider.retry', { attempt: 2 }, 'warn');
+});
+
+await channel.close();                              // flushes the queue and pending gzips
+```
+
+The `authorization` header and the registered key are written as `[REDACTED:<hash>:len=<n>]`;
+`request_id` rides on both records.
+
+**File names.** Each process writes its own file, so concurrent processes never share an open file:
+
+```
+<component>-<YYYY-MM-DD>.<fileLabel>.<pid>.jsonl                  live file
+<component>-<YYYY-MM-DD>.<fileLabel>.<pid>.<epochMs>-<seq>.jsonl  rotated
+<component>-<YYYY-MM-DD>.<fileLabel>.<pid>.<epochMs>-<seq>.jsonl.gz  rotated + compressed
+```
+
+`fileLabel` defaults to `proc`; `fileScope: 'shared'` restores the single shared file of
+`DurableJsonlSink`.
+
+**Defaults.**
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `maxBytes` | 64 MiB | rotate the live file past this size |
+| `gzipRotated` | `true` | gzip rotated files off the hot path (about 100x on repetitive JSON) |
+| `maxAgeDays` | 14 | delete files older than this |
+| `maxDirBytes` | 2 GiB | delete oldest files until this component's files fit; the live file is never deleted |
+| `bodyMaxBytes` | 4 MiB | advisory per-body cap for callers of `captureBody` |
+| `floodBreaker` | 256 MiB per 10 min | past this `logRaw` volume, records become digest-only (`body: null`, `body_sha256` kept) and one `log.budget_tripped` is written |
+| `durability` | `{ mode: 'hybrid', syncMaxBytes: 65536 }` | see below |
+| `queueMaxBytes` | 16 MiB | hybrid queue bound; overflow drops the oldest and is counted in `stats().dropped` |
+
+**Durability modes.**
+
+- `sync`: every record is `writeSync`ed on an `O_APPEND` descriptor. When `logEvent`/`logRaw` returns,
+  the record survives `kill -9` of the process.
+- `hybrid` (default): records up to `syncMaxBytes` are written synchronously; larger ones go through a
+  bounded queue flushed before the next synchronous record, on `flush()`, and on `beforeExit`/`exit`.
+  A `kill -9` can lose queued large records, never a small one that returned.
+
+**Redaction.** The channel redacts both the structured fields and the serialized line, so no call site
+can forget it. Pass `redactor: identityRedactor` only in tests. `initTelemetry({ redactor })` applies the
+same redactor to every `log.*` record and to span `.start`/`.finish` records (span attributes and
+captured args); with no redactor, output is unchanged.
+
+**Other exports.** `BodyCapture` is the streaming form of `captureBody` (`append(chunk)`, then
+`finish()`); `currentLogContext()` reads the merged context of the current async scope;
+`channel.destination()` is a pino-compatible destination
+(`pino.multistream([{ stream: channel.destination() }])`); `channel.stats()` reports
+`written`, `dropped`, `serializeErrors`, `rotated`, `floodTripped`.
+
+Verification: `npx nx run sox-telemetry:e2e` drives 4 real processes through one directory, a `kill -9`
+mid-write, gzip rotation replay, and a cross-copy run against the published 0.4.1.
+
 ### Child processes and worker threads
 
 ```typescript

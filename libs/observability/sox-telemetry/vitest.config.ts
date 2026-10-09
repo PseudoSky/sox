@@ -8,6 +8,8 @@ export default defineConfig({
     // per-file temp root so this package's specs can never write real telemetry
     // into ~/.adhd/sox-ecosystem.
     setupFiles: [resolve(__dirname, 'vitest.setup.ts')],
+    // e2e lane (real processes vs built dist) runs via vitest.e2e.config.ts.
+    exclude: ['**/node_modules/**', '**/*.e2e.test.ts'],
     globals: false,
     environment: 'node',
     passWithNoTests: false,
