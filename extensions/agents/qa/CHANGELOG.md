@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **595965cc T47 AC4: qa holds the Auditor role.** `extension.json` adds `glob` and `grep` (Claude render: `Glob`, `Grep`) with `allow` permissions, so `agentToolSet` maps them to `search`. Without it a fresh qa lacked the `auditor` tool set (`read, search, shell, edit`) and the role went unbound. Declared `roles-covered` (AU.1-5, SO.1-3) unchanged. Test: `qa-tools.test.mjs` (real manifests and roster).
+
 ## 0.2.0
 
 - **T18 (0c91e632): auditor persona adopts the repository IMPLEMENTATION.** The single-file equivalence rule and the `docs/TEST-STRATEGY.md` requirement are gone; qa adopts the IMPLEMENTATION the repo binds (`registry.json` > `binding`) and cites the STRATEGY by `path §clause`. With none found it runs the `apply` playbook.

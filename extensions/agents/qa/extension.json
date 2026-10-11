@@ -53,6 +53,8 @@
     "temperature": 0.2,
     "tools": [
       "read",
+      "glob",
+      "grep",
       "bash",
       "edit",
       "write",
@@ -65,6 +67,8 @@
     ],
     "permission": {
       "read": "allow",
+      "glob": "allow",
+      "grep": "allow",
       "edit": "allow",
       "write": "allow",
       "bash": {
@@ -90,6 +94,8 @@
       "version": "v0.2.0",
       "tools": [
         "Read",
+        "Glob",
+        "Grep",
         "Bash",
         "Edit",
         "Write",
