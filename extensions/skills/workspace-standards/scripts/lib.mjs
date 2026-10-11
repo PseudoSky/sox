@@ -509,32 +509,47 @@ export function agentToolSet(manifest) {
 }
 
 /**
- * Static resolution of one role against the installed agents (routing foundation, `run` steps 1-4
- * without `distinct-from`, which needs the roles already held in a live change).
- *   eligible  the agent can use every entry of the role's `tools` and covers at least one of the role's
- *             obligation ids through a `roles-covered:<ID>` capability
- *   closeness the count of the role's obligation ids the agent covers; ties: the role's hints order,
- *             then the agent name
- * Returns { role, holder, covered, toolsMatched, rank }; holder is null when no agent is eligible.
- * `agents` is loadAgents() output; agents whose manifest did not load are never eligible.
+ * Resolution of one role against the installed agents (MAP 1E.4 role availability, 595965cc T47 AC1).
+ *   eligible  the agent can use every entry of the role's `tools` AND breaks no independence constraint
+ *             for this change (`options.session`). Obligation coverage is NOT an eligibility test: an
+ *             agent that covers none of the role's obligations is eligible at closeness 0.
+ *   closeness the number of the role's obligation ids the agent's `roles-covered:<ID>` capabilities list
+ *   order     closeness (more first), then fewest OTHER roles the agent already holds in this change
+ *             (`options.held`), then the role's `hints` order, then the agent name. Hints only break ties.
+ * Free-text descriptions are never read. No eligible agent yields holder null (the role is unbound).
+ *
+ * options (all optional; omitted = no live change, which is the static routing-table case):
+ *   session  { agent, holds: string[] } the session that authored the work under review and the roles it
+ *            holds. That agent is ineligible when the role's `distinct-from` names a role in `holds` (a
+ *            session never approves what it authored). A fresh dispatch of the same agent is a different
+ *            party: pass no session, or one for another agent, and it stays eligible.
+ *   held     Map<agent, number> | { [agent]: number } roles each agent already holds in this change.
+ *
+ * Returns { role, holder, covered, toolsMatched, rank, held }; `rank` is the closeness. `agents` is
+ * loadAgents() output; agents whose manifest did not load are never eligible.
  */
-export function resolveRole(role, agents) {
+export function resolveRole(role, agents, options = {}) {
+  const { session = null, held = null } = options;
+  const heldCount = (agent) => {
+    const v = held instanceof Map ? held.get(agent) : held?.[agent];
+    return Number.isInteger(v) && v > 0 ? v : 0;
+  };
   const need = new Set(role.obligations.map((o) => o.id));
   const candidates = [];
   for (const a of agents) {
     if (a.loadError || a.shapeError) continue;
+    if (session && a.agent === session.agent && role.distinctFrom.some((d) => (session.holds ?? []).includes(d))) continue;
     const have = agentToolSet(a.manifest);
     const toolsMatched = role.tools.filter((t) => have.has(t));
     if (toolsMatched.length !== role.tools.length) continue;
     const covered = coveredIds(a.manifest).filter((id) => need.has(id));
-    if (covered.length === 0) continue;
     const hint = role.hints.indexOf(a.agent);
-    candidates.push({ agent: a.agent, covered, toolsMatched, rank: covered.length, hint: hint === -1 ? Infinity : hint });
+    candidates.push({ agent: a.agent, covered, toolsMatched, rank: covered.length, held: heldCount(a.agent), hint: hint === -1 ? Infinity : hint });
   }
-  candidates.sort((x, y) => y.rank - x.rank || x.hint - y.hint || x.agent.localeCompare(y.agent));
+  candidates.sort((x, y) => y.rank - x.rank || x.held - y.held || x.hint - y.hint || x.agent.localeCompare(y.agent));
   const won = candidates[0];
-  if (!won) return { role: role.name, holder: null, covered: [], toolsMatched: [], rank: 0 };
-  return { role: role.name, holder: won.agent, covered: won.covered, toolsMatched: won.toolsMatched, rank: won.rank };
+  if (!won) return { role: role.name, holder: null, covered: [], toolsMatched: [], rank: 0, held: 0 };
+  return { role: role.name, holder: won.agent, covered: won.covered, toolsMatched: won.toolsMatched, rank: won.rank, held: won.held };
 }
 
 /** True when a role's no-holder field declares the role unbound when no agent is eligible. */

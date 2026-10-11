@@ -84,7 +84,13 @@ describe('T49 routing composition', () => {
     assert.ok(body.includes('| role-routing | workspace-standards |'), 'role-resolution capability row');
     const roles = read(dir, 'docs/standards/roles.md');
     for (const role of TESTING.roles) assert.ok(roles.includes(`## role: ${role.name}\n`), `roles.md defines ${role.name}`);
-    assert.deepEqual(r.unbound, TESTING.roles.map((x) => x.name).filter((x) => !['test-author', 'static-reviewer'].includes(x)).map((x) => `testing/${x}`), 'every role with no eligible agent is listed as unbound');
+    // 595965cc T47 AC1 fix-1: zero-coverage agents with the tools are eligible, so only roles whose tools no
+    // fixture agent provides stay unbound (the fixtures provide read, search, shell, edit and backlog).
+    const provided = new Set(['read', 'search', 'shell', 'edit', 'backlog']);
+    const toolBlocked = TESTING.roles.filter((x) => !x.tools.every((t) => provided.has(t))).map((x) => `testing/${x.name}`);
+    assert.deepEqual(r.unbound, toolBlocked, 'a role is unbound only when no agent has its tools');
+    const holderOf = (name) => body.match(new RegExp(`^\\| ${name} \\| testing \\| (\\S+) \\|`, 'm'))?.[1];
+    assert.equal(holderOf('risk-owner'), TESTING.roles.find((x) => x.name === 'risk-owner').tools.every((t) => provided.has(t)) ? '`author-fixture`' : '_unbound_', 'a role with no covering agent binds the first tool-eligible agent at closeness 0');
   });
 
   test('595965cc T49 AC1: the skill agentToolSet maps every tool entry exactly as the T10 guard does', () => {
@@ -328,7 +334,9 @@ describe('T49 precedence and the T10 roster guard', () => {
   });
 
   test('595965cc T49 AC7: unbound rows are warnings for the guard, not failures, so an unstaffed roster still passes', () => {
-    const dir = scaffold({ dispatcher: true, roster: ROSTER.filter((a) => a.dir === 'reviewer-fixture') });
+    // A read-only reviewer: it has the static-reviewer tools but not the edit tool test-author needs.
+    const readOnlyReviewer = { dir: 'reviewer-fixture', manifest: { ...ROSTER[1].manifest, agent: { tools: ['read', 'grep'] } } };
+    const dir = scaffold({ dispatcher: true, roster: [readOnlyReviewer] });
     applyFoundation({ target: 'routing', root: dir, standards: [TESTING], agents: rosterAgents(dir), noFile: true });
     const result = checkRoster(makeSource({ root: dir }));
     assert.equal(result.agentsMdTable, 'found');

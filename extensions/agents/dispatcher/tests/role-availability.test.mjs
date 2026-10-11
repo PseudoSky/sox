@@ -7,9 +7,9 @@
  *     against a seeded temp roster (every installed agent's real manifest except `review`).
  *
  * Not real, stated here so nobody counts it as proof of more than it is:
- *   - bind() below transcribes dispatcher.md Step 2 (distinct-from filtering, debt, Deep block). The
- *     dispatcher prose is executed by a model; this test proves the deterministic core it relies on, not
- *     the model's execution of it. resolveRole does not take distinct-from; the caller applies it.
+ *   - bind() below transcribes the debt and Deep-block steps of dispatcher.md Step 2. The dispatcher
+ *     prose is executed by a model; this test proves the deterministic core it relies on, not the model's
+ *     execution of it. Eligibility, including distinct-from, is resolveRole's own (options.session).
  *   - `qa` is SEEDED in the roster (search tool and SR.1–SR.4 coverage added). The real qa manifest has no
  *     `search` tool and covers only AU.* and SO.*, so under its real manifest a fresh qa is not eligible for
  *     static-reviewer. That gap is reported, not fixed here.
@@ -80,19 +80,23 @@ function seededRosterWithoutReview() {
 
 /**
  * Transcription of dispatcher.md Step 2 (595965cc T47). session = the authoring session
- * { agent, holds } — it cannot hold a role whose distinct-from list names a role it holds.
+ * { agent, holds } — resolveRole excludes it from a role whose distinct-from list names a role it holds
+ * (595965cc T47 AC1 fix-3); this function does not re-implement that rule.
  */
 function bind({ roleName, agents, rigor, session = null, expiry = EXPIRY }) {
   const r = role(roleName);
-  const eligible = agents.filter(
-    (a) => !(session && a.agent === session.agent && r.distinctFrom.some((d) => session.holds.includes(d))),
-  );
-  const got = resolveRole(r, eligible);
+  const got = resolveRole(r, agents, { session });
   if (got.holder) return { outcome: 'bound', holder: got.holder, covered: got.covered };
   if (rigor === 'deep' && r.deepBlocks) return { outcome: 'blocked', role: r.name };
   if (!expiry) throw new Error('review debt requires an expiry');
-  const owner = resolveRole(role('risk-owner'), eligible).holder ?? 'user';
+  const owner = resolveRole(role('risk-owner'), agents, { session }).holder ?? 'user';
   return { outcome: 'debt', role: r.name, owner, expiry };
+}
+
+/** Only the seeded qa is installed: the one agent with the static-reviewer tools and coverage. */
+function seededQaOnlyRoster() {
+  const m = JSON.parse(fs.readFileSync(path.join(AGENTS, 'qa', 'extension.json'), 'utf8'));
+  return writeRoster({ qa: seededQa(m) });
 }
 
 const AUTHORED_QA = { agent: 'qa', holds: ['test-author'] };
@@ -148,7 +152,7 @@ test(AC(3, 'unbound roles record review debt with owner and expiry at Light and 
 });
 
 test(AC(4, 'Light, review removed, authoring qa: static-reviewer is unbound and review debt is recorded with owner and expiry'), () => {
-  const got = bind({ roleName: 'static-reviewer', agents: seededRosterWithoutReview(), rigor: 'light', session: AUTHORED_QA });
+  const got = bind({ roleName: 'static-reviewer', agents: seededQaOnlyRoster(), rigor: 'light', session: AUTHORED_QA });
   assert.deepEqual(got, { outcome: 'debt', role: 'static-reviewer', owner: 'user', expiry: EXPIRY });
 });
 
@@ -160,13 +164,13 @@ test(AC(4, 'Standard, review removed: a fresh qa dispatch is the closest eligibl
 });
 
 test(AC(4, 'Standard, review removed: a qa session that authored the tests is excluded, so the role is unbound with debt'), () => {
-  const got = bind({ roleName: 'static-reviewer', agents: seededRosterWithoutReview(), rigor: 'standard', session: AUTHORED_QA });
+  const got = bind({ roleName: 'static-reviewer', agents: seededQaOnlyRoster(), rigor: 'standard', session: AUTHORED_QA });
   assert.equal(got.outcome, 'debt');
   assert.notEqual(got.holder, 'qa');
 });
 
 test(AC(4, 'Deep, no eligible agent: the change is blocked and reported; a deep-blocks: no role does not block'), () => {
-  const roster = seededRosterWithoutReview();
+  const roster = seededQaOnlyRoster();
   assert.deepEqual(
     bind({ roleName: 'static-reviewer', agents: roster, rigor: 'deep', session: AUTHORED_QA }),
     { outcome: 'blocked', role: 'static-reviewer' },
@@ -174,6 +178,13 @@ test(AC(4, 'Deep, no eligible agent: the change is blocked and reported; a deep-
   assert.equal(bind({ roleName: 'static-reviewer', agents: roster, rigor: 'deep' }).holder, 'qa');
   assert.equal(role('triager').deepBlocks, false);
   assert.equal(bind({ roleName: 'triager', agents: [], rigor: 'deep' }).outcome, 'debt');
+});
+
+test(AC(4, 'Light, review removed, full roster, authoring qa: a zero-coverage agent with the tools is eligible at closeness 0 (595965cc T47 AC1 fix-1)'), () => {
+  const got = bind({ roleName: 'static-reviewer', agents: seededRosterWithoutReview(), rigor: 'light', session: AUTHORED_QA });
+  assert.equal(got.outcome, 'bound');
+  assert.notEqual(got.holder, 'qa', 'the authoring qa session is excluded by resolveRole');
+  assert.deepEqual(got.covered, [], 'no installed agent besides qa covers SR.*, so the holder is at closeness 0');
 });
 
 test(AC(5, 'tools/test-dispatcher-ac-citation.mjs still exits 0'), () => {
