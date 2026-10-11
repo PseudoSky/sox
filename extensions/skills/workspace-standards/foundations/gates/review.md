@@ -8,7 +8,7 @@ Checks every registered gate for completeness, liveness, reachability, and teeth
 3. Reachability: the stage a gate is bound to actually invokes it; an unbound gate is a finding.
 4. Teeth: each mechanical gate has a seeded-violation fixture it must fail on; a gate without one is a finding.
 5. Skipped standards: list each standard declaring `own: ["gates"]`; its own playbook reviews its gates.
-6. Drift: the `workspace-standards:gates` block in `AGENTS.md` equals what `apply gates` would write.
+6. Drift: the `workspace-standards:gates` block in `AGENTS.md` equals what `apply gates` would write. Command: `node <skill>/scripts/foundations.mjs review gates [--root <repo>]`; exit 3 names the drifted block.
 7. Report the conformance level from the passing rows; an obligation without a mechanism counts toward no level.
 
 ## Output

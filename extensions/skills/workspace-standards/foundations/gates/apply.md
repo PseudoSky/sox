@@ -9,10 +9,12 @@ Writes the gate registry and stage bindings, composed from every registered stan
 4. For each gate whose mechanism does not exist, file one backlog item instead of writing code, and list the gate as an obligation, not yet a gate.
 5. A second run produces no change; a hand edit inside the block is drift.
 
+Command: `node <skill>/scripts/foundations.mjs apply gates [--root <repo>] [--dry-run] [--force] [--no-file]`. A mechanical gate counts as having a mechanism when `gates.table.json` binds it to a command (or the testing binding names it); the filed items are recorded in the `workspace-standards:foundations-filed` block so a second run and `apply testing` never file one twice.
+
 ## Output
 The gates block diff and the filed mechanism items.
 
 ## Record
 The diff summary and the filed items in the change description.
 
-Status: the managed-block writer and the runner are built by later tasks; until then perform step 2 by hand against the same structure and state that in the Record.
+Status: built (595965cc T49). The writer is `scripts/foundations.mjs`; the runner is the engine at `engine/cli.mjs` (T62), which every standard's gate set runs through.

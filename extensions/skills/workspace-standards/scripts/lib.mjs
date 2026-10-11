@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { inspectBlock } from './marker-engine.mjs';
 
 export const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const VERBS = ['review', 'run', 'apply'];
@@ -469,4 +470,104 @@ export function runConformance({ root = SKILL_ROOT, standardDir, spec, strategyT
     checks.push({ id: c.id, kind: c.kind, ok: findings.length === 0, findings });
   }
   return { standard: spec.standard, strategy: strategy ? 'checked against the provided policy' : 'not provided: clause-id existence not checked', checks, ok: checks.every((x) => x.ok) };
+}
+
+// ---------- foundations (595965cc T49): ownership, role resolution, managed-block ledgers ----------
+
+/**
+ * Which foundation a standard owns. Every spelling a declaration may use is accepted, so the
+ * foundation apply and the standard apply can never disagree about who writes a block:
+ *   own: ["routing", "gates"]   (validateDeclaration's form)
+ *   routing: "own" / gates: "own" at top level
+ *   ownership: { routing: "own", gates: "own" }
+ */
+export function ownership(decl) {
+  const list = Array.isArray(decl.own) ? decl.own : [];
+  const nested = decl.ownership ?? {};
+  return {
+    routing: list.includes('routing') || decl.routing === 'own' || nested.routing === 'own',
+    gates: list.includes('gates') || decl.gates === 'own' || nested.gates === 'own',
+  };
+}
+
+/**
+ * Tool-vocabulary entries an agent manifest provides (`agent.tools`). Mirrors the mapping the roster
+ * guard applies (tools/test-roster-guard.mjs agentToolSet) so a resolution here and there agree; the
+ * skill cannot import tools/ because an installed copy of the skill has no tools/ directory.
+ */
+export function agentToolSet(manifest) {
+  const have = new Set();
+  for (const t of manifest?.agent?.tools ?? []) {
+    const name = typeof t === 'string' ? t : (t?.logical ?? '');
+    if (name === 'read') have.add('read');
+    else if (name === 'grep' || name === 'glob' || name === 'search' || name === 'code-intel') have.add('search');
+    else if (name === 'bash') have.add('shell');
+    else if (name === 'edit' || name === 'write') have.add('edit');
+    else if (name === 'backlog') have.add('backlog');
+  }
+  return have;
+}
+
+/**
+ * Static resolution of one role against the installed agents (routing foundation, `run` steps 1-4
+ * without `distinct-from`, which needs the roles already held in a live change).
+ *   eligible  the agent can use every entry of the role's `tools` and covers at least one of the role's
+ *             obligation ids through a `roles-covered:<ID>` capability
+ *   closeness the count of the role's obligation ids the agent covers; ties: the role's hints order,
+ *             then the agent name
+ * Returns { role, holder, covered, toolsMatched, rank }; holder is null when no agent is eligible.
+ * `agents` is loadAgents() output; agents whose manifest did not load are never eligible.
+ */
+export function resolveRole(role, agents) {
+  const need = new Set(role.obligations.map((o) => o.id));
+  const candidates = [];
+  for (const a of agents) {
+    if (a.loadError || a.shapeError) continue;
+    const have = agentToolSet(a.manifest);
+    const toolsMatched = role.tools.filter((t) => have.has(t));
+    if (toolsMatched.length !== role.tools.length) continue;
+    const covered = coveredIds(a.manifest).filter((id) => need.has(id));
+    if (covered.length === 0) continue;
+    const hint = role.hints.indexOf(a.agent);
+    candidates.push({ agent: a.agent, covered, toolsMatched, rank: covered.length, hint: hint === -1 ? Infinity : hint });
+  }
+  candidates.sort((x, y) => y.rank - x.rank || x.hint - y.hint || x.agent.localeCompare(y.agent));
+  const won = candidates[0];
+  if (!won) return { role: role.name, holder: null, covered: [], toolsMatched: [], rank: 0 };
+  return { role: role.name, holder: won.agent, covered: won.covered, toolsMatched: won.toolsMatched, rank: won.rank };
+}
+
+/** True when a role's no-holder field declares the role unbound when no agent is eligible. */
+export const declaresUnbound = (role) => /^unbound\b/i.test(role.noHolder.trim());
+
+/**
+ * Rows of a managed ledger block (`| key | description | uid |`), keyed by the first cell.
+ * The block is found with the marker engine's inspectBlock; an absent block is an empty map.
+ */
+export function ledgerRows(text, target) {
+  const rows = new Map();
+  const at = inspectBlock(text, target);
+  if (!at.found) return rows;
+  for (const line of at.body.split('\n')) {
+    const m = /^\|\s*([^|]+?)\s*\|[^|]*\|\s*(\S+)\s*\|\s*$/.exec(line);
+    if (m && m[1] !== 'gate' && m[1] !== 'gate set' && !/^-+$/.test(m[1])) rows.set(m[1], m[2]);
+  }
+  return rows;
+}
+
+/**
+ * Gate ids the repository's command table (`gates.table.json`) binds to a command. A row without a command
+ * is an obligation, not a mechanism. An absent table binds nothing.
+ */
+export function commandedGateIds(root) {
+  const file = path.join(root, 'gates.table.json');
+  if (!fs.existsSync(file)) return new Set();
+  let raw;
+  try {
+    raw = JSON.parse(readText(file));
+  } catch (err) {
+    trace('parse gates.table.json', err);
+    throw Object.assign(new Error(`gates.table.json is not valid JSON: ${err.message}`), { code: 'E_INPUT' });
+  }
+  return new Set((Array.isArray(raw?.gates) ? raw.gates : []).filter((g) => typeof g?.command === 'string' && g.command !== '').map((g) => g.id));
 }

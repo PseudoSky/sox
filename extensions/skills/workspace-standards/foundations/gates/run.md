@@ -18,4 +18,4 @@ The structured report and the worst exit status.
 ## Record
 The report file (JSON) and the command line with its exit status.
 
-Status: the domain-neutral gate runner is built by a later task; until then run each gate's own command and assemble the report by hand.
+Status: built. Run `node <skill>/engine/cli.mjs run --step <A-H> --class <class> --rigor <rigor> --changed <path> --root <repo>`; the engine's command table is the repository's `gates.table.json`.

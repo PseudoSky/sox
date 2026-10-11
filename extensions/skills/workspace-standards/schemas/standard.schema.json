@@ -20,6 +20,7 @@
         "properties": {
           "id": { "type": "string" },
           "defaultRigor": { "enum": ["none", "light", "standard", "deep"] },
+          "role": { "type": ["string", "null"], "description": "Optional. The roles.md role that holds this work class; null when the class needs no role. Drives the task-to-agent routing table (apply routing)." },
           "card": { "type": ["string", "null"] }
         }
       }

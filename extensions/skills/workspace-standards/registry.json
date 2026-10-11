@@ -44,7 +44,8 @@
         }
       },
       "conformance": "standards/testing/conformance.spec.json",
-      "applyTemplate": "standards/testing/templates/agents-block.md"
+      "applyTemplate": "standards/testing/templates/agents-block.md",
+      "gateSet": "test-gates"
     },
     { "id": "deployment", "status": "planned" },
     { "id": "implementation", "status": "planned" },

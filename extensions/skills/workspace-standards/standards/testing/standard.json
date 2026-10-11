@@ -6,14 +6,14 @@
     "triager", "verifier", "record-keeper", "strategy-owner", "mechanism-owner", "coordinator"
   ],
   "workClasses": [
-    { "id": "new-behavior", "defaultRigor": "standard", "card": "cards/test-author/author-new-behavior.md" },
-    { "id": "defect-fix", "defaultRigor": "standard", "card": "cards/test-author/author-regression.md" },
-    { "id": "refactor", "defaultRigor": "light", "card": "cards/test-author/characterize.md" },
-    { "id": "configuration", "defaultRigor": "light", "card": "cards/test-author/select-checks.md" },
-    { "id": "dependency", "defaultRigor": "light", "card": "cards/test-author/select-checks.md" },
-    { "id": "boundary-contract", "defaultRigor": "deep", "card": "cards/test-author/author-contract.md" },
-    { "id": "no-code", "defaultRigor": "none", "card": null },
-    { "id": "test-maintenance", "defaultRigor": "standard", "card": "cards/test-author/maintain.md" }
+    { "id": "new-behavior", "defaultRigor": "standard", "role": "test-author", "card": "cards/test-author/author-new-behavior.md" },
+    { "id": "defect-fix", "defaultRigor": "standard", "role": "test-author", "card": "cards/test-author/author-regression.md" },
+    { "id": "refactor", "defaultRigor": "light", "role": "test-author", "card": "cards/test-author/characterize.md" },
+    { "id": "configuration", "defaultRigor": "light", "role": "test-author", "card": "cards/test-author/select-checks.md" },
+    { "id": "dependency", "defaultRigor": "light", "role": "test-author", "card": "cards/test-author/select-checks.md" },
+    { "id": "boundary-contract", "defaultRigor": "deep", "role": "test-author", "card": "cards/test-author/author-contract.md" },
+    { "id": "no-code", "defaultRigor": "none", "role": null, "card": null },
+    { "id": "test-maintenance", "defaultRigor": "standard", "role": "test-author", "card": "cards/test-author/maintain.md" }
   ],
   "gates": [
     { "id": "G1", "threshold": "required tests pass; a quarantined test past its deadline fails the build", "mechanism": "mechanical", "stage": ["D", "E", "G"] },

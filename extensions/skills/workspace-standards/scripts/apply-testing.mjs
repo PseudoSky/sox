@@ -15,7 +15,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { upsertBlock, inspectBlock, unifiedDiff, MarkerError, renderBlock } from './marker-engine.mjs';
-import { parseRoles, trace } from './lib.mjs';
+import { parseRoles, trace, ownership, ledgerRows, commandedGateIds } from './lib.mjs';
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const EXIT = { OK: 0, DRIFT: 3, FILING: 4, USAGE: 64, INPUT: 65 };
@@ -23,11 +23,8 @@ const PLACEHOLDER = /^<.*>$/;
 const rd = (p) => fs.readFileSync(p, 'utf8');
 const readIfExists = (p) => (fs.existsSync(p) ? rd(p) : null);
 
-/** Which of routing / gates the declaration owns. Absent means the routing and gates applies own them. */
-export function ownership(decl) {
-  const own = decl.ownership ?? {};
-  return { routing: decl.routing === 'own' || own.routing === 'own', gates: decl.gates === 'own' || own.gates === 'own' };
-}
+// 595965cc T49.AC4: `ownership` lives in lib.mjs so apply testing and apply routing/gates read one rule.
+export { ownership };
 const gateList = (decl) => (Array.isArray(decl.gates) ? decl.gates : Array.isArray(decl.gateList) ? decl.gateList : []);
 const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
 const table = (head, rows) => [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map((r) => `| ${r.map(cell).join(' | ')} |`)].join('\n');
@@ -148,7 +145,11 @@ export function applyTesting({ root, skillRoot = SKILL_ROOT, declarationPath, dr
   const gates = gateList(decl).filter((g) => g.mechanism === 'mechanical');
   const bound = boundGates(skeletonText);
   const ledger = readLedger(skeletonText);
-  const todo = gates.filter((g) => !bound.has(g.id) && !ledger.has(g.id));
+  // 595965cc T49.AC6: a gate the foundation gates ledger already filed (apply gates ran first) is not filed twice.
+  const gateSet = std.gateSet ?? `${std.id}-gates`;
+  const filedByGates = ledgerRows(readIfExists(path.join(root, 'AGENTS.md')) ?? '', 'foundations-filed');
+  const commanded = commandedGateIds(root);
+  const todo = gates.filter((g) => !bound.has(g.id) && !ledger.has(g.id) && !commanded.has(g.id) && !filedByGates.has(`${gateSet}/${g.id}`));
   if (readOnly || noFile) result.wouldFile = todo.map((g) => g.id);
   else if (todo.length > 0) {
     if (!filer) throw new Error('applyTesting: a filer is required to file mechanism items (pass noFile to skip)');
@@ -207,7 +208,7 @@ function main(argv) {
   } catch (err) {
     trace('apply-testing', err);
     process.stderr.write(`${err.message}\n`);
-    return err instanceof MarkerError || err.code === 'ENOENT' || err instanceof SyntaxError ? EXIT.INPUT : 1;
+    return err instanceof MarkerError || err.code === 'ENOENT' || err.code === 'E_INPUT' || err instanceof SyntaxError ? EXIT.INPUT : 1;
   }
   if (r.diff) process.stdout.write(r.diff);
   process.stdout.write(`${JSON.stringify({ ...r, diff: undefined, drift: r.drift.map(({ file, target }) => ({ file, target })) })}\n`);

@@ -17,8 +17,8 @@ T14.AC2, T14.AC10. A standard registers in `registry.json` only when it provides
 ## Declaration fields
 
 - `roles[]`: `{ role, obligations[{id, text, clauses[]}], tools[], distinctFrom[], hints[], noHolder }`. The prose and machine form live in the standard's `roles.md`; the declaration lists the role names and `roles.md` is authoritative for obligations.
-- `workClasses[]`: `{ id, defaultRigor, card }`. `defaultRigor` is `none|light|standard|deep`.
-- `gates[]`: `{ id, threshold, mechanism, stage[] }`. `mechanism` is the enforcement class (`mechanical` or `review`); the concrete tool is bound by the adopting repository, never here.
+- `workClasses[]`: `{ id, defaultRigor, role, card }`. `defaultRigor` is `none|light|standard|deep`. `role` is optional (`null` when the class needs no role) and names the `roles.md` role whose holder takes the class in the routing table.
+- `gates[]`: `{ id, threshold, mechanism, stage[] }`. `mechanism` is the enforcement class (`mechanical` or `review`); the concrete tool is bound by the adopting repository, never here. The gate set's name in the registry is the registry key `gateSet` (optional; default `<id>-gates`, so testing names its set `test-gates`).
 - `carriers`: `{ <clause id>: check|field|brief-slice|card }`.
 - `own`: optional list drawn from `routing`, `gates` (the declaration form of `routing: own` / `gates: own`; a separate key because `gates` is already the gate list).
 

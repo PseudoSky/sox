@@ -19,10 +19,25 @@ When a change needs its test class, rigor, and playbook; when tests are audited 
 | `CONTRACT.md`, `schemas/` | What a standard provides; `roles-covered` shape |
 | `foundations/{routing,gates}/` | Playbooks per verb |
 | `standards/testing/` | Declaration, roles, conformance spec, playbooks, cards, formats, templates |
-| `scripts/` | `ws.mjs`, `review-all.mjs`, `review-routing.mjs`, `conformance.mjs`, `marker-engine.mjs`, `apply-testing.mjs` (dependency-free) |
+| `scripts/` | `ws.mjs`, `review-all.mjs`, `review-routing.mjs`, `conformance.mjs`, `marker-engine.mjs`, `apply-testing.mjs`, `foundations.mjs` (dependency-free) |
 | `engine/` | The domain-neutral gate and check engine (`cli.mjs run`, `cli.mjs check`); see `engine/README.md` |
 | `fixtures/`, `tests/` | Negative controls; `node --test tests/*.test.mjs` |
 | `decisions/reuse-decision.md` | The recorded reuse decision for the gate runner and the managed-block writer |
+
+## Apply routing and apply gates
+
+```
+node scripts/foundations.mjs apply routing [--root <repo>] [--dry-run] [--force] [--no-file]
+node scripts/foundations.mjs apply gates   [--root <repo>] [--dry-run] [--force] [--no-file]
+node scripts/foundations.mjs review routing [--root <repo>]   # read-only drift check, exit 3 on drift
+node scripts/foundations.mjs review gates   [--root <repo>]
+```
+
+- **Routing** writes `workspace-standards:routing` in `AGENTS.md`: the task-to-agent table (every work class of every routed standard, with the agent that holds its role, by name), the role holders, and the role-resolution capability row. The table states that it wins over the dispatcher's own rows. `docs/standards/roles.md` is composed from every routed standard's `roles.md`. Holders resolve statically from `extensions/agents/*/extension.json` (`roles-covered:<ID>` and `agent.tools`); a role with no eligible agent is `_unbound_`, which the T10 roster guard reports as a warning, not a failure.
+- **Gates** writes `workspace-standards:gates`: the gate registry (each standard's gate set, `test-gates` for testing), the stage bindings A to H, and the one runner row, which names the engine (`engine/cli.mjs`). No standard adds a runner.
+- **Ownership:** a standard that declares `own: ["routing"]` (or `"gates"`) is skipped by the matching foundation target and reported as skipped; apply testing writes that block itself.
+- **Mechanisms it cannot write:** a mechanical gate with no command in the repository's `gates.table.json` gets one backlog item through the backlog CLI, recorded in `workspace-standards:foundations-filed`. Apply testing reads the same ledger, so either order files each gate once.
+- **Drift:** a hand edit inside a block is drift for `review routing` or `review gates` (exit 3, diff on stderr). Apply refuses to overwrite it without `--force`.
 
 ## Apply testing
 
