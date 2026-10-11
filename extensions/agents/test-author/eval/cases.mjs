@@ -1,4 +1,4 @@
-// Golden set (a0897ba2). Briefs inline exactly one card, verbatim, from workspace-standards.
+// Golden set (a0897ba2; 595965cc T22). Briefs inline exactly one card, verbatim, from workspace-standards.
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';

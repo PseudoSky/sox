@@ -1,11 +1,18 @@
-// Golden-set A/B driver (a0897ba2 AC1/AC4/AC5). Spawns `claude -p` with tools in a throwaway sandbox; code-based grading, no LLM judge.
-// usage: [TA_EVAL_MODEL=sonnet] node eval/run.mjs [reps=3]  -> writes eval/results.json (the only writer)
+// Golden-set A/B driver (a0897ba2 AC1/AC4/AC5; 595965cc T22). Spawns `claude -p` with tools in a throwaway sandbox; code-based grading, no LLM judge.
+// usage: SOX_ALLOW_LIVE_EVAL=1 [TA_EVAL_MODEL=sonnet] node eval/run.mjs [reps=3]  -> writes eval/results.json (the only writer)
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AUTHORING, BASELINE_AUTHORING, BASELINE_SYSTEM, SCOPE_CASES } from './cases.mjs';
 import { gradeAuthoring, gradeScope, here, sandbox, sha, STUB_SHA } from './lib.mjs';
 import { MUTANTS } from './mutants.mjs';
+
+// 595965cc T22 (H1): live-model kill switch. This eval spawns `claude -p` and rewrites results.json,
+// and live-model runs are barred until the later testing run. Set SOX_ALLOW_LIVE_EVAL=1 only with explicit user approval.
+if (process.env.SOX_ALLOW_LIVE_EVAL !== '1') {
+  console.error('This eval spawns `claude -p`; live-model runs are barred until the later testing run. Set SOX_ALLOW_LIVE_EVAL=1 only with explicit user approval.');
+  process.exit(64);
+}
 
 const PROMPT = join(here, '..', 'test-author.md');
 const VARIANT = readFileSync(PROMPT, 'utf8');
@@ -15,10 +22,9 @@ const TOOLS = 'Read,Write,Edit,Bash,Glob,Grep';
 
 const ask = (system, brief, cwd) => new Promise((resolve) =>
 {
-  const p = spawn('claude', ['-p', '--model', MODEL, '--system-prompt', system, '--tools', TOOLS, '--allowedTools', TOOLS, '--permission-mode', 'bypassPermissions', '--setting-sources', '', '--disable-slash-commands', /*'--no-session-persistence'*/], { cwd });
+  const p = spawn('claude', ['-p', '--model', MODEL, '--system-prompt', system, '--tools', TOOLS, '--allowedTools', TOOLS, '--permission-mode', 'bypassPermissions', '--setting-sources', '', '--disable-slash-commands'], { cwd });
   let out = ''; p.stdout.on('data', (d) => (out += d)); p.on('error', () => resolve('')); p.on('close', () => { if (/session limit|rate limit/i.test(out.slice(0, 200))) { console.error('ABORT: model quota hit; nothing recorded'); process.exit(2); } resolve(out); }); p.stdin.end(brief);
 });
-process.abort()
 const jobs = [];
 for (let r = 0; r < reps; r++) {
   jobs.push({ kind: 'authoring', arm: 'variant', id: 'A1-author-new-behavior', r });

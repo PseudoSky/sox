@@ -1,4 +1,4 @@
-// Seeded faults (a0897ba2 AC5): each mutant is one edit to shipping.impl.mjs.
+// Seeded faults (a0897ba2 AC5; 595965cc T22): each mutant is one edit to shipping.impl.mjs.
 export const MUTANTS = [
   { id: 'F1-free-boundary', from: 'subtotal >= 100', to: 'subtotal > 100' },
   { id: 'F2-extra-unit-threshold', from: 'units > 3', to: 'units > 4' },

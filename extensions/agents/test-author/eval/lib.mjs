@@ -1,4 +1,4 @@
-// Pure helpers for the test-author golden set (a0897ba2 AC1, AC4, AC5). No model calls here.
+// Pure helpers for the test-author golden set (a0897ba2 AC1, AC4, AC5; 595965cc T22). No model calls here.
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MUTANTS } from './mutants.mjs';
+import { judgeRedRecord } from '../support/red-record.mjs';
 
 export const here = dirname(fileURLToPath(import.meta.url));
 export const FIX = join(here, 'fixture');
@@ -48,11 +49,10 @@ export function killVector(testSource) {
   return { valid, killed };
 }
 
-/** AC4 red check against the stub: non-zero exit, failures are assertions or the stub's marker, never a missing symbol/compile error. */
+/** AC4 red check against the stub; the judge is support/red-record.mjs (the one rule, shared with the unit tests). */
 export function redAgainstStub(testSource) {
   const r = runTests(testSource, STUB);
-  const structural = /SyntaxError|ERR_MODULE_NOT_FOUND|does not provide an export|is not defined|is not a function|Cannot find/.test(r.out);
-  return { red: r.code !== 0 && !structural && /NOT_IMPLEMENTED|AssertionError|ERR_ASSERTION/.test(r.out), code: r.code, structural };
+  return { red: judgeRedRecord({ exit: r.code, output: r.out }).red, code: r.code };
 }
 
 /** Files under dir (relative), excluding nothing. */

@@ -1,4 +1,6 @@
 {
+  "status": "unconfirmed-stale",
+  "staleReason": "summary.promptSha256 was recorded for an earlier test-author.md; re-measure at the later testing run (595965cc T22.AC5).",
   "summary": {
     "reps": 3,
     "model": "sonnet",

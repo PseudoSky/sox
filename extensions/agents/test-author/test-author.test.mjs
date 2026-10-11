@@ -3,12 +3,13 @@
 // their reason; they run at the later testing run, not here. Run: node --test extensions/agents/test-author/test-author.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { AUTHORING, SCOPE_CASES, card } from './eval/cases.mjs';
 import { MUTANTS } from './eval/mutants.mjs';
-import { judgeRedRecord } from './support/red-record.mjs';
+import { classifyHeader, judgeRedRecord, STUB_MARKER_TOKEN } from './support/red-record.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const rd = (p) => readFileSync(join(here, p), 'utf8');
@@ -22,7 +23,7 @@ const fixture = (name) => readFileSync(join(here, 'support', 'fixtures', name), 
 const LIVE_AC1 = 'live-model; confirm at the later testing run: test-author refuses a seeded brief to edit a production path';
 const LIVE_AC5 = 'live-model A/B; re-measure at the later testing run (recorded A/B missed AC1)';
 
-test('manifest: mode all, claude version tracks version, prose-only body, task and git-stash denied', () => {
+test('595965cc T22.AC1 manifest: mode all, claude version tracks version, prose-only body, task and git-stash denied', () => {
   assert.equal(manifest.agent.mode, 'all');
   assert.equal(manifest.render.opencode.mode, 'all');
   assert.equal(manifest.render.claude.version, `v${manifest.version}`);
@@ -55,8 +56,8 @@ test('595965cc T22.AC2 each of the seven cards is at most 4096 bytes, is inlined
 test('595965cc T22.AC3 plan-bucket caps a dispatch at five items; authoring is one bounded dispatch per unit with fan-out above five and a 100-call stop', () => {
   assert.match(card('plan-bucket'), /At most 5 items per dispatch; split larger buckets by cohesion/);
   assert.match(body, /bucket of <n> items exceeds 5; split by cohesion/);
-  assert.match(body, /One bounded dispatch per unit/);
-  assert.match(body, /above five units the dispatcher fans out/);
+  assert.match(body, /one bounded dispatch per unit/);
+  assert.match(body, /above five the dispatcher fans out/);
   assert.match(body, /after about 100 sequential tool calls, stop and return `remaining: <list>`/i);
   assert.ok(SCOPE_CASES.some((c) => c.id === 'R4-bucket-over-five' && c.ac === 'AC3'));
 });
@@ -72,6 +73,63 @@ test('595965cc T22.AC4 red record: body demands command, non-zero exit, assertio
   assert.equal(structural.red, false);
   assert.match(structural.reason, /structural failure/);
   assert.equal(judgeRedRecord({ exit: 0, output: fixture('assertion.txt') }).red, false, 'exit 0 has no teeth');
+});
+
+test('595965cc T22.AC4 judge is per failing test: a mixed run is rejected, an assertion that names a missing binding is accepted', () => {
+  const mixed = judgeRedRecord({ exit: 1, output: fixture('mixed-red.txt') });
+  assert.equal(mixed.red, false, 'one structural block rejects the record');
+  assert.deepEqual(mixed.verdicts, ['marker', 'structural']);
+  const fp = judgeRedRecord({ exit: 1, output: fixture('assertion-names-missing-binding.txt') });
+  assert.equal(fp.red, true, 'free text "is not defined" inside an AssertionError message is not structural');
+  assert.deepEqual(fp.verdicts, ['assertion']);
+});
+
+test('595965cc T22.AC4 classifier anchors on the thrown error header, never on free text', () => {
+  assert.equal(classifyHeader('  ReferenceError: x is not defined'), 'structural');
+  assert.equal(classifyHeader('  TypeError: shippingCost is not a function'), 'structural');
+  assert.equal(classifyHeader('  TypeError: Cannot read properties of undefined'), null, 'unknown runtime error is not red');
+  assert.equal(classifyHeader('  AssertionError [ERR_ASSERTION]: expected ReferenceError'), 'assertion');
+  assert.equal(classifyHeader('  Error: NOT_IMPLEMENTED: shippingCost'), 'marker');
+  assert.equal(classifyHeader("  'test failed'"), 'structural');
+  assert.equal(classifyHeader('    + ReferenceError: diff line'), null);
+});
+
+test('595965cc T22.AC4 the stub marker is one exported constant: the stub throws it and the body names it', () => {
+  assert.equal(STUB_MARKER_TOKEN, 'NOT_IMPLEMENTED');
+  assert.match(rd('eval/fixture/src/shipping.stub.mjs'), new RegExp(`Error\\('${STUB_MARKER_TOKEN}`));
+  assert.match(body, /STUB_MARKER_TOKEN/);
+});
+
+test('595965cc T22.AC4 eval/lib.mjs imports the shared judge and carries no second red rule', () => {
+  const lib = rd('eval/lib.mjs');
+  assert.match(lib, /from '\.\.\/support\/red-record\.mjs'/);
+  assert.doesNotMatch(lib, /does not provide an export/);
+});
+
+test('595965cc T22.AC5 eval runner refuses to run without SOX_ALLOW_LIVE_EVAL=1: the guard exits 64 before the first spawn and the job list', () => {
+  const run = rd('eval/run.mjs');
+  const guard = run.indexOf("process.env.SOX_ALLOW_LIVE_EVAL !== '1'");
+  assert.ok(guard >= 0, 'guard present');
+  assert.ok(run.slice(guard, guard + 300).includes('process.exit(64)'), 'guard exits 64');
+  assert.ok(run.search(/spawn\(/) > guard, 'guard precedes the first spawn');
+  assert.ok(run.indexOf('const jobs') > guard, 'guard precedes job construction');
+  assert.doesNotMatch(run, /process\.abort\(/);
+});
+
+test('595965cc T22.AC5 eval headers cite a0897ba2 and 595965cc T22', () => {
+  for (const f of ['run.mjs', 'lib.mjs', 'mutants.mjs', 'cases.mjs']) {
+    const head = rd(`eval/${f}`).split('\n').slice(0, 3).join('\n');
+    assert.match(head, /a0897ba2/, `${f} cites a0897ba2`);
+    assert.match(head, /595965cc T22/, `${f} cites 595965cc T22`);
+  }
+});
+
+test('595965cc T22.AC5 results.json is marked unconfirmed-stale whenever its recorded promptSha256 is not the current body hash', () => {
+  const r = JSON.parse(rd('eval/results.json'));
+  if (r.summary.promptSha256 !== createHash('sha256').update(body).digest('hex')) {
+    assert.equal(r.status, 'unconfirmed-stale');
+    assert.ok(typeof r.staleReason === 'string' && r.staleReason.length > 0, 'staleReason present');
+  }
 });
 
 test('595965cc T22.AC5 fixture: at least five seeded faults, each a single-edit mutant that changes the implementation', () => {

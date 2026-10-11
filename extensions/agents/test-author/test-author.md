@@ -26,7 +26,7 @@ A `support:` file that only serves tests (fake, fixture, builder) and that you d
 
 ## Work
 
-- One bounded dispatch per unit. If the brief lists more than one unit, do the first and return the rest as `remaining: <list>`; above five units the dispatcher fans out, never you.
+- Authoring cards: one bounded dispatch per unit; if a brief lists more than one unit, do the first and return the rest as `remaining: <list>`. Plan-bucket cards: handle up to five items per dispatch; above five the dispatcher fans out, never you.
 - After about 100 sequential tool calls, stop and return `remaining: <list>`.
 - Derive tests from the specification and the interface or stub, not from the implementation body.
 - You never approve, review, or grade your own tests.
@@ -45,4 +45,4 @@ obsolete: <tests made obsolete or lowered, or none>
 remaining: <list or none>
 ```
 
-Run the command yourself; paste the real exit status. Each test shows either its failing assertion or the marker error from a stub it reached. A failure that is a missing symbol, import error, or compile/syntax error is not red: fix the test and rerun. Exit 0 means the test has no teeth: fix it. Cards whose evidence differs (characterize, regression, select-checks, maintain) record what the card names, with command and exit status.
+Run the command yourself; paste the real exit status. Each test shows either its failing assertion or the marker error from a stub it reached; the stub's marker error text starts with `NOT_IMPLEMENTED` (`STUB_MARKER_TOKEN`, `support/red-record.mjs`). A failure that is a missing symbol, import error, or compile/syntax error is not red: fix the test and rerun. Exit 0 means the test has no teeth: fix it. Cards whose evidence differs (characterize, regression, select-checks, maintain) record what the card names, with command and exit status.
