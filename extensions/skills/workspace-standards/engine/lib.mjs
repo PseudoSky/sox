@@ -138,6 +138,18 @@ export function shellRunner(command, { cwd, timeoutMs }) {
   return { exit, stdout: r.stdout ?? '', stderr: r.stderr ?? '', error: r.error ? String(r.error.message) : undefined };
 }
 
+/** Remove `*.log` files in `dir` whose stem is not in `keepIds`. Missing directory is a no-op; nothing else is touched. */
+export function clearStaleEvidence(dir, keepIds) {
+  if (!fs.existsSync(dir)) return [];
+  const removed = [];
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!ent.isFile() || !ent.name.endsWith('.log') || keepIds.has(ent.name.slice(0, -4))) continue;
+    fs.rmSync(path.join(dir, ent.name));
+    removed.push(ent.name);
+  }
+  return removed;
+}
+
 const tail = (s, n = 2000) => (s.length > n ? s.slice(s.length - n) : s);
 
 /**
@@ -150,6 +162,10 @@ export function runGates(table, opts, { run = shellRunner, now = () => Date.now(
   const { step, changeClass, rigor, changed, root, failOnObligation } = opts;
   const decisions = selectGates(table, { step, changeClass, rigor, changed });
   const rows = [];
+  // 891dbac0 AC2: logs left by an earlier run for gates not run this time must not sit next to a fresh report.
+  // Only `<id>.log` files inside the evidence directory are touched (ids are a safe charset, so a log is ours).
+  const writtenIds = new Set(decisions.filter((d) => d.selected && d.gate.mechanism === 'mechanical' && d.gate.command).map((d) => d.gate.id));
+  if (evidenceDir) clearStaleEvidence(evidenceDir, writtenIds);
   for (const d of decisions) {
     const g = d.gate;
     const base = { id: g.id, stage: g.stage, mechanism: g.mechanism, command: g.command ?? null };
@@ -201,6 +217,9 @@ export function runGates(table, opts, { run = shellRunner, now = () => Date.now(
 
 const finding = (check, id, evidence) => ({ check, id, key: `${check}:${id}`, severity: 'error', evidence });
 
+/** POSIX special/regular builtins a gate command may legitimately start with; they are not files on PATH. */
+export const SHELL_BUILTINS = new Set(['test', '[', 'cd', 'true', 'false', ':', 'echo', 'printf', 'exit', 'export', 'set', 'unset', 'read', 'exec', 'eval', 'wait', 'type', 'command', 'umask', 'ulimit']);
+
 /**
  * The command word of a shell command line: leading `VAR=value` assignments are skipped and a quoted
  * word is unquoted. Only the FIRST simple command is examined; `a && b`, `a; b`, and `a | b` check `a`
@@ -247,7 +266,7 @@ export const CHECKS = {
     for (const g of table.gates) {
       if (g.mechanism === 'mechanical' && g.command) {
         const bin = firstToken(g.command);
-        const ok = bin && (bin.includes('/') ? isExecutable(path.resolve(root, bin)) : onPath(bin));
+        const ok = bin && (bin.includes('/') ? isExecutable(path.resolve(root, bin)) : SHELL_BUILTINS.has(bin) || onPath(bin));
         if (!ok) out.push(finding('liveness', g.id, `command not found or not executable: ${bin ?? '(empty)'}`));
       }
       for (const ref of asList(g.references) ?? []) {

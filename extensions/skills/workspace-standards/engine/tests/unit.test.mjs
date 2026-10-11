@@ -8,9 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  parseTable, selectGates, runGates, runChecks, applyBaseline, shrinkBaseline, initBaseline, validateSelection, firstToken, collectFindings, reportFromFindings, registerCheck, CHECKS, globToRegExp, EngineError,
+  parseTable, selectGates, runGates, runChecks, applyBaseline, shrinkBaseline, initBaseline, validateSelection, firstToken, collectFindings, reportFromFindings, registerCheck, CHECKS, globToRegExp, EngineError, clearStaleEvidence, SHELL_BUILTINS,
 } from '../lib.mjs';
-import { parseArgs } from '../cli.mjs';
+import { parseArgs, main, scanDestination } from '../cli.mjs';
 
 const ENGINE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const table = (gates, extra = {}) => parseTable(JSON.stringify({ gates, ...extra }));
@@ -289,4 +289,55 @@ test('891dbac0 AC3 the README documents the ambiguity, the constant non-relaxabl
   assert.match(readme, /engine-error/);
   assert.match(readme, /--init-baseline/);
   assert.match(readme, /first (simple )?command/i);
+});
+
+test('891dbac0 AC2 a run clears *.log evidence for gates not run this time and nothing else', () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ge-ev-')), 'r.json.evidence');
+  fs.mkdirSync(dir);
+  for (const f of ['GONE.log', 'G3.log', 'notes.txt']) fs.writeFileSync(path.join(dir, f), 'old');
+  fs.mkdirSync(path.join(dir, 'sub.log'));
+  const r = runGates(table([G('G3'), G('G5', { stage: 'C' })]), { step: 'B', root: '.' }, { run: fakeRun(), evidenceDir: dir });
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['G3.log', 'notes.txt', 'sub.log'], 'GONE.log (a gate not run) is removed; the rest is untouched');
+  assert.match(fs.readFileSync(path.join(dir, 'G3.log'), 'utf8'), /^\$ echo G3/, 'the run rewrote G3.log');
+  assert.equal(r.gates.find((g) => g.id === 'G3').evidence, path.join(dir, 'G3.log'));
+  assert.deepEqual(clearStaleEvidence(path.join(dir, 'missing'), new Set()), [], 'an absent evidence directory is a no-op');
+  fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+});
+
+test('891dbac0 AC4 liveness treats a POSIX shell builtin as runnable but still flags an unknown command word', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ge-bi-'));
+  for (const b of ['test', '[', 'cd', 'true', ':']) assert.ok(SHELL_BUILTINS.has(b), b);
+  const t = table([
+    G('B1', { command: 'test -f package.json' }),
+    G('B2', { command: '[ -d . ]' }),
+    G('B3', { command: 'cd sub && definitely-not-a-binary-xyz' }),
+    G('B4', { command: 'definitely-not-a-binary-xyz' }),
+  ]);
+  // an empty PATH makes the test independent of which of these also exist as binaries on the host
+  const savedPath = process.env.PATH;
+  process.env.PATH = root;
+  try {
+    assert.deepEqual(CHECKS.liveness({ table: t, root }).map((x) => x.id), ['B4']);
+  } finally {
+    process.env.PATH = savedPath;
+  }
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('891dbac0 AC1 a usage error raised by parseArgs writes the engine-error report over a stale gate-report', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ge-usage-'));
+  const stale = path.join(root, 'gate-report.json');
+  for (const argv of [['run', '--step', 'B', '--bogus'], ['run', '--step']]) {
+    fs.writeFileSync(stale, JSON.stringify({ kind: 'gate-report', exit: 0, stale: true }));
+    await assert.rejects(main([...argv, '--root', root]), (e) => e.code === 'E_USAGE' && e.exit === 64);
+    const rep = JSON.parse(fs.readFileSync(stale, 'utf8'));
+    assert.deepEqual([rep.kind, rep.code, rep.engineError, rep.stale], ['engine-error', 'E_USAGE', true, undefined], argv.join(' '));
+  }
+  // an explicit --report destination and the `check` verb default are both recovered from the raw argv
+  await assert.rejects(main(['check', '--nope', '--root', root]), (e) => e.code === 'E_USAGE');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'check-report.json'), 'utf8')).kind, 'engine-error');
+  await assert.rejects(main(['run', '--nope', '--root', root, '--report', 'out/r.json']), (e) => e.code === 'E_USAGE');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'out/r.json'), 'utf8')).code, 'E_USAGE');
+  assert.deepEqual(scanDestination(['run', '--report']).flags, {}, 'a value flag with no value is ignored, not fatal');
+  fs.rmSync(root, { recursive: true, force: true });
 });

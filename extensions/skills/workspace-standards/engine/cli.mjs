@@ -60,21 +60,43 @@ function changedPaths(a, root) {
  * `engine-error` report to the report destination (never left as a stale earlier gate-report).
  */
 export async function main(argv) {
-  const a = parseArgs(argv);
+  let a;
   try {
+    a = parseArgs(argv);
     return await dispatch(a);
   } catch (err) {
     if (err instanceof EngineError) {
-      const root = path.resolve(a.flags['--root'] ?? process.cwd());
+      // A usage error is thrown by parseArgs itself, before any flag map exists: recover the report destination
+      // (--root, --report, the verb) leniently from argv so the stale-report guarantee covers it too (891dbac0 AC1).
+      const { flags, positional } = a ?? scanDestination(argv);
+      const root = path.resolve(flags['--root'] ?? process.cwd());
       const rep = { schema: 1, kind: 'engine-error', code: err.code, message: err.message, exit: err.exit, engineError: true, released: false };
       try {
-        writeReport(rep, a.flags['--report'], root, a.positional[0] === 'check' ? 'check-report.json' : 'gate-report.json');
+        writeReport(rep, flags['--report'], root, positional[0] === 'check' ? 'check-report.json' : 'gate-report.json');
       } catch (werr) {
         process.stderr.write(`gate-engine: could not write the engine-error report (${werr.message})\n`);
       }
     }
     throw err;
   }
+}
+
+/**
+ * Non-throwing scan of argv for the three things the engine-error report needs: --root, --report and the verb.
+ * A destination always exists (the default is `<root>/gate-report.json` or `check-report.json`), so a usage error
+ * with no `--report` still overwrites a stale default report. A value flag with a missing value is ignored.
+ */
+export function scanDestination(argv) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < argv.length; i++) {
+    const t = argv[i];
+    if (VALUE_FLAGS.includes(t)) {
+      const v = argv[i + 1];
+      if (v !== undefined && !(v.startsWith('--') && v !== '-')) { i++; if (t === '--root' || t === '--report') flags[t] = v; }
+    } else if (!t.startsWith('--')) positional.push(t);
+  }
+  return { flags, positional };
 }
 
 async function dispatch(a) {

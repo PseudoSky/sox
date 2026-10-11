@@ -19,7 +19,7 @@ node engine/cli.mjs run --step B --class feature --rigor standard --changed src/
 | `--changed <path>` (repeatable), or `--base <ref> --head <ref>` | Changed paths (a ref beginning with `-` is rejected; `git diff` is called with `--`); a row may list `paths` globs. Absent, every gate has something to check. |
 | `--root <dir>` | Repository root and working directory of every command (default: cwd). The fixture-root flag the tests use. |
 | `--table <file>` | Command table (default `<root>/gates.table.json`). |
-| `--report <file>` / `-` | One JSON report (default `<root>/gate-report.json`; per-gate logs in `<report>.evidence/`). `-` prints it on stdout. |
+| `--report <file>` / `-` | One JSON report (default `<root>/gate-report.json`; per-gate logs in `<report>.evidence/`; `*.log` files there for gates not run this time are removed first). `-` prints it on stdout. |
 | `--fail-on-obligation` | Count an obligation (no mechanism) as a failure. |
 
 Exit status is the highest exit status of any selected gate (0 when all pass). A gate that times out exits 124, a signal 128+n. The exit status is the only signal; output is evidence, never parsed.
@@ -36,6 +36,8 @@ The engine's own errors use exit 64 (usage) and 65 (bad table, including an unsa
 |---|---|---|
 | `gate-report` | `false` | The gates ran; `exit` is the worst gate status, whatever its value. |
 | `engine-error` | `true` | The engine refused before running gates; `code` (`E_USAGE`, `E_TABLE`, ...) and `message` say why, and `exit` is the engine's code. |
+
+Usage errors raised while reading the arguments themselves (an unknown flag, a flag missing its value) are reported the same way: `--root`, `--report` and the verb are recovered from the raw arguments, and with no `--report` the default `gate-report.json` (or `check-report.json`) under `--root`/the current directory is overwritten.
 
 The engine-error report is written to the same destination as a gate report (`--report`, default `gate-report.json`; `check-report.json` for `check`), so a stale earlier gate report is never left behind. stderr carries `gate-engine: <CODE>: <message>` for engine errors. Consumers that need the distinction must read the report, not just the exit status.
 
@@ -69,7 +71,7 @@ These are the generic entry points T41 fills. Defaults work over the table alone
 | Check | Finding |
 |---|---|
 | `completeness` | A required clause (`table.clauses` or `--clauses a,b`) with zero or several binding rows. |
-| `liveness` | A mechanical row whose command word is not an executable file (on `PATH`, or at the given path relative to `--root`), or any `references` path that does not exist. Leading `VAR=value` assignments are skipped. Only the first command of a shell line is checked: in `a && b`, `a; b`, or `a \| b` only `a` is examined (so `cd x && tool` reports `cd`, a shell builtin); `b` is not. |
+| `liveness` | A mechanical row whose command word is not an executable file (on `PATH`, or at the given path relative to `--root`), or any `references` path that does not exist. Leading `VAR=value` assignments are skipped. Only the first command of a shell line is checked: in `a && b`, `a; b`, or `a \| b` only `a` is examined (so `cd x && tool` examines `cd`; `tool` is not checked). A first word that is a POSIX shell builtin (`test`, `[`, `cd`, `true`, `false`, `:`, `echo`, `printf`, `exit`, `export`, `set`, `unset`, `read`, `exec`, `eval`, `wait`, `type`, `command`, `umask`, `ulimit`) is runnable and never reported as `command not found`; any other builtin or shell function is not recognised, so wrap it in a script. |
 | `reachability` | A gate its stage does not list in `stages.<S>.invokes`, or a gate bound to no stage. |
 | `teeth` | A mechanical row with no `seeded.command`, or whose seeded violation exits 0. |
 

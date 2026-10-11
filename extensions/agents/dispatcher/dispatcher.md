@@ -437,8 +437,7 @@ costs. Cost-at-decision-time still governs (rule 21); only its rendering is defe
 - **Bound or unbound:** the closest eligible agent holds the role. With none eligible the role is unbound, and what follows is the role's own `no-holder` entry in `roles.md`, not one rule for every role. At Light and Standard, where the entry says review debt (most roles), its clauses become **review debt** on the affected tests, with an **owner** (the resolved `risk-owner` holder, else the user) and an **expiry** the user or the plan sets; a debt record without an expiry is refused. Where it says otherwise — the `implementer` role's work waits for a specialist, the `verifier` role means no release, the `coordinator` role means a single worker covers the work — do that instead and record no review debt. At Deep, an unbound role whose `no-holder` says `deep-blocks: yes` **blocks** the change: report the block to the user and stop.
 - **Telemetry:** the dispatch's telemetry row names `role=<role>:<agent>` with its covered ids (a closeness-0 binding records covered ids `none` and the flag `bound-no-coverage`), or `role=<role>:unbound` with the debt owner and expiry, or the block.
 
-### Step 3
- — Dispatch
+### Step 3 — Dispatch
 
 **Gate — before every executor call:** the item is claimed and `IN_PROGRESS` (Step 1.2), every other-repo issue in hand is filed (rule 17), and the objective's steps exist as ordered tasks (Step 0.2). Anything missing is done first.
 

@@ -147,3 +147,23 @@ test('891dbac0 AC4 --update-baseline never adds entries; --init-baseline creates
   assert.equal(fs.readFileSync(marker, 'utf8'), 'x', 'update-baseline reuses the computed results (one seeded run)');
   assert.equal(run(['check', 'teeth', '--update-baseline']).status, 64, 'requires --baseline');
 });
+
+test('891dbac0 AC4 E_BASELINE_GROWS exits with the check-failed status (1) and writes an engine-error report to check-report.json', () => {
+  writeTable([{ id: 'G3', command: cmd(0), stage: 'B', mechanism: 'mechanical' }]);
+  fs.rmSync(path.join(root, 'grow.json'), { force: true });
+  fs.rmSync(path.join(root, 'check-report.json'), { force: true });
+  const r = run(['check', 'teeth', '--baseline', 'grow.json', '--update-baseline']);
+  assert.equal(r.status, 1, r.stderr);
+  const rep = JSON.parse(fs.readFileSync(path.join(root, 'check-report.json'), 'utf8'));
+  assert.deepEqual([rep.kind, rep.code, rep.exit, rep.engineError], ['engine-error', 'E_BASELINE_GROWS', 1, true]);
+  assert.ok(!fs.existsSync(path.join(root, 'grow.json')), 'refusal writes no baseline');
+});
+
+test('891dbac0 AC1 a real usage error (unknown flag) replaces a stale gate-report.json with an engine-error report', () => {
+  writeTable([{ id: 'G3', command: cmd(0), stage: 'B', mechanism: 'mechanical' }]);
+  assert.equal(run(['run', '--step', 'B']).status, 0);
+  assert.equal(report().kind, 'gate-report');
+  const r = run(['run', '--step', 'B', '--bogus']);
+  assert.equal(r.status, 64, r.stderr);
+  assert.deepEqual([report().kind, report().code], ['engine-error', 'E_USAGE']);
+});

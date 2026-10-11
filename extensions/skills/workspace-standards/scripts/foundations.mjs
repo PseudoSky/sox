@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { upsertBlock, inspectBlock, unifiedDiff, MarkerError } from './marker-engine.mjs';
-import { parseRoles, ownership, resolveRole, declaresUnbound, ledgerRows, loadAgents, loadRegistry, trace, commandedGateIds, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
+import { parseRoles, ownership, resolveRole, declaresUnbound, ledgerRows, escapeCell, loadAgents, loadRegistry, trace, commandedGateIds, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
 import { backlogFiler, boundGates } from './apply-testing.mjs';
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -42,7 +42,7 @@ const STAGES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 
 const rd = (p) => fs.readFileSync(p, 'utf8');
 const readIfExists = (p) => (fs.existsSync(p) ? rd(p) : null);
-const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
+const cell = escapeCell;
 const table = (head, rows) => [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map((r) => `| ${r.map(cell).join(' | ')} |`)].join('\n');
 const inputError = (message) => Object.assign(new Error(message), { code: 'E_INPUT' });
 

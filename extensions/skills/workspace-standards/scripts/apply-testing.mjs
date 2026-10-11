@@ -28,7 +28,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { upsertBlock, inspectBlock, unifiedDiff, MarkerError } from './marker-engine.mjs';
-import { parseRoles, trace, ownership, ledgerRows, commandedGateIds, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
+import { parseRoles, trace, ownership, ledgerRows, splitRow, escapeCell, GATE_ID, GATE_ID_SOURCE, commandedGateIds, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const EXIT = { OK: 0, DRIFT: 3, FILING: 4, NOT_APPLIED: 5, USAGE: 64, INPUT: 65 };
@@ -40,7 +40,7 @@ const readIfExists = (p) => (fs.existsSync(p) ? rd(p) : null);
 export { ownership };
 const gateList = gatesOf;
 const CAPABILITY_TABLE = /^\|\s*capability\s*\|\s*tool\s*\|\s*usage\s*\|/im;
-const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
+const cell = escapeCell;
 const table = (head, rows) => [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map((r) => `| ${r.map(cell).join(' | ')} |`)].join('\n');
 
 /** Inner body (between the markers) of the agents-block template, with placeholders filled. */
@@ -67,7 +67,7 @@ export function boundGates(skeletonText, standardId = 'testing') {
   if (from === -1) return bound;
   const to = skeletonText.indexOf(`workspace-standards:${standardId}:hand-maintained:end`, from);
   for (const line of skeletonText.slice(from, to === -1 ? undefined : to).split('\n')) {
-    const m = /^\|\s*((?!gate\s*\|)[A-Za-z][A-Za-z0-9._-]*)\s*\|\s*([^|]*?)\s*\|/i.exec(line); // any gate id; the `Gate` header row is not one
+    const m = new RegExp(`^\\|\\s*((?!gate\\s*\\|)${GATE_ID_SOURCE})\\s*\\|\\s*([^|]*?)\\s*\\|`, 'i').exec(line); // any gate id; the `Gate` header row is not one
     if (m && m[2] !== '' && !PLACEHOLDER.test(m[2])) bound.add(m[1]);
   }
   return bound;
@@ -79,8 +79,8 @@ function readLedger(text) {
   const rows = new Map();
   if (!at.found) return rows;
   for (const line of at.body.split('\n')) {
-    const m = /^\|\s*(G\d+)\s*\|[^|]*\|\s*(\S+)\s*\|\s*$/.exec(line);
-    if (m) rows.set(m[1], m[2]);
+    const cells = splitRow(line);
+    if (cells && cells.length >= 3 && GATE_ID.test(cells[0]) && /^\S+$/.test(cells[cells.length - 1])) rows.set(cells[0], cells[cells.length - 1]);
   }
   return rows;
 }
@@ -94,6 +94,7 @@ export function backlogFiler({ project, run = (args) => execFileSync('adhd-backl
     for (const line of out.split('\n').reverse()) {
       try {
         const j = JSON.parse(line);
+        if (!j || typeof j !== 'object') continue; // 39a21823 T48: `null`, a number or a string line is not a result
         if (j.ok === true && j.data?.uid) return j.data.uid;
         if (j.ok === false) throw new Error(`backlog create refused: ${JSON.stringify(j.error ?? j)}`);
       } catch (err) {

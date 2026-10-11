@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { upsertBlock, inspectBlock, unifiedDiff, MarkerError, beginMarker, endMarker } from '../scripts/marker-engine.mjs';
 import { applyTesting, EXIT, boundGates, backlogFiler } from '../scripts/apply-testing.mjs';
-import { validateDeclaration, ownership, gatesOf } from '../scripts/lib.mjs';
+import { validateDeclaration, ownership, gatesOf, splitRow, escapeCell, ledgerRows, GATE_ID } from '../scripts/lib.mjs';
 
 const SKILL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REAL_AGENTS = process.env.SOX_AGENTS_MD ?? path.resolve(SKILL, '../../../AGENTS.md');
@@ -412,5 +412,55 @@ describe('39a21823 correction: literal ownership forms, write order, ledger drif
     const skeleton = read(dir, 'docs/standards/testing.md');
     assert.match(skeleton, /Testing IMPLEMENTATION — we\$&ird\$1-repo/);
     assert.ok(!skeleton.includes('<repository>'));
+  });
+});
+
+describe('39a21823 correction: ledger round trip (escaped pipes, any gate id) and filer line guard', () => {
+  const GATE_LIST = [
+    { id: 'T1.lint', mechanism: 'mechanical', stage: ['D'], threshold: 'exit 0 | no warnings' },
+    { id: 'G2', mechanism: 'mechanical', stage: ['D'], threshold: 'a \\| b and a\\c' },
+  ];
+  const gatesDecl = () => decl({ gates: 'own', gateList: GATE_LIST });
+
+  test('39a21823 AC4: escapeCell and splitRow are exact inverses over `|`, `\\|` and backslashes', () => {
+    for (const v of ['plain', 'a | b', 'a \\| b', 'trail\\', '\\\\|x||', 'a\\\\', '']) {
+      assert.deepEqual(splitRow(`| ${escapeCell(v)} | k | u |`), [v.replace(/\s+/g, ' ').trim(), 'k', 'u'], JSON.stringify(v));
+    }
+    assert.equal(splitRow('not a row'), null);
+    assert.equal(splitRow('| unterminated'), null);
+  });
+
+  test('39a21823 AC4: a pipe or `\\|` in a gate threshold round-trips through the ledger: the row is read back and a re-run files nothing', () => {
+    const dir = repo({});
+    const declPath = gatesDecl();
+    const first = fakeFiler();
+    applyTesting({ root: dir, declarationPath: declPath, filer: first });
+    assert.deepEqual(first.calls.sort(), ['G2', 'T1.lint']);
+    const skeleton = read(dir, 'docs/standards/testing.md');
+    const rows = ledgerRows(skeleton, 'testing-mechanisms');
+    assert.deepEqual([...rows].sort(), [['G2', 'uid-G2'], ['T1.lint', 'uid-T1.lint']]);
+    assert.ok(skeleton.includes('exit 0 \\| no warnings'), 'the pipe is written escaped');
+    const again = fakeFiler();
+    const r = applyTesting({ root: dir, declarationPath: declPath, filer: again });
+    assert.deepEqual(again.calls, [], 'no duplicate backlog item is filed on re-run');
+    assert.deepEqual(r.wrote, []);
+    assert.equal(r.exit, EXIT.OK, 'the ledger it wrote is not read as drift');
+  });
+
+  test('39a21823 AC4: a gate id outside G\\d+ (T1.lint) is read back from the ledger, never refiled', () => {
+    assert.ok(GATE_ID.test('T1.lint') && GATE_ID.test('G12') && !GATE_ID.test('-x') && !GATE_ID.test('a b'));
+    const dir = repo({});
+    const declPath = gatesDecl();
+    applyTesting({ root: dir, declarationPath: declPath, filer: fakeFiler() });
+    const again = fakeFiler();
+    applyTesting({ root: dir, declarationPath: declPath, filer: again });
+    assert.ok(!again.calls.includes('T1.lint'));
+  });
+
+  test('39a21823 AC5: backlogFiler skips stdout lines that parse to null, a number or a string, and still finds the uid', () => {
+    const f = backlogFiler({ project: 'p', run: () => 'null\n42\n"str"\ntrue\n{"ok":true,"data":{"uid":"u-9"}}\nnull\n' });
+    assert.equal(f({ title: 't', body: 'b' }), 'u-9');
+    const none = backlogFiler({ project: 'p', run: () => 'null\n7\n' });
+    assert.throws(() => none({ title: 't', body: 'b' }), /no uid/);
   });
 });

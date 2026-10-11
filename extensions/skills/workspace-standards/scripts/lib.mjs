@@ -585,6 +585,36 @@ export function resolveRole(role, agents, options = {}) {
 export const declaresUnbound = (role) => /^unbound\b/i.test(role.noHolder.trim());
 
 /**
+ * 39a21823 T48.AC4: one gate-id grammar for every reader and writer of a ledger (the engine's SAFE_ID, 891dbac0).
+ * `G\d+` alone dropped ids such as `T1.lint`, so a ledger row for them was unreadable and the gate was refiled.
+ */
+export const GATE_ID_SOURCE = '[A-Za-z0-9][A-Za-z0-9._-]*';
+export const GATE_ID = new RegExp(`^${GATE_ID_SOURCE}$`);
+
+/** Markdown table cell writer: `\` and `|` are escaped so the cell survives splitRow; whitespace is collapsed. */
+export const escapeCell = (s) => String(s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
+
+/**
+ * Escape-aware inverse of escapeCell: split one `| a | b | c |` line into its unescaped cells, or null when the
+ * line is not a table row. A `|` preceded by an odd run of backslashes is cell content, not a separator.
+ */
+export function splitRow(line) {
+  const t = line.trim();
+  if (!t.startsWith('|')) return null;
+  const cells = [];
+  let cur = '';
+  let closed = false;
+  for (let i = 1; i < t.length; i++) {
+    const c = t[i];
+    if (c === '\\' && (t[i + 1] === '|' || t[i + 1] === '\\')) { cur += t[i + 1]; i++; continue; }
+    if (c === '|') { cells.push(cur.trim()); cur = ''; closed = i === t.length - 1; continue; }
+    cur += c;
+  }
+  if (!closed) return null; // a row ends with its closing pipe
+  return cells;
+}
+
+/**
  * Rows of a managed ledger block (`| key | description | uid |`), keyed by the first cell.
  * The block is found with the marker engine's inspectBlock; an absent block is an empty map.
  */
@@ -593,8 +623,11 @@ export function ledgerRows(text, target) {
   const at = inspectBlock(text, target);
   if (!at.found) return rows;
   for (const line of at.body.split('\n')) {
-    const m = /^\|\s*([^|]+?)\s*\|[^|]*\|\s*(\S+)\s*\|\s*$/.exec(line);
-    if (m && m[1] !== 'gate' && m[1] !== 'gate set' && !/^-+$/.test(m[1])) rows.set(m[1], m[2]);
+    const cells = splitRow(line);
+    if (!cells || cells.length < 3) continue;
+    const key = cells[0];
+    const uid = cells[cells.length - 1];
+    if (key !== '' && key !== 'gate' && key !== 'gate set' && !/^-+$/.test(key) && /^\S+$/.test(uid)) rows.set(key, uid);
   }
   return rows;
 }

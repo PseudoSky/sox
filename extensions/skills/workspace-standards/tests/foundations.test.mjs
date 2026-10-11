@@ -101,6 +101,11 @@ describe('T49 routing composition', () => {
       {},
     ];
     for (const m of manifests) assert.deepEqual([...agentToolSet(m)].sort(), [...guardAgentToolSet(m)].sort(), JSON.stringify(m));
+    // Parity alone is vacuous if both sides collapse to the same wrong (or empty) set: pin the mapped values too.
+    assert.deepEqual([...agentToolSet(manifests[0])].sort(), ['backlog', 'edit', 'read', 'search', 'shell'], 'grep/glob map to search, bash to shell, write to edit; an unknown tool maps to nothing');
+    assert.deepEqual([...agentToolSet(manifests[1])].sort(), ['read', 'shell'], 'a {logical} entry maps like its plain name');
+    assert.deepEqual([...agentToolSet(manifests[2])], []);
+    assert.deepEqual([...agentToolSet(manifests[3])], []);
   });
 
   test('595965cc T49 AC1: resolveRole picks the closest eligible agent and never an agent that lacks a required tool', () => {

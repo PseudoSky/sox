@@ -77,9 +77,15 @@ const ABSENT = [
   ['no worktrees-reserved-for-destructive-work rule', (t) => !/Worktrees are reserved for destructive/.test(t.agents)],
 ];
 
+// Raw-text predicate: `norm` above collapses newlines, so it cannot see a heading split across two lines
+// (`### Step 3` / ` — Dispatch`). This one reads the file as written.
+const RAW_STEP_HEADINGS_OK = fs.readFileSync(path.join(ROOT, FILES.dispatcher), 'utf8')
+  .split('\n').filter((l) => /^### Step \d+/.test(l)).every((l) => /^### Step \d+ — \S/.test(l));
+
 let failed = 0;
 const report = (name, ok, detail = '') => { console.log(`${ok ? '[PASS]' : '[FAIL]'} ${name}${ok ? '' : ' — ' + detail}`); if (!ok) failed++; };
 
+report('dispatcher.md: every `### Step N` heading is a single line with an em-dash title (raw text)', RAW_STEP_HEADINGS_OK, 'a Step heading is split or lacks an em-dash title');
 const shipped = snapshot(null);
 const old = snapshot(PRE_FIX_SHA);
 
