@@ -1,0 +1,25 @@
+file:///private/tmp/claude-502/-Users-nix-dev-ai-sox-ecosystem/bcba9d79-9feb-47b4-ab3b-6413e4857926/scratchpad/capture/miss/test/shipping.test.mjs:1
+import { test } from 'node:test'; import { nope } from '../src/shipping.mjs';
+                                           ^^^^
+SyntaxError: The requested module '../src/shipping.mjs' does not provide an export named 'nope'
+    at #_instantiate (node:internal/modules/esm/module_job:254:21)
+    at async ModuleJob.run (node:internal/modules/esm/module_job:369:5)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:671:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.11.1
+✖ test/shipping.test.mjs (30.034125ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 34.090459
+
+✖ failing tests:
+
+test at test/shipping.test.mjs:1:1
+✖ test/shipping.test.mjs (30.034125ms)
+  'test failed'

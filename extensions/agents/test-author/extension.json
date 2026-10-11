@@ -1,0 +1,66 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "test-author",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "test-author",
+  "description": "Use when tests must be planned or authored by a party separate from the implementer: plans a bucket's tests, authors failing tests from the specification with red evidence against the stub commit, regression, contract, characterization and maintenance tests. Edits only the declared write scope (tests and test support), refuses any production-code edit. Triggers: \"write the tests for this item\", \"plan tests for this bucket\", \"regression test for this defect\".",
+  "compatibility": { "host": ">=1.0.0 <2.0.0" },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": ["test-author", "testing", "tdd", "separated-authorship", "regression", "contract"],
+  "runtime": "declarative",
+  "entrypoint": "test-author.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": { "tool_calling": true },
+  "capabilities": [
+    "roles-covered:TA.1",
+    "roles-covered:TA.2",
+    "roles-covered:TA.3",
+    "roles-covered:TA.4",
+    "roles-covered:TA.5"
+  ],
+  "agent": {
+    "name": "test-author",
+    "description": "Authors and plans tests from the specification in a declared write scope (tests and test support). Never edits production code; records red evidence against the stub commit.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.2,
+    "tools": ["read", "glob", "grep", "edit", "write", "bash"],
+    "permission": {
+      "read": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "edit": "allow",
+      "write": "allow",
+      "bash": {
+        "*": "allow",
+        "git stash*": "deny",
+        "git reset --hard*": "deny",
+        "git clean -f*": "deny",
+        "git add -A*": "deny",
+        "git add .": "deny",
+        "git push*": "deny",
+        "rm -rf *": "deny",
+        "npm publish*": "deny",
+        "pnpm publish*": "deny"
+      },
+      "webfetch": "deny",
+      "websearch": "deny",
+      "task": "deny",
+      "skill": "deny",
+      "question": "deny",
+      "todowrite": "deny"
+    }
+  },
+  "render": {
+    "claude": { "model": "sonnet", "version": "v0.1.0", "tools": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"] },
+    "opencode": { "model": "deepseek/deepseek-flash", "mode": "all", "temperature": 0.2 },
+    "agent-mcp": { "model": "deepseek/deepseek-flash", "toolMap": {}, "mcpServers": {} }
+  },
+  "install": { "type": "agent", "hosts": ["claude", "opencode", "agent-mcp"] }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@adhd/sox-extension-test-author",
+  "version": "0.1.0",
+  "description": "test-author agent — plans and authors tests from the specification in a declared write scope; never edits production code",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": ["test-author", "testing", "separated-authorship"]
+}

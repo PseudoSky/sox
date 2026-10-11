@@ -176,6 +176,8 @@ importers:
 
   extensions/agents/security: {}
 
+  extensions/agents/test-author: {}
+
   extensions/agents/typescript: {}
 
   extensions/agents/ui: {}
