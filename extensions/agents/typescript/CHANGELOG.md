@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- **595965cc T13: coverage target replaced by a change-scoped efficacy standard.** The repository-wide "test coverage exceeding 90%" checklist item is gone. The new Testing standard requires every changed behavior to have a test that fails when the behavior is deliberately broken (seeded fault or diff-based mutation run), and reports changed lines no test covers and surviving mutants per change.
+- Default tier S and the header and citation duties now reference the Light-rigor implementer card (`cards/role/implementer-light.md`). Never edits, skips, or deletes a test it did not author.
+- Declares `roles-covered:IM.1-IM.3` (D23), validated against `standards/testing/roles.md`.
+- Description unchanged: implementation and refactor work still reaches specialists through the routing table.
+
 ## 0.1.5
 
 - **All three install surfaces declared — claude, opencode, agent-mcp.** `install.hosts` gains `agent-mcp` and `render.agent-mcp` federates the uniform server set (agent, search, memory-server, gitnexus, backlog) into the catalog row, so a task dispatched through agent-mcp has the same tool surface as a native opencode run. `render.opencode` pins its model and `mode: all`.

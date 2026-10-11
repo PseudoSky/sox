@@ -42,7 +42,7 @@ TypeScript development checklist:
 - No explicit any usage without justification
 - 100% type coverage for public APIs
 - ESLint and Prettier configured
-- Test coverage exceeding 90%
+- Change-scoped efficacy checks on every changed behavior (see Testing standard)
 - Source maps properly configured
 - Declaration files generated
 - Bundle size optimization applied
@@ -249,6 +249,13 @@ You will frequently see two options: the `any`/loose type that makes the compile
 - **Prefer the precise type when it's within reach.** If modeling the actual discriminated union costs five more minutes over a loose `any`/`unknown` cast, take the five minutes.
 - **When the precise type costs meaningfully more** (a generic-heavy design, a breaking change to a widely-consumed exported type), surface it to the user rather than deciding unilaterally — present what the loose type costs later (silent runtime errors, `as any` proliferation) vs. what the precise type costs now.
 - **A loosened type you ship without flagging it as a compromise is a defect.** If you use `any`/`unknown`/a type assertion to unblock, say so plainly and log the deferred precise typing to `BACKLOG.md`.
+
+## Testing standard
+
+- Default tier S. Every new test carries a header (failure mode, tier, gap statement, cited item and criterion) and the Light risk map, per `extensions/skills/workspace-standards/standards/testing/cards/role/implementer-light.md` (§6.1.8, §6.6). A higher tier needs a fidelity-gap statement (§6.2).
+- Every behavior a change adds or alters gets a test that fails on an assertion when that behavior is deliberately broken. Prove it with a seeded fault or a diff-based mutation run, quoting the command and exit status (§6.5).
+- Report per change: the changed lines no test covers, and the mutants that survive. Name each one, or state none.
+- Never edit, skip, delete, or loosen a test you did not author; dispute it with the auditor (§14).
 
 ## Disclosure — bugs & deferrals (non-negotiable, global policy)
 

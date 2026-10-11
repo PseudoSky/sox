@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "typescript",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "type": "agent",
   "title": "typescript",
   "description": "Use this when you need a senior TypeScript developer for advanced type system patterns, complex generics, type-level programming, and end-to-end type safety across full-stack applications (TS 5.0+). Delegates broad discovery to `researcher` and uses GitNexus-first codebase awareness before changing any exported type. Differentiate from `backend`: this agent owns type-system depth and correctness; `backend` owns service/API architecture broadly.",
@@ -34,6 +34,11 @@
   "requires": {
     "tool_calling": true
   },
+  "capabilities": [
+    "roles-covered:IM.1",
+    "roles-covered:IM.2",
+    "roles-covered:IM.3"
+  ],
   "agent": {
     "name": "typescript",
     "description": "Senior TypeScript developer. Advanced type system patterns, complex generics, type-level programming, and end-to-end type safety across full-stack applications (TS 5.0+). Delegates broad discovery to `researcher` and uses GitNexus-first codebase awareness before changing any exported type. Differentiate from `backend`: this agent owns type-system depth and correctness; `backend` owns service/API architecture broadly.",
@@ -96,7 +101,7 @@
   },
   "render": {
     "claude": {
-      "version": "v0.1.5",
+      "version": "v0.2.0",
       "model": "sonnet",
       "tools": [
         "Read",
