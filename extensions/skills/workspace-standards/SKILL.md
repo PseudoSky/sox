@@ -62,7 +62,7 @@ Each playbook ends with a `## Record` section naming the artifact it leaves (a t
 
 ## Status
 
-Built here: registry, contract, the testing standard's policy-side content, and the review scripts. Built by later tasks and marked `Status:` in the playbooks that need them: the managed-block writer, the routing command, the domain-neutral gate runner, the roster guard. Until they exist, perform those steps by hand and say so in the Record.
+All built. Registry, contract, the testing standard's policy-side content, and the review scripts live here. The managed-block writer is `scripts/marker-engine.mjs` (used by `scripts/apply-testing.mjs` and `scripts/foundations.mjs`). The routing command is `node <skill-dir>/scripts/foundations.mjs <apply|review> routing` (role resolution is `resolveRole` in `scripts/lib.mjs`). The domain-neutral gate runner is `node <skill-dir>/engine/cli.mjs <run|check>`, and `foundations.mjs <apply|review> gates` writes its registry and stage bindings. The roster guard is `tools/test-roster-guard.mjs` in the adopting repository; `apply routing` files a backlog item when it is absent. The playbooks' `Status:` lines name the task that built each step. If a step's mechanism is missing in the adopting repository, perform it by hand and say so in the Record.
 
 ## Examples
 

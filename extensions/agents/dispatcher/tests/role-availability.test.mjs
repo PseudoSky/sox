@@ -14,6 +14,8 @@
  *     (grep/glob, commit 35dfa854) and holds the Auditor role, but declares no SR.* coverage, so the seed
  *     adds that coverage to make a covered static-reviewer candidate.
  *
+ * AC5 (the citation guard still exits 0) spawns a process, so it lives in e2e.test.mjs; this file spawns nothing.
+ *
  * Run: node --test tests/*.test.mjs   (from extensions/agents/dispatcher)
  */
 import { test, after } from 'node:test';
@@ -21,7 +23,6 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadAgents, parseRoles, readText, resolveRole } from '../../../skills/workspace-standards/scripts/lib.mjs';
 import { BOUND_NO_COVERAGE } from '../../../skills/workspace-standards/scripts/foundations.mjs';
@@ -236,8 +237,4 @@ test(AC(4, 'Light, review removed, full roster, authoring qa: a zero-coverage ag
   assert.equal(got.outcome, 'bound');
   assert.notEqual(got.holder, 'qa', 'the authoring qa session is excluded by resolveRole');
   assert.deepEqual(got.covered, [], 'no installed agent besides qa covers SR.*, so the holder is at closeness 0');
-});
-
-test(AC(5, 'tools/test-dispatcher-ac-citation.mjs still exits 0'), () => {
-  execFileSync(process.execPath, [path.join(REPO, 'tools/test-dispatcher-ac-citation.mjs')], { stdio: 'pipe' });
 });

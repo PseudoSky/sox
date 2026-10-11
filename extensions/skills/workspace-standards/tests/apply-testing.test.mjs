@@ -1,13 +1,12 @@
 // 39a21823 T48.AC1 T48.AC2 T48.AC3 T48.AC4 T48.AC5 T48.AC6 T48.AC7 T48.AC8
 // apply testing: the marker engine and the testing apply, driven on temp repositories only.
 // Never touches this repository's AGENTS.md: AC7 applies to a COPY of it in a temp dir.
-// The backlog filer is injected everywhere except the CLI runs, which pass --no-file.
+// The backlog filer is injected everywhere. Unit-only: nothing here spawns a process (the CLI/git runs are in foundations-e2e.test.mjs).
 import test, { describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { upsertBlock, inspectBlock, unifiedDiff, MarkerError, beginMarker, endMarker } from '../scripts/marker-engine.mjs';
 import { applyTesting, EXIT, boundGates, backlogFiler } from '../scripts/apply-testing.mjs';
@@ -15,7 +14,6 @@ import { validateDeclaration, ownership, gatesOf } from '../scripts/lib.mjs';
 
 const SKILL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REAL_AGENTS = process.env.SOX_AGENTS_MD ?? path.resolve(SKILL, '../../../AGENTS.md');
-const CLI = path.join(SKILL, 'scripts', 'apply-testing.mjs');
 const STD = JSON.parse(fs.readFileSync(path.join(SKILL, 'standards/testing/standard.json'), 'utf8'));
 let tmp;
 let n = 0;
@@ -45,8 +43,6 @@ const fakeFiler = () => {
   return f;
 };
 const MECHANICAL = STD.gates.filter((g) => g.mechanism === 'mechanical').map((g) => g.id);
-const cli = (dir, ...args) => spawnSync(process.execPath, [CLI, '--root', dir, ...args], { encoding: 'utf8' });
-const git = (dir, ...args) => spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: dir, encoding: 'utf8' });
 const HEAD = '# My repo\n\nSome prose.\n';
 
 describe('marker engine', () => {
@@ -138,29 +134,16 @@ describe('apply testing', () => {
     }
   });
 
-  test('39a21823 AC3: a second run changes nothing, calls no filer, and git diff --exit-code exits 0', () => {
+  test('39a21823 AC3: a second run changes nothing and calls no filer', () => {
     const dir = repo({ 'AGENTS.md': HEAD });
     const filer = fakeFiler();
     applyTesting({ root: dir, filer });
-    git(dir, 'init', '-q');
-    git(dir, 'add', '-A');
-    git(dir, 'commit', '-q', '-m', 'first');
+    const before = read(dir, 'AGENTS.md');
     const again = fakeFiler();
     const r = applyTesting({ root: dir, filer: again });
     assert.deepEqual(r.wrote, []);
     assert.deepEqual(again.calls, []);
-    assert.equal(git(dir, 'diff', '--exit-code').status, 0);
-    assert.equal(git(dir, 'status', '--porcelain').stdout, '');
-  });
-
-  test('39a21823 AC3: the CLI twice leaves git diff --exit-code at 0', () => {
-    const dir = repo({ 'AGENTS.md': HEAD });
-    assert.equal(cli(dir, '--no-file').status, 0);
-    git(dir, 'init', '-q');
-    git(dir, 'add', '-A');
-    git(dir, 'commit', '-q', '-m', 'first');
-    assert.equal(cli(dir, '--no-file').status, 0);
-    assert.equal(git(dir, 'diff', '--exit-code').status, 0);
+    assert.equal(read(dir, 'AGENTS.md'), before, 'byte-identical; the real `git diff --exit-code` check is in foundations-e2e.test.mjs');
   });
 
   test('39a21823 AC4: a hand edit inside the block is drift (check and apply), not overwritten, until --force', () => {
@@ -175,9 +158,6 @@ describe('apply testing', () => {
     const run = applyTesting({ root: dir, filer: fakeFiler() });
     assert.equal(run.exit, EXIT.DRIFT);
     assert.equal(read(dir, 'AGENTS.md'), edited, 'not overwritten');
-    const viaCli = cli(dir, '--check');
-    assert.equal(viaCli.status, EXIT.DRIFT);
-    assert.match(viaCli.stderr, /DRIFT AGENTS\.md \[testing\]/);
     const forced = applyTesting({ root: dir, force: true, filer: fakeFiler() });
     assert.equal(forced.exit, EXIT.OK);
     assert.match(read(dir, 'AGENTS.md'), /tier is S/);
@@ -249,12 +229,7 @@ describe('apply testing', () => {
     assert.match(r.diff, /^\+## Testing$/m);
     assert.equal(read(dir, 'AGENTS.md'), HEAD);
     assert.ok(!exists(dir, 'docs'));
-    const fresh = repo({});
-    const out = cli(fresh, '--dry-run');
-    assert.equal(out.status, 0, out.stderr);
-    assert.match(out.stdout, /^\+## Testing$/m);
-    assert.match(out.stdout, /^\+\+\+ b\/docs\/standards\/testing\.md$/m);
-    assert.deepEqual(fs.readdirSync(fresh), [], 'nothing written');
+    assert.match(r.diff, /^\+\+\+ b\/docs\/standards\/testing\.md$/m);
   });
 
   test('39a21823 AC7: runs unchanged on a fixture repository with no AGENTS.md', () => {
