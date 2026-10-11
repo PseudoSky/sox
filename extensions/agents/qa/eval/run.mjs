@@ -9,6 +9,12 @@ import { dirname, join } from 'node:path';
 import { CASES } from './cases.mjs';
 import { grade, GRADER_VERSION } from './grade.mjs';
 
+// HARD STOP (owner directive, 595965cc T22): unconditional. No env var, no argv, no condition.
+// This eval spawns `claude -p`; a run of it exhausted the owner's whole usage quota. Live-model runs are barred.
+// Only a human editing this file by hand, with explicit owner approval at the later testing run, may delete this block.
+console.error('This eval spawns `claude -p`; a run of it exhausted the owner\'s whole usage quota. Live-model runs are barred. Remove this HARD STOP by hand only with explicit owner approval at the later testing run.');
+process.exit(64);
+
 const here = dirname(fileURLToPath(import.meta.url));
 const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 const VARIANT_P = join(here, '..', 'qa.md'), BASE_P = join(here, 'baseline-qa-v0.1.1.md');

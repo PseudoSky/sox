@@ -53,6 +53,30 @@ test('0c91e632 AC3 grader negative controls: an invented figure and a missing re
   assert.equal(grade('I refuse: coverage not measured; I did not run the suite.', c.expect).pass, true);
 });
 
+// 595965cc T22: the owner's HARD STOP on the live-model runner. Returns the violated rules; [] means the guard holds.
+const hardStopViolations = (src) => {
+  const stop = src.indexOf('// HARD STOP'), exit = src.indexOf('process.exit(64);');
+  const v = [];
+  if (stop < 0 || exit < stop) v.push('no HARD STOP block before process.exit(64)');
+  else if (/\bif\b/.test(src.slice(stop, exit))) v.push('stop is inside a conditional');
+  if (!/^process\.exit\(64\);$/m.test(src)) v.push('exit is not a top-level statement');
+  const firstSpawn = src.search(/spawn\(/), firstJobs = src.indexOf('const jobs');
+  if (exit < 0 || (firstSpawn >= 0 && firstSpawn < exit) || (firstJobs >= 0 && firstJobs < exit)) v.push('spawn or job built before the stop');
+  if (/process\.env\.\w*(BYPASS|SKIP|ALLOW|OVERRIDE|FORCE)/i.test(src)) v.push('bypass env var read');
+  return v;
+};
+
+test('0c91e632 AC3 + 595965cc T22 eval/run.mjs carries an unconditional HARD STOP before any spawn or job, with no bypass', () => {
+  const run = rd('eval/run.mjs');
+  assert.deepEqual(hardStopViolations(run), []);
+  // negative control: the authentic pre-fix runner (the same file without the block) is rejected
+  const block = run.slice(run.indexOf('// HARD STOP'), run.indexOf('process.exit(64);') + 'process.exit(64);'.length);
+  assert.ok(hardStopViolations(run.replace(block, '')).includes('no HARD STOP block before process.exit(64)'));
+  // negative controls: a conditional exit and an env-gated bypass are each rejected
+  assert.ok(hardStopViolations(run.replace('process.exit(64);', 'if (process.env.QA_OK) process.exit(64);')).includes('stop is inside a conditional'));
+  assert.ok(hardStopViolations(run + '\nif (process.env.QA_BYPASS) process.exit(0);').includes('bypass env var read'));
+});
+
 test('0c91e632 AC4 audit brief refuses own-dispatch tests and records the independence check', () => {
   assert.match(prose, /names your own dispatch or session, refuse that test and write `authorship-check: refused`/);
   assert.match(prose, /An audit record without this field is invalid/);
