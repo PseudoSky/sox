@@ -12,6 +12,8 @@ export const MECHANISMS = ['mechanical', 'review'];
 /** Testing policy §6.7: no change class or rigor relaxes these gates. */
 export const NON_RELAXABLE_IDS = ['G1', 'G2', 'G4', 'G10', 'G12'];
 export const EXIT = { USAGE: 64, TABLE: 65, CHECK_FAILED: 1 };
+/** Gate ids become evidence file names, so they are restricted to a safe charset (no separators, no `..`). */
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const DEFAULT_TIMEOUT_MS = 600_000;
 
 export class EngineError extends Error {
@@ -43,6 +45,7 @@ export function parseTable(text, label = 'table') {
   for (const [i, g] of (isObj(raw) && Array.isArray(raw.gates) ? raw.gates : []).entries()) {
     const at = `gates[${i}]`;
     if (!isObj(g) || typeof g.id !== 'string' || g.id === '') { problems.push(`${at}: id must be a non-empty string`); continue; }
+    if (!SAFE_ID.test(g.id) || g.id.includes('..')) { problems.push(`${at}: gate id ${JSON.stringify(g.id)} must match [A-Za-z0-9._-], start with a letter or digit, and not contain ".."`); continue; }
     if (seen.has(g.id)) problems.push(`${at}: duplicate gate id ${g.id}`);
     seen.add(g.id);
     const stages = asList(g.stage) ?? [];
@@ -83,6 +86,26 @@ export function globToRegExp(glob) {
 }
 export const matchesAny = (file, globs) => globs.some((g) => globToRegExp(g).test(file));
 
+const declared = (table, key) => [...new Set(table.gates.flatMap((g) => asList(g[key]) ?? []))];
+
+/**
+ * Reject selection inputs that cannot select anything meaningful, so a typo is never a green run.
+ * --step must be a known stage that at least one gate is bound to. The engine has no closed set of
+ * classes or rigors (a table defines its own), so --class / --rigor must appear in some gate's
+ * `classes` / `rigors`. Throws EngineError(E_USAGE, 64).
+ */
+export function validateSelection(table, { step, changeClass, rigor }) {
+  if (!STAGES.includes(step)) throw new EngineError('E_USAGE', EXIT.USAGE, `unknown --step ${JSON.stringify(step)} (known: ${STAGES.join(', ')})`);
+  if (!table.gates.some((g) => g.stage.includes(step))) throw new EngineError('E_USAGE', EXIT.USAGE, `no gate in the table is bound to step ${step}`);
+  for (const [flag, value, key] of [['--class', changeClass, 'classes'], ['--rigor', rigor, 'rigors']]) {
+    if (value === undefined) continue;
+    const known = declared(table, key);
+    if (!known.includes(value)) {
+      throw new EngineError('E_USAGE', EXIT.USAGE, `unknown ${flag} ${JSON.stringify(value)}: no gate declares it (${known.length ? `declared: ${known.join(', ')}` : `no gate declares any ${key}`})`);
+    }
+  }
+}
+
 /**
  * Decide which gates run. A gate is selected when it is bound to the step AND has something to check
  * for this class, rigor, and changed paths. A non-relaxable gate always has something to check.
@@ -117,7 +140,12 @@ export function shellRunner(command, { cwd, timeoutMs }) {
 
 const tail = (s, n = 2000) => (s.length > n ? s.slice(s.length - n) : s);
 
-/** Run the selected gates and build the report. Overall exit is the worst (highest) gate exit. */
+/**
+ * Run the selected gates and build the report. Overall exit is the worst (highest) gate exit
+ * (T62.AC2). A gate may itself exit 64 or 65, which is also what the engine uses for usage and table
+ * errors; the two are told apart by the report: a gate result is `kind: "gate-report"`, an engine
+ * error is `kind: "engine-error"` (written by the CLI) and always carries `engineError: true`.
+ */
 export function runGates(table, opts, { run = shellRunner, now = () => Date.now(), evidenceDir } = {}) {
   const { step, changeClass, rigor, changed, root, failOnObligation } = opts;
   const decisions = selectGates(table, { step, changeClass, rigor, changed });
@@ -144,6 +172,8 @@ export function runGates(table, opts, { run = shellRunner, now = () => Date.now(
   }
   const failed = rows.filter((r) => r.outcome === 'fail');
   const obligations = rows.filter((r) => r.outcome === 'obligation');
+  const warnings = [];
+  if (rows.every((r) => !r.selected)) warnings.push(`step ${step}: 0 gates selected (every bound gate has nothing to check for this class, rigor, and changed paths)`);
   let exit = failed.reduce((worst, r) => Math.max(worst, r.exit), 0);
   if (exit === 0 && failOnObligation && obligations.length) exit = 1;
   return {
@@ -157,7 +187,9 @@ export function runGates(table, opts, { run = shellRunner, now = () => Date.now(
       failed: failed.map((r) => r.id),
       obligations: obligations.map((r) => r.id),
     },
+    warnings,
     exit,
+    engineError: false,
     released: false,
   };
 }
@@ -169,11 +201,32 @@ export function runGates(table, opts, { run = shellRunner, now = () => Date.now(
 
 const finding = (check, id, evidence) => ({ check, id, key: `${check}:${id}`, severity: 'error', evidence });
 
-const firstToken = (command) => (command.match(/^\s*(?:"([^"]+)"|'([^']+)'|(\S+))/) ?? []).slice(1).find(Boolean);
+/**
+ * The command word of a shell command line: leading `VAR=value` assignments are skipped and a quoted
+ * word is unquoted. Only the FIRST simple command is examined; `a && b`, `a; b`, and `a | b` check `a`
+ * alone (documented limitation, README).
+ */
+export const firstToken = (command) => {
+  let rest = command;
+  for (;;) {
+    const m = rest.match(/^\s*[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)(?=\s|$)/);
+    if (!m) break;
+    rest = rest.slice(m[0].length);
+  }
+  return (rest.match(/^\s*(?:"([^"]+)"|'([^']+)'|(\S+))/) ?? []).slice(1).find(Boolean);
+};
+
+const isExecutable = (file) => {
+  try {
+    return fs.statSync(file).isFile() && (fs.accessSync(file, fs.constants.X_OK), true);
+  } catch {
+    return false;
+  }
+};
 
 function onPath(bin) {
   const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
-  return dirs.some((d) => fs.existsSync(path.join(d, bin)));
+  return dirs.some((d) => isExecutable(path.join(d, bin)));
 }
 
 export const CHECKS = {
@@ -194,8 +247,8 @@ export const CHECKS = {
     for (const g of table.gates) {
       if (g.mechanism === 'mechanical' && g.command) {
         const bin = firstToken(g.command);
-        const ok = bin && (bin.includes('/') ? fs.existsSync(path.resolve(root, bin)) : onPath(bin) || fs.existsSync(path.resolve(root, bin)));
-        if (!ok) out.push(finding('liveness', g.id, `command not found: ${bin ?? '(empty)'}`));
+        const ok = bin && (bin.includes('/') ? isExecutable(path.resolve(root, bin)) : onPath(bin));
+        if (!ok) out.push(finding('liveness', g.id, `command not found or not executable: ${bin ?? '(empty)'}`));
       }
       for (const ref of asList(g.references) ?? []) {
         if (!fs.existsSync(path.resolve(root, ref))) out.push(finding('liveness', g.id, `referenced path missing: ${ref}`));
@@ -248,22 +301,46 @@ export function applyBaseline(findings, baselineKeys) {
   };
 }
 
-export function runChecks(names, ctx, baselineKeys = []) {
+/** Run the named checks once and return every finding (before any baseline is applied). */
+export function collectFindings(names, ctx) {
   const unknown = names.filter((n) => !CHECKS[n]);
   if (unknown.length) throw new EngineError('E_UNKNOWN_CHECK', EXIT.USAGE, `unknown check: ${unknown.join(', ')} (known: ${Object.keys(CHECKS).join(', ')})`);
-  const findings = names.flatMap((n) => CHECKS[n](ctx));
-  const r = applyBaseline(findings, baselineKeys);
-  const exit = r.newFindings.length || r.stale.length ? EXIT.CHECK_FAILED : 0;
-  return { schema: 1, kind: 'check-report', checks: names, findings: r.newFindings, tolerated: r.tolerated.map((f) => f.key), stale: r.stale, exit, released: false };
+  return names.flatMap((n) => CHECKS[n](ctx));
 }
 
-/** Rewrite the baseline only if it would not grow. Returns the keys written or throws. */
+/** Build the check report from findings already collected, so callers never run a check twice. */
+export function reportFromFindings(names, findings, baselineKeys = []) {
+  const r = applyBaseline(findings, baselineKeys);
+  const exit = r.newFindings.length || r.stale.length ? EXIT.CHECK_FAILED : 0;
+  return { schema: 1, kind: 'check-report', checks: names, findings: r.newFindings, tolerated: r.tolerated.map((f) => f.key), stale: r.stale, exit, engineError: false, released: false };
+}
+
+export const runChecks = (names, ctx, baselineKeys = []) => reportFromFindings(names, collectFindings(names, ctx), baselineKeys);
+
+const writeBaseline = (file, keys) => fs.writeFileSync(file, `${JSON.stringify(Object.fromEntries(keys.map((k) => [k, true])), null, 2)}\n`);
+
+/**
+ * Shrink-only ratchet rewrite: the baseline may lose entries, never gain one. A missing or empty
+ * baseline therefore accepts nothing (every finding would be an addition); first creation is the
+ * separate, explicit {@link initBaseline}.
+ */
 export function shrinkBaseline(file, findings) {
-  const old = fs.existsSync(file) ? Object.keys(JSON.parse(fs.readFileSync(file, 'utf8'))) : [];
+  const old = fs.existsSync(file) ? readBaseline(file) : [];
   const next = findings.map((f) => f.key);
   const added = next.filter((k) => !old.includes(k));
-  if (old.length && added.length) throw new EngineError('E_BASELINE_GROWS', EXIT.CHECK_FAILED, `baseline may only shrink; new findings: ${added.join(', ')}`);
-  fs.writeFileSync(file, `${JSON.stringify(Object.fromEntries(next.map((k) => [k, true])), null, 2)}\n`);
+  if (added.length) {
+    const hint = old.length ? '' : ' (no baseline entries exist; create one explicitly with --init-baseline)';
+    throw new EngineError('E_BASELINE_GROWS', EXIT.CHECK_FAILED, `baseline may only shrink; would add: ${added.join(', ')}${hint}`);
+  }
+  writeBaseline(file, next);
+  return next;
+}
+
+/** Create a baseline from the current findings. Refuses to overwrite an existing file. */
+export function initBaseline(file, findings) {
+  if (fs.existsSync(file)) throw new EngineError('E_BASELINE_EXISTS', EXIT.USAGE, `baseline ${file} already exists; --init-baseline only creates one (use --update-baseline to shrink it)`);
+  const next = findings.map((f) => f.key);
+  writeBaseline(file, next);
   return next;
 }
 

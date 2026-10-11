@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  parseTable, selectGates, runGates, runChecks, applyBaseline, shrinkBaseline, registerCheck, CHECKS, globToRegExp, EngineError,
+  parseTable, selectGates, runGates, runChecks, applyBaseline, shrinkBaseline, initBaseline, validateSelection, firstToken, collectFindings, reportFromFindings, registerCheck, CHECKS, globToRegExp, EngineError,
 } from '../lib.mjs';
 import { parseArgs } from '../cli.mjs';
 
@@ -135,14 +135,18 @@ test('891dbac0 AC4 completeness: each clause has exactly one binding row', () =>
 
 test('891dbac0 AC4 liveness: missing commands and referenced paths are findings', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ge-live-'));
-  fs.writeFileSync(path.join(root, 'ok.sh'), '');
+  fs.writeFileSync(path.join(root, 'ok.sh'), '', { mode: 0o755 });
+  fs.writeFileSync(path.join(root, 'plain.sh'), '', { mode: 0o644 });
   const t = table([
     G('G3', { command: './ok.sh', references: ['ok.sh'] }),
     G('G5', { command: './absent.sh' }),
     G('G6', { command: 'definitely-not-a-binary-xyz' }),
     G('G7', { references: ['gone.md'] }),
+    G('G8', { command: './plain.sh' }),
+    G('G9', { command: 'FOO=1 BAR="a b" ./ok.sh' }),
+    G('G11', { command: 'X=1 ./absent.sh' }),
   ]);
-  assert.deepEqual(CHECKS.liveness({ table: t, root }).map((x) => x.id).sort(), ['G5', 'G6', 'G7']);
+  assert.deepEqual(CHECKS.liveness({ table: t, root }).map((x) => x.id).sort(), ['G11', 'G5', 'G6', 'G7', 'G8']);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -168,7 +172,7 @@ test('891dbac0 AC4 the ratchet baseline only shrinks: new findings and stale ent
 
 test('891dbac0 AC4 shrinkBaseline refuses to grow the baseline', () => {
   const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ge-bl-')), 'b.json');
-  shrinkBaseline(f, [{ key: 'a:1' }, { key: 'a:2' }]);
+  initBaseline(f, [{ key: 'a:1' }, { key: 'a:2' }]);
   shrinkBaseline(f, [{ key: 'a:1' }]);
   assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(f, 'utf8'))), ['a:1']);
   assert.throws(() => shrinkBaseline(f, [{ key: 'a:1' }, { key: 'a:9' }]), (e) => e.code === 'E_BASELINE_GROWS');
@@ -194,4 +198,95 @@ test('891dbac0 AC5 the README states what is reused and what is replaced', () =>
 test('891dbac0 AC1 selection itself never relaxes a non-relaxable gate, even from a hand-built table', () => {
   const hand = { gates: [{ ...G('G1'), stage: ['B'], classes: ['feature'], paths: ['x/**'], rigors: ['high'] }], stages: {} };
   assert.deepEqual(ids(selectGates(hand, { step: 'B', changeClass: 'docs', rigor: 'low', changed: ['README.md'] })), ['G1']);
+});
+
+const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
+
+test('891dbac0 AC4 shrinkBaseline never creates entries: a missing or empty baseline refuses every finding', () => {
+  const dir = tmp('ge-bl2-');
+  const missing = path.join(dir, 'missing.json');
+  assert.throws(() => shrinkBaseline(missing, [{ key: 'a:1' }]), (e) => e.code === 'E_BASELINE_GROWS' && /--init-baseline/.test(e.message));
+  assert.ok(!fs.existsSync(missing), 'nothing written on refusal');
+  const empty = path.join(dir, 'empty.json');
+  fs.writeFileSync(empty, '{}');
+  assert.throws(() => shrinkBaseline(empty, [{ key: 'a:1' }]), (e) => e.code === 'E_BASELINE_GROWS');
+  assert.deepEqual(shrinkBaseline(empty, []), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('891dbac0 AC4 initBaseline creates a baseline once and never overwrites', () => {
+  const dir = tmp('ge-bl3-');
+  const f = path.join(dir, 'b.json');
+  assert.deepEqual(initBaseline(f, [{ key: 'a:1' }]), ['a:1']);
+  assert.throws(() => initBaseline(f, [{ key: 'a:2' }]), (e) => e.code === 'E_BASELINE_EXISTS' && e.exit === 64);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(f, 'utf8'))), ['a:1']);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('891dbac0 AC4 findings are collected once and reused: teeth seeded commands run once per gate', () => {
+  const seen = [];
+  const t = table([G('G3', { seeded: { command: 'seed-a' } })]);
+  const findings = collectFindings(['teeth'], { table: t, root: '.', run: fakeRun({ 'seed-a': 1 }, seen) });
+  const rep = reportFromFindings(['teeth'], findings, []);
+  assert.equal(seen.length, 1);
+  assert.equal(rep.exit, 0);
+  assert.equal(rep.engineError, false);
+});
+
+test('891dbac0 AC1 validateSelection rejects an unknown or unbound step', () => {
+  const t = table([G('G3', { stage: 'B' })]);
+  validateSelection(t, { step: 'B' });
+  assert.throws(() => validateSelection(t, { step: 'Z' }), (e) => e.code === 'E_USAGE' && e.exit === 64 && /unknown --step "Z"/.test(e.message));
+  assert.throws(() => validateSelection(t, { step: 'b' }), (e) => e.exit === 64);
+  assert.throws(() => validateSelection(t, { step: undefined }), (e) => e.exit === 64);
+  assert.throws(() => validateSelection(t, { step: 'C' }), (e) => e.exit === 64 && /no gate in the table is bound to step C/.test(e.message));
+});
+
+test('891dbac0 AC1 validateSelection rejects a class or rigor that no gate declares', () => {
+  const t = table([G('G3', { classes: ['feature'], rigors: ['high'] }), G('G5')]);
+  validateSelection(t, { step: 'B', changeClass: 'feature', rigor: 'high' });
+  assert.throws(() => validateSelection(t, { step: 'B', changeClass: 'fature' }), (e) => e.exit === 64 && /--class "fature".*declared: feature/.test(e.message));
+  assert.throws(() => validateSelection(t, { step: 'B', rigor: 'hgih' }), (e) => e.exit === 64 && /--rigor/.test(e.message));
+  assert.throws(() => validateSelection(table([G('G3')]), { step: 'B', changeClass: 'feature' }), /no gate declares any classes/);
+});
+
+test('891dbac0 AC1 a bound step whose gates all have nothing to check reports a warning, not a silent green', () => {
+  const t = table([G('G3', { classes: ['feature'] })]);
+  const r = runGates(t, { step: 'B', changeClass: 'docs', root: '.' }, { run: fakeRun() });
+  assert.equal(r.summary.selected, 0);
+  assert.equal(r.exit, 0);
+  assert.equal(r.warnings.length, 1);
+  assert.match(r.warnings[0], /0 gates selected/);
+  assert.deepEqual(runGates(table([G('G3')]), { step: 'B', root: '.' }, { run: fakeRun() }).warnings, []);
+});
+
+test('891dbac0 AC2 gate reports are marked engineError false so a gate exit of 64 or 65 is not an engine error', () => {
+  const r = runGates(table([G('G3')]), { step: 'B', root: '.' }, { run: fakeRun({ 'echo G3': 64 }) });
+  assert.equal(r.exit, 64);
+  assert.equal(r.kind, 'gate-report');
+  assert.equal(r.engineError, false);
+});
+
+test('891dbac0 AC1 gate ids are restricted to a safe filename charset', () => {
+  for (const bad of ['../x', 'a/b', 'a..b', '.hidden', '-x', 'a b', 'a\\b']) {
+    assert.throws(() => table([G(bad)]), (e) => e.code === 'E_TABLE' && e.exit === 65 && /must match/.test(e.message), bad);
+  }
+  assert.doesNotThrow(() => table([G('G1.2-a_b')]));
+});
+
+test('891dbac0 AC4 liveness first token skips VAR=value assignments and unquotes', () => {
+  assert.equal(firstToken('FOO=1 BAR="a b" node x.js'), 'node');
+  assert.equal(firstToken("A='x y' ./run.sh --f"), './run.sh');
+  assert.equal(firstToken('"my tool" --x'), 'my tool');
+  assert.equal(firstToken('A=1 B=2'), undefined);
+  assert.equal(firstToken('cd sub && ./run.sh'), 'cd');
+});
+
+test('891dbac0 AC3 the README documents the ambiguity, the constant non-relaxable list, and the liveness limits', () => {
+  const readme = fs.readFileSync(path.join(ENGINE, 'README.md'), 'utf8');
+  assert.match(readme, /NON_RELAXABLE_IDS/);
+  assert.match(readme, /not configurable/i);
+  assert.match(readme, /engine-error/);
+  assert.match(readme, /--init-baseline/);
+  assert.match(readme, /first (simple )?command/i);
 });

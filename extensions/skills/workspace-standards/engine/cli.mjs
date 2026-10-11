@@ -6,17 +6,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { EngineError, EXIT, CHECKS, loadTable, runGates, runChecks, readBaseline, shrinkBaseline, shellRunner } from './lib.mjs';
+import { EngineError, EXIT, CHECKS, loadTable, runGates, validateSelection, collectFindings, reportFromFindings, readBaseline, shrinkBaseline, initBaseline, shellRunner } from './lib.mjs';
 
 const USAGE = `usage:
   cli.mjs run   --step <A-H> [--class <c>] [--rigor <r>] [--changed <path>]... [--base <ref> --head <ref>]
                 [--root <dir>] [--table <file>] [--report <file>|-] [--fail-on-obligation]
   cli.mjs check <completeness|liveness|reachability|teeth|all> [--root <dir>] [--table <file>]
-                [--clauses <a,b>] [--baseline <file> [--update-baseline]] [--checks-module <file>] [--report <file>|-]
+                [--clauses <a,b>] [--baseline <file> [--update-baseline | --init-baseline]] [--checks-module <file>] [--report <file>|-]
   --root defaults to the current directory; the table defaults to <root>/gates.table.json.`;
 
 const VALUE_FLAGS = ['--step', '--class', '--rigor', '--changed', '--base', '--head', '--root', '--table', '--report', '--clauses', '--baseline', '--checks-module'];
-const BOOL_FLAGS = ['--fail-on-obligation', '--update-baseline'];
+const BOOL_FLAGS = ['--fail-on-obligation', '--update-baseline', '--init-baseline'];
 
 export function parseArgs(argv) {
   const out = { positional: [], flags: {}, changed: [] };
@@ -34,10 +34,10 @@ export function parseArgs(argv) {
   return out;
 }
 
-function writeReport(report, dest, root) {
+function writeReport(report, dest, root, fallback) {
   const json = `${JSON.stringify(report, null, 2)}\n`;
   if (dest === '-') { process.stdout.write(json); return null; }
-  const file = path.resolve(root, dest ?? (report.kind === 'gate-report' ? 'gate-report.json' : 'check-report.json'));
+  const file = path.resolve(root, dest ?? fallback ?? (report.kind === 'check-report' ? 'check-report.json' : 'gate-report.json'));
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, json);
   return file;
@@ -47,13 +47,37 @@ function changedPaths(a, root) {
   const { flags } = a;
   if (flags['--base'] || flags['--head']) {
     if (!flags['--base'] || !flags['--head']) throw new EngineError('E_USAGE', EXIT.USAGE, '--base and --head go together');
-    return execFileSync('git', ['diff', '--name-only', flags['--base'], flags['--head']], { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean);
+    for (const f of ['--base', '--head']) {
+      if (flags[f].startsWith('-')) throw new EngineError('E_USAGE', EXIT.USAGE, `${f} must be a ref, not an option (got ${JSON.stringify(flags[f])})`);
+    }
+    return execFileSync('git', ['diff', '--name-only', flags['--base'], flags['--head'], '--'], { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean);
   }
   return a.changed.length ? a.changed : undefined;
 }
 
+/**
+ * Engine errors share exit codes 64/65 with gate statuses, so each is also written as an
+ * `engine-error` report to the report destination (never left as a stale earlier gate-report).
+ */
 export async function main(argv) {
   const a = parseArgs(argv);
+  try {
+    return await dispatch(a);
+  } catch (err) {
+    if (err instanceof EngineError) {
+      const root = path.resolve(a.flags['--root'] ?? process.cwd());
+      const rep = { schema: 1, kind: 'engine-error', code: err.code, message: err.message, exit: err.exit, engineError: true, released: false };
+      try {
+        writeReport(rep, a.flags['--report'], root, a.positional[0] === 'check' ? 'check-report.json' : 'gate-report.json');
+      } catch (werr) {
+        process.stderr.write(`gate-engine: could not write the engine-error report (${werr.message})\n`);
+      }
+    }
+    throw err;
+  }
+}
+
+async function dispatch(a) {
   const [verb, ...rest] = a.positional;
   const root = path.resolve(a.flags['--root'] ?? process.cwd());
   const tableFile = path.resolve(root, a.flags['--table'] ?? 'gates.table.json');
@@ -61,6 +85,7 @@ export async function main(argv) {
     const step = a.flags['--step'];
     if (!step) throw new EngineError('E_USAGE', EXIT.USAGE, `run requires --step\n${USAGE}`);
     const table = loadTable(tableFile);
+    validateSelection(table, { step, changeClass: a.flags['--class'], rigor: a.flags['--rigor'] });
     const report = runGates(table, {
       step, changeClass: a.flags['--class'], rigor: a.flags['--rigor'], changed: changedPaths(a, root), root,
       failOnObligation: a.flags['--fail-on-obligation'] === true,
@@ -68,6 +93,7 @@ export async function main(argv) {
       evidenceDir: a.flags['--report'] === '-' ? undefined : path.join(path.resolve(root, a.flags['--report'] ?? 'gate-report.json') + '.evidence'),
     });
     const file = writeReport(report, a.flags['--report'], root);
+    for (const w of report.warnings) process.stderr.write(`gate-engine: warning: ${w}\n`);
     if (file) process.stderr.write(`gate-engine: ${report.summary.passed}/${report.summary.selected} passed, failed=[${report.summary.failed}] obligations=[${report.summary.obligations}] -> ${file}\n`);
     return report.exit;
   }
@@ -79,11 +105,15 @@ export async function main(argv) {
     const table = loadTable(tableFile);
     const baselineFile = a.flags['--baseline'] ? path.resolve(root, a.flags['--baseline']) : undefined;
     const ctx = { table, root, run: shellRunner, clauses: a.flags['--clauses']?.split(',').filter(Boolean) };
-    const report = runChecks(names, ctx, readBaseline(baselineFile));
+    if (a.flags['--update-baseline'] && a.flags['--init-baseline']) throw new EngineError('E_USAGE', EXIT.USAGE, '--update-baseline and --init-baseline are mutually exclusive');
+    if ((a.flags['--update-baseline'] || a.flags['--init-baseline']) && !baselineFile) throw new EngineError('E_USAGE', EXIT.USAGE, '--update-baseline and --init-baseline require --baseline');
+    const findings = collectFindings(names, ctx);
+    const report = reportFromFindings(names, findings, readBaseline(baselineFile));
     if (a.flags['--update-baseline']) {
-      if (!baselineFile) throw new EngineError('E_USAGE', EXIT.USAGE, '--update-baseline requires --baseline');
-      const all = names.flatMap((n) => CHECKS[n](ctx));
-      shrinkBaseline(baselineFile, all);
+      shrinkBaseline(baselineFile, findings);
+      report.exit = 0;
+    } else if (a.flags['--init-baseline']) {
+      initBaseline(baselineFile, findings);
       report.exit = 0;
     }
     const file = writeReport(report, a.flags['--report'], root);

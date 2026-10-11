@@ -14,15 +14,30 @@ node engine/cli.mjs run --step B --class feature --rigor standard --changed src/
 
 | Flag | Meaning |
 |---|---|
-| `--step A-H` | Lifecycle stage. Only gates bound to it are considered. Required. |
-| `--class`, `--rigor` | Decide whether a gate has anything to check (a row may list `classes`, `rigors`). |
-| `--changed <path>` (repeatable), or `--base <ref> --head <ref>` | Changed paths; a row may list `paths` globs. Absent, every gate has something to check. |
+| `--step A-H` | Lifecycle stage. Only gates bound to it are considered. Required, and rejected (exit 64) unless it is one of `A`-`H` and at least one gate in the table is bound to it. |
+| `--class`, `--rigor` | Decide whether a gate has anything to check (a row may list `classes`, `rigors`). The engine has no closed set of either (a table defines its own), so a value that no gate declares in `classes` / `rigors` is rejected (exit 64) as a probable typo. |
+| `--changed <path>` (repeatable), or `--base <ref> --head <ref>` | Changed paths (a ref beginning with `-` is rejected; `git diff` is called with `--`); a row may list `paths` globs. Absent, every gate has something to check. |
 | `--root <dir>` | Repository root and working directory of every command (default: cwd). The fixture-root flag the tests use. |
 | `--table <file>` | Command table (default `<root>/gates.table.json`). |
 | `--report <file>` / `-` | One JSON report (default `<root>/gate-report.json`; per-gate logs in `<report>.evidence/`). `-` prints it on stdout. |
 | `--fail-on-obligation` | Count an obligation (no mechanism) as a failure. |
 
-Exit status is the highest exit status of any selected gate (0 when all pass). A gate that times out exits 124, a signal 128+n. Engine errors: 64 usage, 65 bad table. The exit status is the only signal; output is evidence, never parsed.
+Exit status is the highest exit status of any selected gate (0 when all pass). A gate that times out exits 124, a signal 128+n. The exit status is the only signal; output is evidence, never parsed.
+
+### Selecting nothing
+
+A typo can never be a green run: an unknown `--step`, `--class`, or `--rigor` exits 64 with a named error (above). A *valid* selection can still legitimately select zero gates (every gate bound to the step has nothing to check for this class, rigor, and changed paths, which is the point of "selects the gates that have something to check"). That run exits 0, prints `gate-engine: warning: ... 0 gates selected` on stderr, and records the same text in the report's `warnings` array with `summary.selected: 0`, so a consumer can tell it apart from a run that executed and passed gates.
+
+### Engine errors versus gate statuses
+
+The engine's own errors use exit 64 (usage) and 65 (bad table, including an unsafe gate id); a baseline refusal exits 1; an internal error exits 70. A gate command may itself exit 64, 65, or 70, and "exit with the worst gate's status" means the process exit cannot tell the two apart. The report can:
+
+| `kind` | `engineError` | Meaning |
+|---|---|---|
+| `gate-report` | `false` | The gates ran; `exit` is the worst gate status, whatever its value. |
+| `engine-error` | `true` | The engine refused before running gates; `code` (`E_USAGE`, `E_TABLE`, ...) and `message` say why, and `exit` is the engine's code. |
+
+The engine-error report is written to the same destination as a gate report (`--report`, default `gate-report.json`; `check-report.json` for `check`), so a stale earlier gate report is never left behind. stderr carries `gate-engine: <CODE>: <message>` for engine errors. Consumers that need the distinction must read the report, not just the exit status.
 
 ## Command table
 
@@ -38,15 +53,15 @@ Exit status is the highest exit status of any selected gate (0 when all pass). A
 }
 ```
 
-- `id`, `stage` (letters A to H), `mechanism` (`mechanical` or `review`) are required; `command` is a shell command run from `--root`.
-- **No class relaxes G1, G2, G4, G10, G12, or a row with `release: true` / `nonRelaxable: true`** (testing policy section 6.7). Such a row is always selected, and a table that gives it `classes`, `rigors`, or `paths` is rejected.
+- `id`, `stage` (letters A to H), `mechanism` (`mechanical` or `review`) are required; `command` is a shell command run from `--root`. An `id` becomes an evidence file name, so it must match `[A-Za-z0-9._-]`, start with a letter or digit, and not contain `..`; anything else is a table error (exit 65).
+- **No class relaxes G1, G2, G4, G10, G12, or a row with `release: true` / `nonRelaxable: true`** (testing policy section 6.7). Such a row is always selected, and a table that gives it `classes`, `rigors`, or `paths` is rejected. The list of non-relaxable ids is the constant `NON_RELAXABLE_IDS` in `lib.mjs`: it is not configurable per table (a table can add rows with `release: true` / `nonRelaxable: true`, but cannot remove or extend the built-in ids).
 - A row with no `command`, or mechanism `review`, is an **obligation**: reported as such, never as a pass.
 - The engine releases nothing: no merge, tag, or publish. The report says `"released": false`.
 
 ## Checks
 
 ```bash
-node engine/cli.mjs check <completeness|liveness|reachability|teeth|all> --root <repo> [--baseline b.json [--update-baseline]]
+node engine/cli.mjs check <completeness|liveness|reachability|teeth|all> --root <repo> [--baseline b.json [--update-baseline | --init-baseline]]
 ```
 
 These are the generic entry points T41 fills. Defaults work over the table alone:
@@ -54,13 +69,13 @@ These are the generic entry points T41 fills. Defaults work over the table alone
 | Check | Finding |
 |---|---|
 | `completeness` | A required clause (`table.clauses` or `--clauses a,b`) with zero or several binding rows. |
-| `liveness` | A mechanical row whose command, or any `references` path, does not exist. |
+| `liveness` | A mechanical row whose command word is not an executable file (on `PATH`, or at the given path relative to `--root`), or any `references` path that does not exist. Leading `VAR=value` assignments are skipped. Only the first command of a shell line is checked: in `a && b`, `a; b`, or `a \| b` only `a` is examined (so `cd x && tool` reports `cd`, a shell builtin); `b` is not. |
 | `reachability` | A gate its stage does not list in `stages.<S>.invokes`, or a gate bound to no stage. |
 | `teeth` | A mechanical row with no `seeded.command`, or whose seeded violation exits 0. |
 
 `--checks-module <file>` loads a module that calls `registerCheck(name, fn)` to add or replace a check; `fn({ table, root, run, clauses })` returns `[{ check, id, key, evidence }]`.
 
-The baseline is a shrink-only ratchet: a finding outside it fails, a baseline entry with no finding fails (delete it), and `--update-baseline` refuses to add entries.
+The baseline is a shrink-only ratchet: a finding outside it fails, a baseline entry with no finding fails (delete it), and `--update-baseline` rewrites the file with the current findings only if that adds no entry. It therefore refuses on a missing or empty baseline (every finding would be an addition). The first baseline is created by the separate, explicit `--init-baseline`, which refuses to overwrite an existing file. Both reuse the findings already computed for the report, so a `teeth` seeded command runs once per invocation.
 
 ## Verify
 
