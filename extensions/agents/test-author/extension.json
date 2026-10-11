@@ -60,7 +60,43 @@
   "render": {
     "claude": { "model": "sonnet", "version": "v0.1.0", "tools": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"] },
     "opencode": { "model": "deepseek/deepseek-flash", "mode": "all", "temperature": 0.2 },
-    "agent-mcp": { "model": "deepseek/deepseek-flash", "toolMap": {}, "mcpServers": {} }
+    "agent-mcp": {
+      "model": "deepseek/deepseek-flash",
+      "toolMap": {},
+      "mcpServers": {},
+      "nativeTooling": {
+        "shell": {
+          "allowCommands": [
+            "basename",
+            "cat",
+            "cp",
+            "diff",
+            "dirname",
+            "gx",
+            "head",
+            "ls",
+            "mkdir",
+            "mv",
+            "npx",
+            "nx",
+            "pnpm",
+            "rg",
+            "sort",
+            "sox-git-impl",
+            "sox-git-ro",
+            "sox-rm",
+            "stat",
+            "tail",
+            "tee",
+            "touch",
+            "uniq",
+            "wc",
+            "which"
+          ],
+          "timeoutMs": 900000
+        }
+      }
+    }
   },
   "install": { "type": "agent", "hosts": ["claude", "opencode", "agent-mcp"] }
 }

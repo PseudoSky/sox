@@ -20,7 +20,7 @@ const AGENTS_DIR = resolve(__dirname, '../../../extensions/agents');
 
 type Tier = 'read-only' | 'implementer' | 'git-merge' | 'backlog-ops' | 'orchestrator';
 
-/** The 17 agents that carry a shell block, with the tier the spec (section 1.2) assigns. */
+/** The 18 agents that carry a shell block, with the tier the spec (section 1.2) assigns. */
 const SHELL_AGENTS: Record<string, Tier> = {
   'agent-manager': 'implementer',
   architect: 'read-only',
@@ -37,6 +37,7 @@ const SHELL_AGENTS: Record<string, Tier> = {
   qa: 'implementer',
   researcher: 'read-only',
   security: 'read-only',
+  'test-author': 'implementer',
   typescript: 'implementer',
   ui: 'implementer',
 };
@@ -92,11 +93,11 @@ function render(name: string): { payload: AgentCatalogPayload; report: AgentRend
   return { payload: r.value as AgentCatalogPayload, report: r.report };
 }
 
-describe('faa8064b AC1: tiered shell allowlist in the 17 agent manifests', () => {
-  it('faa8064b AC1: every manifest in extensions/agents is covered (17 shell + 5 no-shell = 22)', () => {
+describe('faa8064b AC1: tiered shell allowlist in the 18 agent manifests', () => {
+  it('faa8064b AC1 / 595965cc T22: every manifest in extensions/agents is covered (18 shell + 5 no-shell = 23)', () => {
     const dirs = readdirSync(AGENTS_DIR).filter((d) => existsSync(join(AGENTS_DIR, d, 'extension.json'))).sort();
     expect(dirs).toEqual([...Object.keys(SHELL_AGENTS), ...NO_SHELL_AGENTS].sort());
-    expect(Object.keys(SHELL_AGENTS)).toHaveLength(17);
+    expect(Object.keys(SHELL_AGENTS)).toHaveLength(18);
   });
 
   it.each(Object.entries(SHELL_AGENTS))('faa8064b AC1: %s (%s) renders its manifest shell block verbatim, no shell disabled by loss', (name) => {
