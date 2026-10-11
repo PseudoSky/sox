@@ -24,6 +24,7 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadAgents, parseRoles, readText, resolveRole } from '../../../skills/workspace-standards/scripts/lib.mjs';
+import { BOUND_NO_COVERAGE } from '../../../skills/workspace-standards/scripts/foundations.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../../../..');
@@ -88,6 +89,8 @@ function bind({ roleName, agents, rigor, session = null, expiry = EXPIRY }) {
   const got = resolveRole(r, agents, { session });
   if (got.holder) return { outcome: 'bound', holder: got.holder, covered: got.covered };
   if (rigor === 'deep' && r.deepBlocks) return { outcome: 'blocked', role: r.name };
+  // dispatcher.md Step 2: what follows an unbound role is that role's own `no-holder` entry, not one rule for all.
+  if (!/review debt/i.test(r.noHolder)) return { outcome: 'no-holder-entry', role: r.name, entry: r.noHolder };
   if (!expiry) throw new Error('review debt requires an expiry');
   const owner = resolveRole(role('risk-owner'), agents, { session }).holder ?? 'user';
   return { outcome: 'debt', role: r.name, owner, expiry };
@@ -140,9 +143,46 @@ test(AC(2, 'the dispatcher telemetry row names the bound agent with covered ids,
   assert.match(d, /`role=<role>:unbound` with the debt owner and expiry, or the block/);
 });
 
-test('595965cc T47 AC1 rank0-3: the telemetry text names the no-declared-coverage flag for a closeness-0 binding', () => {
+test('595965cc T47 AC1 rank0-3: the telemetry flag in dispatcher.md is exactly the constant the code emits', () => {
+  assert.equal(BOUND_NO_COVERAGE, 'bound-no-coverage', 'the shipped code constant');
   const d = prose('dispatcher');
-  assert.match(d, /closeness-0 binding records covered ids `none` and the flag `no-declared-coverage`/);
+  assert.ok(d.includes(`the flag \`${BOUND_NO_COVERAGE}\``), 'dispatcher.md names the flag the code emits');
+  assert.match(d, /closeness-0 binding records covered ids `none` and the flag/);
+  assert.ok(!d.includes('no-declared-coverage'), 'the retired spelling is gone from dispatcher.md');
+});
+
+test('595965cc T47 AC3: an unbound role follows its own no-holder entry; the implementer waits for a specialist and records no review debt', () => {
+  const d = prose('dispatcher');
+  assert.match(d, /the role's own `no-holder` entry/);
+  assert.match(d, /`implementer` role's work waits for a specialist/);
+  assert.doesNotMatch(d, /With none eligible the role is unbound\. At Light/, 'the blanket "every unbound role is review debt" sentence is gone');
+  const impl = role('implementer');
+  assert.match(impl.noHolder, /waits for a specialist/);
+  assert.equal(impl.deepBlocks, false);
+  for (const rigor of ['light', 'standard', 'deep']) {
+    const got = bind({ roleName: 'implementer', agents: [], rigor });
+    assert.equal(got.outcome, 'no-holder-entry', `${rigor}: no review debt record for implementer`);
+    assert.match(got.entry, /waits for a specialist/);
+  }
+  assert.equal(bind({ roleName: 'triager', agents: [], rigor: 'light' }).outcome, 'debt', 'a review-debt entry still records debt');
+});
+
+test('595965cc T47 AC1: the final tie-break is hints order, then agent name, and the caller supplies held', () => {
+  const d = prose('dispatcher');
+  assert.match(d, /you supply that `held` count per agent/);
+  assert.match(d, /in `hints` order; any tie still left goes to the agent name/);
+  const hinted = 'hh-hinted';
+  const sr = { ...role('static-reviewer'), hints: [hinted] }; // fixture hint list: the real role declares none
+  const tools = ['read', 'grep'];
+  const mk = (ids) => Object.fromEntries(ids.map((id) => [id, { id, agent: { tools }, capabilities: [] }]));
+  // equal closeness (0), equal held: a hinted agent beats an unhinted one regardless of name
+  assert.equal(resolveRole(sr, writeRoster(mk(['aaa-unhinted', hinted]))).holder, hinted);
+  // equal closeness, no hints involved: the lower name wins, independent of roster order
+  assert.equal(resolveRole(sr, writeRoster(mk(['zzz-b', 'zzz-a']))).holder, 'zzz-a');
+  // held outranks hints: the caller's count decides before hints are consulted
+  assert.equal(resolveRole(sr, writeRoster(mk(['zzz-a', hinted])), { held: { [hinted]: 1 } }).holder, 'zzz-a');
+  // omitting held does not infer anything: same roster, same result as held {}
+  assert.equal(resolveRole(sr, writeRoster(mk(['zzz-a', hinted]))).holder, hinted);
 });
 
 test(AC(3, 'unbound roles record review debt with owner and expiry at Light and Standard; Deep blocks'), () => {

@@ -381,14 +381,17 @@ const STANDARD_REQUIRED = ['standard', 'policy', 'roles', 'workClasses', 'gates'
 export function validateDeclaration(decl) {
   const e = [];
   for (const k of STANDARD_REQUIRED) if (!(k in decl)) e.push(`declaration lacks "${k}"`);
-  for (const k of Object.keys(decl)) if (![...STANDARD_REQUIRED, 'own'].includes(k)) e.push(`declaration has unknown key "${k}"`);
+  for (const k of Object.keys(decl)) if (![...STANDARD_REQUIRED, 'own', 'routing', 'ownership', 'gateList'].includes(k)) e.push(`declaration has unknown key "${k}"`);
+  if (decl.routing !== undefined && decl.routing !== 'own') e.push('routing must be the literal "own" when present');
+  if (decl.gates === 'own' && !Array.isArray(decl.gateList)) e.push('gates: "own" replaces the gate array, so the gate list must be supplied as "gateList"');
+  if (decl.gates !== 'own' && !Array.isArray(decl.gates) && 'gates' in decl) e.push('gates must be an array of gate rows, or the literal "own" with a "gateList"');
   if (decl.own !== undefined && !(Array.isArray(decl.own) && decl.own.every((x) => ['routing', 'gates'].includes(x)))) e.push('own must be a list drawn from routing, gates');
   for (const w of decl.workClasses ?? []) {
     if (!w.id) e.push('workClass without id');
     if (!['none', 'light', 'standard', 'deep'].includes(w.defaultRigor)) e.push(`workClass ${w.id}: bad defaultRigor`);
   }
   const gateIds = new Set();
-  for (const g of decl.gates ?? []) {
+  for (const g of gatesOf(decl)) {
     for (const k of ['id', 'threshold', 'mechanism', 'stage']) if (!(k in g)) e.push(`gate ${g.id ?? '?'} lacks ${k}`);
     if (!['mechanical', 'review'].includes(g.mechanism)) e.push(`gate ${g.id}: mechanism must be mechanical|review`);
     if (!Array.isArray(g.stage) || g.stage.length === 0 || !g.stage.every((s) => /^[A-H]$/.test(s))) e.push(`gate ${g.id}: stage must be a non-empty list of A-H`);
@@ -430,7 +433,7 @@ export function runConformance({ root = SKILL_ROOT, standardDir, spec, strategyT
         }
         case 'gates-complete': {
           const decl = readJson(rel('standard.json'));
-          const have = new Set(decl.gates.map((g) => g.id));
+          const have = new Set(gatesOf(decl).map((g) => g.id));
           for (const id of expandRanges(c.ids)) if (!have.has(id)) findings.push(`gate ${id} not declared`);
           break;
         }
@@ -473,6 +476,32 @@ export function runConformance({ root = SKILL_ROOT, standardDir, spec, strategyT
 }
 
 // ---------- foundations (595965cc T49): ownership, role resolution, managed-block ledgers ----------
+
+/**
+ * The gate rows of a declaration. `gates` is the gate array; a declaration that spells the ownership form
+ * `gates: "own"` (CONTRACT item 7) cannot also use that key for the list, so the list is read from `gateList`.
+ * Anything else yields no gates. Every reader goes through here, so the string "own" is never iterated.
+ */
+export const gatesOf = (decl) => (Array.isArray(decl?.gates) ? decl.gates : Array.isArray(decl?.gateList) ? decl.gateList : []);
+
+/** The ledger key of a gate: `<gateSet>/<id>`. Gate ids repeat across standards; the key never does. */
+export const gateKey = (gateSet, id) => `${gateSet}/${id}`;
+
+/** Gate ids declared by more than one gate set. `sets` is [{ gateSet, decl }]. */
+export function sharedGateIds(sets) {
+  const owners = new Map();
+  for (const { gateSet, decl } of sets) {
+    for (const g of gatesOf(decl)) owners.set(g.id, new Set([...(owners.get(g.id) ?? []), gateSet]));
+  }
+  return new Set([...owners].filter(([, o]) => o.size > 1).map(([id]) => id));
+}
+
+/**
+ * True when the command table binds gate `id` of `gateSet`. A row with a `gateSet` binds only that set; a row
+ * without one binds the bare id, which is unambiguous only while no other gate set declares the same id.
+ */
+export const isCommanded = (commanded, gateSet, id, shared = new Set()) =>
+  commanded.has(gateKey(gateSet, id)) || (!shared.has(id) && commanded.has(id));
 
 /**
  * Which foundation a standard owns. Every spelling a declaration may use is accepted, so the
@@ -571,8 +600,9 @@ export function ledgerRows(text, target) {
 }
 
 /**
- * Gate ids the repository's command table (`gates.table.json`) binds to a command. A row without a command
- * is an obligation, not a mechanism. An absent table binds nothing.
+ * Keys the repository's command table (`gates.table.json`) binds to a command: `<gateSet>/<id>` for a row that
+ * names its `gateSet`, the bare id for a row that does not (see isCommanded). A row without a command is an
+ * obligation, not a mechanism. An absent table binds nothing.
  */
 export function commandedGateIds(root) {
   const file = path.join(root, 'gates.table.json');
@@ -584,5 +614,5 @@ export function commandedGateIds(root) {
     trace('parse gates.table.json', err);
     throw Object.assign(new Error(`gates.table.json is not valid JSON: ${err.message}`), { code: 'E_INPUT' });
   }
-  return new Set((Array.isArray(raw?.gates) ? raw.gates : []).filter((g) => typeof g?.command === 'string' && g.command !== '').map((g) => g.id));
+  return new Set((Array.isArray(raw?.gates) ? raw.gates : []).filter((g) => typeof g?.command === 'string' && g.command !== '').map((g) => (typeof g.gateSet === 'string' && g.gateSet !== '' ? gateKey(g.gateSet, g.id) : g.id)));
 }

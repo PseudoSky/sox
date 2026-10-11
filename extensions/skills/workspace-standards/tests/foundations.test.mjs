@@ -8,9 +8,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyFoundation, loadStandards, mechanismFor, EXIT } from '../scripts/foundations.mjs';
+import { applyFoundation, loadStandards, mechanismFor, composeGates, EXIT } from '../scripts/foundations.mjs';
 import { applyTesting, backlogFiler } from '../scripts/apply-testing.mjs';
-import { parseRoles, resolveRole, loadAgents, agentToolSet } from '../scripts/lib.mjs';
+import { parseRoles, resolveRole, loadAgents, agentToolSet, ownership, gatesOf, commandedGateIds, sharedGateIds } from '../scripts/lib.mjs';
 import { inspectBlock, unifiedDiff } from '../scripts/marker-engine.mjs';
 import { parseTable, runGates } from '../engine/lib.mjs';
 // The T10 roster guard (repo-root tools/). Imported for its pure checkRoster; the guard itself never spawns here.
@@ -257,7 +257,7 @@ describe('T49 gate filing through the injected backlog CLI', () => {
     const again = applyFoundation({ target: 'gates', root: dir, standards: [TESTING], filer });
     assert.equal(again.filed.length, 0, 'a second run files nothing');
     assert.equal(calls.length, expected.length, 'the stub was not called again');
-    assert.equal(mechanismFor({ standard: TESTING, gate: TESTING.decl.gates.find((g) => g.id === 'G1'), commanded: new Set(['G1']), testingBound: new Set() }), true);
+    assert.equal(mechanismFor({ standard: TESTING, gate: TESTING.decl.gates.find((g) => g.id === 'G1'), commanded: new Set(['G1']) }), true);
   });
 
   test('595965cc T49 AC6: a repository with no roster guard files one routing item through the backlog CLI, and nothing on the next run', () => {
@@ -343,5 +343,126 @@ describe('T49 precedence and the T10 roster guard', () => {
     assert.deepEqual(result.unresolved, [], 'an unbound row names no agent and the dispatcher names only installed agents');
     assert.ok(read(dir, 'AGENTS.md').includes('| new-behavior | testing | test-author | _unbound_ |'), 'the test-author rows are unbound');
     assert.ok(result.tableWarnings.length > 0, 'the unbound cells are reported as not checked');
+  });
+});
+
+describe('595965cc T49 correction: gate keys, filing on landed writes, ledger drift, data-driven bindings', () => {
+  const mkStd = (id, gates, extra = {}) => ({
+    id, gateSet: `${id}-gates`, binding: null, own: { routing: true, gates: false },
+    decl: { workClasses: [], gates }, rolesText: '', roles: [], ...extra,
+  });
+  const G = (id, mechanism = 'mechanical') => ({ id, threshold: `t-${id}`, mechanism, stage: ['D'] });
+  const wouldFile = (dir, standards, extra = {}) => applyFoundation({ target: 'gates', root: dir, standards, noFile: true, ...extra }).wouldFile;
+
+  test('595965cc T49 AC2: a G1 command in one standard\'s gate set does not mechanise a G1 in another set', () => {
+    const rival = mkStd('fixture-std', [G('G1')]);
+    const dir = scaffold({ gateTable: { gates: [{ id: 'G1', gateSet: 'test-gates', stage: ['D'], mechanism: 'mechanical', command: 'true' }] } });
+    const keys = wouldFile(dir, [TESTING, rival]);
+    assert.ok(!keys.includes('test-gates/G1'), 'the scoped row mechanises its own set');
+    assert.ok(keys.includes('fixture-std-gates/G1'), 'the other set\'s G1 is still an unmechanised obligation');
+    const body = managed(read(dir, 'AGENTS.md'), 'gates');
+    assert.match(body, /\| test-gates \| G1 \| mechanical \| [^|]*\| command \|/);
+    assert.match(body, /\| fixture-std-gates \| G1 \| mechanical \| [^|]*\| obligation \|/);
+  });
+  test('595965cc T49 AC6: a bare-id row cannot bind a gate id two standards declare; it binds it while only one does', () => {
+    const rival = mkStd('fixture-std', [G('G1')]);
+    const dir = scaffold({ gateTable: { gates: [{ id: 'G1', stage: ['D'], mechanism: 'mechanical', command: 'true' }] } });
+    const both = wouldFile(dir, [TESTING, rival]);
+    assert.ok(both.includes('test-gates/G1') && both.includes('fixture-std-gates/G1'), 'ambiguous bare id binds neither');
+    assert.ok(!wouldFile(dir, [TESTING]).includes('test-gates/G1'), 'unambiguous bare id still binds');
+    assert.deepEqual([...sharedGateIds([{ gateSet: 'a', decl: { gates: [G('X'), G('Y')] } }, { gateSet: 'b', decl: { gates: [G('X')] } }])], ['X']);
+    assert.deepEqual([...commandedGateIds(dir)], ['G1']);
+    const scopedDir = scaffold({ gateTable: { gates: [{ id: 'G1', gateSet: 'test-gates', stage: ['D'], mechanism: 'mechanical', command: 'true' }, { id: 'G2', stage: ['D'], mechanism: 'mechanical', command: '' }] } });
+    assert.deepEqual([...commandedGateIds(scopedDir)], ['test-gates/G1'], 'a scoped row is keyed gateSet/id; a row without a command binds nothing');
+    const g1 = TESTING.decl.gates.find((g) => g.id === 'G1');
+    assert.equal(mechanismFor({ standard: TESTING, gate: g1, commanded: new Set(['G1']), shared: new Set(['G1']) }), false);
+    assert.equal(mechanismFor({ standard: TESTING, gate: g1, commanded: new Set(['test-gates/G1']), shared: new Set(['G1']) }), true);
+    assert.equal(mechanismFor({ standard: TESTING, gate: g1, commanded: new Set(['other-gates/G1']) }), false);
+  });
+
+  test('595965cc T49 AC3: a second standard\'s binding document and ledger are read exactly like testing\'s (no id is special-cased)', () => {
+    const alt = mkStd('alt-std', [G('M1'), G('M2'), G('M3'), G('R1', 'review')], { binding: 'docs/alt.md' });
+    const dir = scaffold();
+    fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'docs/alt.md'), [
+      '<!-- workspace-standards:alt-std:hand-maintained:begin -->', '| Gate | Mechanism | Threshold |', '|---|---|---|', '| M1 | scripts/m1.sh | x |', '<!-- workspace-standards:alt-std:hand-maintained:end -->',
+      '<!-- workspace-standards:alt-std-mechanisms:begin -->', '## Mechanisms filed by apply', '| gate | mechanism needed | backlog item |', '|---|---|---|', '| M2 | checker | uid-9 |', '<!-- workspace-standards:alt-std-mechanisms:end -->', '',
+    ].join('\n'));
+    assert.deepEqual(wouldFile(dir, [alt]), ['alt-std-gates/M3'], 'M1 bound by its binding table, M2 by its ledger, R1 is a review gate');
+    assert.match(managed(read(dir, 'AGENTS.md'), 'gates'), /\| alt-std-gates \| M1 \| mechanical \| D \| command \|/);
+    const src = fs.readFileSync(path.join(SKILL, 'scripts/foundations.mjs'), 'utf8');
+    assert.ok(!/===\s*'testing'/.test(src), 'foundations.mjs names no standard id');
+  });
+  test('595965cc T49 AC3: the literal `gates: own` (list in gateList) is skipped by apply gates and never iterated as a string', () => {
+    const literal = { ...mkStd('lit-std', []), decl: { workClasses: [], gates: 'own', gateList: [G('L1')] } };
+    literal.own = ownership(literal.decl);
+    assert.equal(literal.own.gates, true);
+    assert.equal(gatesOf(literal.decl).length, 1);
+    const r = composeGates({ standards: [literal, mkStd('plain-std', [G('P1')])], bound: () => false });
+    assert.equal(r.skipped.length, 1);
+    assert.match(r.body, /plain-std-gates \| P1/);
+    assert.ok(!/lit-std-gates/.test(r.body));
+    const dir = scaffold();
+    assert.deepEqual(wouldFile(dir, [literal, mkStd('plain-std', [G('P1')])]), ['plain-std-gates/P1']);
+  });
+
+  const trimmedTesting = { ...TESTING, decl: { ...TESTING.decl, gates: TESTING.decl.gates.filter((g) => ['G2', 'G3'].includes(g.id)) } };
+  test('595965cc T49 AC6: drift in the gates block refuses the write, so nothing is filed (wouldFile reports it); the clean run files once', () => {
+    const dir = scaffold();
+    applyFoundation({ target: 'gates', root: dir, standards: [trimmedTesting], noFile: true });
+    const p = path.join(dir, 'AGENTS.md');
+    fs.writeFileSync(p, read(dir, 'AGENTS.md').replace('| test-gates | G2 |', '| test-gates | HAND |'));
+    const filer = recordingFiler();
+    const r = applyFoundation({ target: 'gates', root: dir, standards: [trimmedTesting], filer });
+    assert.equal(r.exit, EXIT.DRIFT);
+    assert.deepEqual(filer.items, [], 'the filer was never called');
+    assert.deepEqual(r.filed, []);
+    assert.deepEqual(r.wouldFile.sort(), ['test-gates/G2', 'test-gates/G3']);
+    assert.ok(r.warnings.some((w) => /nothing was filed/.test(w)));
+    assert.ok(read(dir, 'AGENTS.md').includes('| test-gates | HAND |'), 'the hand edit survives');
+    assert.ok(!read(dir, 'AGENTS.md').includes('foundations-filed'), 'no ledger block recorded phantom filings');
+    const forced = applyFoundation({ target: 'gates', root: dir, standards: [trimmedTesting], filer, force: true });
+    assert.equal(forced.exit, EXIT.OK);
+    assert.equal(filer.items.length, 2, 'filed once the write can land');
+    const again = recordingFiler();
+    applyFoundation({ target: 'gates', root: dir, standards: [trimmedTesting], filer: again });
+    assert.deepEqual(again.items, []);
+  });
+  test('595965cc T49 AC5: a hand-edited foundations-filed ledger is drift, is not overwritten, and nothing more is filed until resolved or --force', () => {
+    const dir = scaffold();
+    const first = recordingFiler();
+    applyFoundation({ target: 'gates', root: dir, standards: [trimmedTesting], filer: first });
+    assert.equal(first.items.length, 2);
+    const p = path.join(dir, 'AGENTS.md');
+    const edited = read(dir, 'AGENTS.md').replace(/checker for test-gates\/G2/, 'my own note');
+    assert.notEqual(edited, read(dir, 'AGENTS.md'));
+    fs.writeFileSync(p, edited);
+    const wider = { ...TESTING, decl: { ...TESTING.decl, gates: TESTING.decl.gates.filter((g) => ['G2', 'G3', 'G4'].includes(g.id)) } };
+    const filer = recordingFiler();
+    const r = applyFoundation({ target: 'gates', root: dir, standards: [wider], filer });
+    assert.equal(r.exit, EXIT.DRIFT);
+    assert.ok(r.drift.some((d) => d.target === 'foundations-filed'));
+    assert.equal(managed(read(dir, 'AGENTS.md'), 'foundations-filed'), managed(edited, 'foundations-filed'), 'ledger untouched');
+    assert.deepEqual(filer.items, []);
+    assert.deepEqual(r.wouldFile, ['test-gates/G4']);
+    assert.equal(applyFoundation({ target: 'gates', root: dir, standards: [wider], check: true }).exit, EXIT.DRIFT);
+    const forced = applyFoundation({ target: 'gates', root: dir, standards: [wider], filer, force: true });
+    assert.equal(forced.exit, EXIT.OK);
+    assert.ok(!read(dir, 'AGENTS.md').includes('my own note'), '--force rewrites the ledger');
+    assert.deepEqual(filer.items.map((i) => i.gate), ['G4']);
+  });
+  test('595965cc T49 AC6: a ledger write that fails after filing throws an error naming every uid it could not record', () => {
+    const dir = scaffold();
+    let first = true;
+    const sabotage = (item) => {
+      if (first) { first = false; fs.rmSync(path.join(dir, 'AGENTS.md')); fs.mkdirSync(path.join(dir, 'AGENTS.md')); }
+      return `uid-${item.gate}`;
+    };
+    let err;
+    try { applyFoundation({ target: 'gates', root: dir, standards: [trimmedTesting], filer: sabotage }); } catch (e) { err = e; }
+    assert.ok(err, 'thrown, not swallowed');
+    assert.equal(err.filed.length, 2);
+    assert.match(err.message, /test-gates\/G2=uid-G2/);
+    assert.match(err.message, /test-gates\/G3=uid-G3/);
   });
 });

@@ -8,13 +8,22 @@
 //
 // usage: foundations.mjs <apply|review> <routing|gates> [--root <repo>] [--dry-run] [--force] [--no-file]
 //                        [--backlog-project <name>]
-// exit:  0 applied/clean, 3 drift (a managed block differs from its rendering, no --force),
+// exit:  0 applied/clean, 3 drift (a managed block, or the ledger block, differs from its rendering, no --force),
 //        4 a backlog item could not be filed, 64 usage, 65 unreadable input or malformed markers
+//
+// Filing (595965cc T49.AC6): items are filed only when the writes that record them can land. Any drift in this
+// run (the target block, roles.md, or the ledger block) means nothing is filed; the items are reported as
+// wouldFile and the next clean run files them. All writes that need no uid happen first, the ledger last, so a
+// failed write cannot leave filed items without a ledger; a ledger write that fails after filing throws an
+// error naming every uid it could not record. The ledger block is never overwritten without --force.
+//
+// Gate keys: gates are keyed `<gateSet>/<id>` everywhere (ledger, command table rows that name a gateSet).
+// A command-table row without a gateSet binds the bare id only while no other standard declares that id.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { upsertBlock, unifiedDiff, MarkerError } from './marker-engine.mjs';
-import { parseRoles, ownership, resolveRole, declaresUnbound, ledgerRows, loadAgents, loadRegistry, trace, commandedGateIds } from './lib.mjs';
+import { upsertBlock, inspectBlock, unifiedDiff, MarkerError } from './marker-engine.mjs';
+import { parseRoles, ownership, resolveRole, declaresUnbound, ledgerRows, loadAgents, loadRegistry, trace, commandedGateIds, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
 import { backlogFiler, boundGates } from './apply-testing.mjs';
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -52,11 +61,15 @@ export function rosterFor(root) {
   return fs.existsSync(dir) ? loadAgents(dir) : [];
 }
 
-/** A gate has a mechanism when the repository's command table binds it to a command, or the testing binding names it. */
-export function mechanismFor({ standard, gate, commanded, testingBound }) {
+/**
+ * A gate has a mechanism when the repository's command table binds it to a command (keyed by the standard's
+ * gate set), or the standard's own binding document names it (`bound`, read from the standard's registry
+ * `binding` file; every standard is treated alike). `shared` is the set of gate ids declared by more than one set.
+ */
+export function mechanismFor({ standard, gate, commanded, bound = new Set(), shared = new Set() }) {
   if (gate.mechanism !== 'mechanical') return false;
-  if (commanded.has(gate.id)) return true;
-  return standard.id === 'testing' && testingBound.has(gate.id);
+  if (isCommanded(commanded, standard.gateSet, gate.id, shared)) return true;
+  return bound.has(gate.id);
 }
 
 /** Routing block and the role holders behind it. Standards that declare routing: own are skipped and reported. */
@@ -140,9 +153,9 @@ export function composeGates({ standards, bound }) {
   const byStage = new Map(STAGES.map((st) => [st, []]));
   for (const s of standards) {
     if (s.own.gates) { skipped.push(`${s.id}: declares gates: own; apply gates skips it`); continue; }
-    for (const g of s.decl.gates ?? []) {
+    for (const g of gatesOf(s.decl)) {
       const stages = [].concat(g.stage);
-      const id = `${s.gateSet}/${g.id}`;
+      const id = gateKey(s.gateSet, g.id);
       registry.push([s.gateSet, g.id, g.mechanism, stages.join(', '), bound(s, g) ? 'command' : 'obligation', g.threshold]);
       for (const st of stages) if (byStage.has(st)) byStage.get(st).push(id);
     }
@@ -171,11 +184,14 @@ export function applyFoundation({ target, root, standards = loadStandards(), age
   if (!FOUNDATIONS.includes(target)) throw inputError(`unknown foundation "${target}"; expected routing or gates`);
   const readOnly = dryRun || check;
   const commanded = commandedGateIds(root);
-  const testing = standards.find((s) => s.id === 'testing');
-  const bindingAbs = testing?.binding ? path.join(root, testing.binding) : null;
-  const bindingText = bindingAbs ? readIfExists(bindingAbs) ?? '' : '';
-  const testingBound = bindingText ? boundGates(bindingText) : new Set();
-  const testingLedger = bindingText ? ledgerRows(bindingText, 'testing-mechanisms') : new Map();
+  // Each standard's binding document (registry `binding`) names the gates it already mechanises and the
+  // mechanisms it already filed (`<id>-mechanisms` ledger). No standard is special-cased.
+  const bindings = new Map(standards.map((s) => {
+    const text = s.binding ? readIfExists(path.join(root, s.binding)) ?? '' : '';
+    return [s.id, { bound: text ? boundGates(text, s.id) : new Set(), ledger: text ? ledgerRows(text, `${s.id}-mechanisms`) : new Map() }];
+  }));
+  const shared = sharedGateIds(standards.filter((s) => !s.own.gates));
+  const hasMechanism = (s, gate) => mechanismFor({ standard: s, gate, commanded, bound: bindings.get(s.id).bound, shared });
   const result = { target, blocks: [], skipped: [], unbound: [], boundNoCoverage: [], level: 'full', filed: [], failed: [], wouldFile: [], drift: [], warnings: [], diff: '', wrote: [], exit: EXIT.OK };
   const files = new Map();
   const agentsAbs = path.join(root, AGENTS_REL);
@@ -183,6 +199,17 @@ export function applyFoundation({ target, root, standards = loadStandards(), age
     const entry = files.get(abs) ?? { rel, before: readIfExists(abs) };
     entry.after = mutate(entry.after ?? entry.before ?? '');
     files.set(abs, entry);
+  };
+  const flush = () => {
+    for (const [abs, e] of files) {
+      if (e.after === e.before) continue;
+      result.diff += unifiedDiff(e.rel, e.before ?? '', e.after);
+      if (readOnly) continue;
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, e.after);
+      result.wrote.push(e.rel);
+      e.before = e.after;
+    }
   };
   const block = (target2, body) => stage(agentsAbs, AGENTS_REL, (text) => {
     const r = upsertBlock(text, target2, body, { force });
@@ -228,24 +255,39 @@ export function applyFoundation({ target, root, standards = loadStandards(), age
       todo.push({ key: 'routing/roster-guard', title: 'workspace-standards routing: build the roster guard', body: `${ROSTER_GUARD_REL} is absent, so the task-to-agent routing table in ${AGENTS_REL} is not checked against the installed roster. Threshold: every agent name the table routes to resolves to an installed agent.` });
     }
   } else {
-    const g = composeGates({ standards, bound: (s, gate) => mechanismFor({ standard: s, gate, commanded, testingBound }) });
+    const g = composeGates({ standards, bound: hasMechanism });
     result.skipped.push(...g.skipped.map((s) => `gates: ${s}`));
     block('gates', g.body);
     for (const s of standards) {
       if (s.own.gates) continue;
-      for (const gate of s.decl.gates ?? []) {
+      for (const gate of gatesOf(s.decl)) {
         if (gate.mechanism !== 'mechanical') continue;
-        if (mechanismFor({ standard: s, gate, commanded, testingBound })) continue;
-        const key = `${s.gateSet}/${gate.id}`;
+        if (hasMechanism(s, gate)) continue;
+        const key = gateKey(s.gateSet, gate.id);
         if (filed.has(key)) continue;
-        if (s.id === 'testing' && testingLedger.has(gate.id)) continue; // apply testing filed it already
+        if (bindings.get(s.id).ledger.has(gate.id)) continue; // the standard's own apply filed it already
         todo.push({ key, gate: gate.id, title: `workspace-standards gates: build the ${key} mechanism`, body: `Gate ${key} is mechanical and has no command in ${GATE_TABLE_REL}. Threshold: ${gate.threshold}. Stages: ${[].concat(gate.stage).join(', ')}.\n\nFiled by apply gates instead of writing code.\n\nCitations: [workspace-standards apply gates, scripts/foundations.mjs, ${s.id} standard.json]` });
       }
     }
   }
 
+  // The ledger block is managed: if it was hand-edited, the new rows could not be recorded.
+  const stagedAgents = files.get(agentsAbs)?.after ?? agentsText;
+  if (inspectBlock(stagedAgents, LEDGER_TARGET).found) {
+    const chk = upsertBlock(stagedAgents, LEDGER_TARGET, renderLedger(filed));
+    if (chk.action === 'drift' && !force) {
+      result.blocks.push({ file: AGENTS_REL, target: LEDGER_TARGET, action: 'drift' });
+      result.drift.push({ file: AGENTS_REL, target: LEDGER_TARGET, diff: unifiedDiff(`${AGENTS_REL}#${LEDGER_TARGET}`, chk.current, chk.rendered) });
+    }
+  }
+  const ledgerDrifted = result.drift.some((d) => d.target === LEDGER_TARGET);
+
+  if (!readOnly) flush(); // every write that needs no uid lands before anything is filed
   if (readOnly || noFile) result.wouldFile = todo.map((t) => t.key);
-  else if (todo.length > 0) {
+  else if (result.drift.length > 0) {
+    result.wouldFile = todo.map((t) => t.key);
+    if (todo.length > 0) result.warnings.push(`drift in ${[...new Set(result.drift.map((d) => `${d.file}#${d.target}`))].join(', ')}: nothing was filed because the writes that record the items were refused (resolve the drift or pass --force)`);
+  } else if (todo.length > 0) {
     if (!filer) throw new Error('applyFoundation: a filer is required to file mechanism items (pass noFile to skip)');
     for (const t of todo) {
       try {
@@ -258,16 +300,15 @@ export function applyFoundation({ target, root, standards = loadStandards(), age
       }
     }
   }
-  if (filed.size > 0) stage(agentsAbs, AGENTS_REL, (text) => upsertBlock(text, LEDGER_TARGET, renderLedger(filed), { force: true }).text);
+  // Safe without force: the block was absent or equal to its own rendering (checked above), or --force was given.
+  if (filed.size > 0 && !ledgerDrifted) stage(agentsAbs, AGENTS_REL, (text) => upsertBlock(text, LEDGER_TARGET, renderLedger(filed), { force: true }).text);
 
-  for (const [abs, e] of files) {
-    if (e.after === e.before) continue;
-    result.diff += unifiedDiff(e.rel, e.before ?? '', e.after);
-    if (!readOnly) {
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      fs.writeFileSync(abs, e.after);
-      result.wrote.push(e.rel);
-    }
+  try {
+    flush();
+  } catch (err) {
+    trace('apply-foundation:ledger-write', err);
+    const orphans = result.filed.map((f) => `${f.key}=${f.uid}`).join(', ');
+    throw Object.assign(new Error(orphans ? `${err.message}; filed but not recorded in ${AGENTS_REL}: ${orphans}` : err.message), { code: err.code, filed: result.filed });
   }
   result.exit = result.drift.length > 0 ? EXIT.DRIFT : result.failed.length > 0 ? EXIT.FILING : EXIT.OK;
   return result;
