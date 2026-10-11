@@ -17,4 +17,4 @@ Findings `{ id, severity, evidence }` and the level.
 ## Record
 The findings with command lines and exit statuses, written to the review output location the repository names.
 
-Status: the generic check entry points are built by later tasks; until then do steps 1 to 4 by reading the binding table and running each referenced command.
+Status: built (595965cc T49, T62). Steps 1 to 4 run as `node <skill>/engine/cli.mjs check <completeness|liveness|reachability|teeth|all> [--root <repo>] [--table <file>]`; step 6 runs as `node <skill>/scripts/foundations.mjs review gates`.

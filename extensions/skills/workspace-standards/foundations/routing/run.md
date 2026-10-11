@@ -19,4 +19,4 @@ The holder (or `unbound`) with the closeness evidence, for the dispatch telemetr
 ## Record
 The returned object, appended to the dispatch telemetry row for the change.
 
-Status: the dispatcher's resolution step that reads these declarations is built by a later task; until then apply steps 1 to 6 by hand and state that in the Record.
+Status: built (595965cc T47, T49). The dispatcher's Step 2 resolves roles with `resolveRole` in `scripts/lib.mjs`; `node <skill>/scripts/foundations.mjs review routing` reports drift and unbound roles; the roster guard is `tools/test-roster-guard.mjs` in the adopting repository.

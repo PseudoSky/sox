@@ -1,6 +1,6 @@
 ## Unreleased
 
-- **Closeness-0 bindings are named in telemetry (595965cc T47).** Step 2's telemetry bullet records a role bound with no declared obligation coverage as `role=<role>:<agent>` with covered ids `none` and the flag `no-declared-coverage`. Version is left to the Changesets release flow.
+- **Closeness-0 bindings are named in telemetry (595965cc T47).** Step 2's telemetry bullet records a role bound with no declared obligation coverage as `role=<role>:<agent>` with covered ids `none` and the flag `bound-no-coverage`. Version is left to the Changesets release flow.
 
 ## 2.1.0
 

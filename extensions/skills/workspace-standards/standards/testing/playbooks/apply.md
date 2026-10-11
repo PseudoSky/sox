@@ -20,4 +20,4 @@ The changed blocks, the IMPLEMENTATION skeleton path, the list of filed mechanis
 ## Record
 The diff summary (blocks written, files created, items filed) in the change description; a second run must produce no diff.
 
-Status: the managed-block writer and the routing command are built by later tasks; until they exist, perform steps 2 to 5 by hand against the same template and state that in the Record.
+Status: built (39a21823 T48). Steps 2 to 6 run as `node <skill>/scripts/apply-testing.mjs --root <repo>` (add `--dry-run` to preview); role resolution is built (595965cc T47, `resolveRole` in `scripts/lib.mjs`).

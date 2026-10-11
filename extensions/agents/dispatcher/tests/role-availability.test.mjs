@@ -193,6 +193,12 @@ test(AC(3, 'unbound roles record review debt with owner and expiry at Light and 
     assert.match(p, /\bexpiry\b/, k);
     assert.match(p, /blocks? at Deep|Deep, an unbound role/, k);
   }
+  for (const k of ['direct', 'plan']) {
+    const p = prose(k);
+    assert.match(p, /role's own `no-holder` entry/, `${k}: defers to the per-role no-holder entry`);
+    assert.match(p, /`implementer` role[^.]*waits for a specialist[^.]*no review debt/, `${k}: implementer waits, no debt`);
+    assert.doesNotMatch(p, /An? unbound role is review debt/i, `${k}: blanket sentence is gone`);
+  }
   assert.match(prose('dispatcher'), /At Light and Standard/);
 });
 

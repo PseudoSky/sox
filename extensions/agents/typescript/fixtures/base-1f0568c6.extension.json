@@ -1,0 +1,214 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "typescript",
+  "version": "0.1.5",
+  "type": "agent",
+  "title": "typescript",
+  "description": "Use this when you need a senior TypeScript developer for advanced type system patterns, complex generics, type-level programming, and end-to-end type safety across full-stack applications (TS 5.0+). Delegates broad discovery to `researcher` and uses GitNexus-first codebase awareness before changing any exported type. Differentiate from `backend`: this agent owns type-system depth and correctness; `backend` owns service/API architecture broadly.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "typescript",
+    "agent",
+    "declarative"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "typescript.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode",
+      "agent-mcp"
+    ],
+    "source": "file:///Users/nix/.config/opencode/agents/typescript.md"
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "typescript",
+    "description": "Senior TypeScript developer. Advanced type system patterns, complex generics, type-level programming, and end-to-end type safety across full-stack applications (TS 5.0+). Delegates broad discovery to `researcher` and uses GitNexus-first codebase awareness before changing any exported type. Differentiate from `backend`: this agent owns type-system depth and correctness; `backend` owns service/API architecture broadly.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.2,
+    "tools": [
+      "read",
+      "edit",
+      "glob",
+      "grep",
+      "bash",
+      "webfetch",
+      "task",
+      "todowrite",
+      "question",
+      "skill",
+      {
+        "logical": "memory",
+        "server": "memory-server"
+      },
+      {
+        "logical": "code-intel",
+        "server": "gitnexus"
+      }
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "bash": {
+        "*": "allow",
+        "npx nx *": "allow",
+        "npx gitnexus *": "allow",
+        "git status*": "allow",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git stash*": "deny",
+        "git add -A*": "deny",
+        "git add .": "deny",
+        "git add --all*": "deny",
+        "git reset --hard*": "deny",
+        "git push --force*": "deny",
+        "git push *--no-verify*": "deny",
+        "git clean *-f*": "deny",
+        "rm -rf *": "deny",
+        "git checkout -- *": "ask",
+        "*dot/secrets*": "deny"
+      },
+      "webfetch": "allow",
+      "websearch": "deny",
+      "task": "allow",
+      "todowrite": "allow",
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow",
+      "gitnexus_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "version": "v0.1.5",
+      "model": "sonnet",
+      "tools": [
+        "Read",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Bash",
+        "WebFetch",
+        "Task",
+        "TodoWrite",
+        "AskUserQuestion",
+        "Skill",
+        "TaskCreate",
+        "TaskGet",
+        "TaskUpdate",
+        "TaskList",
+        "mcp__memory-server__*",
+        "mcp__gitnexus__*",
+        "ToolSearch"
+      ],
+      "toolMap": {
+        "memory": "memory-server",
+        "gitnexus": "gitnexus"
+      }
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.2
+    },
+    "agent-mcp": {
+      "model": "deepseek/deepseek-flash",
+      "nativeWebTools": true,
+      "toolMap": {
+        "memory": "memory-server",
+        "code-intel": "gitnexus",
+        "search": "search",
+        "backlog": "backlog"
+      },
+      "mcpServers": {
+        "search": {
+          "transport": "stdio",
+          "command": "node",
+          "args": [
+            "${HOME}/dev/ai/scratch/agent-browser/server.mjs",
+            "--transport",
+            "stdio",
+            "--ns",
+            "agent",
+            "--drop-file-segment"
+          ]
+        },
+        "memory-server": {
+          "transport": "sse",
+          "url": "http://localhost:3099/sse",
+          "timeoutMs": 40000
+        },
+        "gitnexus": {
+          "transport": "stdio",
+          "command": "npx",
+          "args": [
+            "-y",
+            "gitnexus",
+            "mcp"
+          ]
+        },
+        "backlog": {
+          "transport": "stdio",
+          "command": "npx",
+          "args": [
+            "-y",
+            "--prefer-online=false",
+            "@adhd/backlog@latest",
+            "serve",
+            "--transport",
+            "mcp"
+          ],
+          "timeoutMs": 45000
+        }
+      },
+      "nativeTooling": {
+        "shell": {
+          "allowCommands": [
+            "basename",
+            "cat",
+            "cp",
+            "diff",
+            "dirname",
+            "gx",
+            "head",
+            "ls",
+            "mkdir",
+            "mv",
+            "npx",
+            "nx",
+            "pnpm",
+            "rg",
+            "sort",
+            "sox-git-impl",
+            "sox-git-ro",
+            "sox-rm",
+            "stat",
+            "tail",
+            "tee",
+            "touch",
+            "uniq",
+            "wc",
+            "which"
+          ],
+          "timeoutMs": 900000
+        }
+      }
+    }
+  }
+}

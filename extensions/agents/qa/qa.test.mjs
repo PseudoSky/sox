@@ -76,7 +76,15 @@ test('0c91e632 AC5 confirm mode takes three inputs, declines own-session edits; 
   }
   for (let i = 1; i <= 5; i++) assert.ok(declared.includes(`roles-covered:AU.${i}`));
   assert.equal(rate('variant', 'AC5'), 1);
-  assert.equal(JSON.stringify(JSON.parse(rd('../../../extensions/agents/qa/extension.json')).capabilities), JSON.stringify(manifest.capabilities));
+  // The declared auditor (AU.*) set must equal the auditor obligations roles.md defines (every `- AU.n:` line); the loop above
+  // already proves every declared id of any role (e.g. SO.*) is defined in roles.md.
+  const defined = [...roles.matchAll(/^- (AU\.\d+):/gm)].map((m) => m[1]).sort();
+  const declaredIds = (m) => m.capabilities.filter((c) => c.startsWith('roles-covered:')).map((c) => c.split(':')[1]).filter((id) => id.startsWith('AU.')).sort();
+  assert.ok(defined.length >= 5);
+  assert.deepEqual(declaredIds(manifest), defined);
+  // negative control: a manifest dropping one obligation, or declaring an undefined one, is detected
+  assert.notDeepEqual(declaredIds({ capabilities: declared.slice(1) }), defined);
+  assert.notDeepEqual(declaredIds({ capabilities: [...declared, 'roles-covered:AU.99'] }), defined);
 });
 
 test('0c91e632 AC6 dispute adjudicated once, outcome recorded for the risk owner', () => {

@@ -51,7 +51,8 @@ Writes only the testing-specific repository side: between `workspace-standards:t
 - **Drift:** a managed block that differs from its rendering is reported (exit 3, diff on stderr) and not overwritten without `--force`. `--check` is the read-only form `review testing` runs.
 - **Mechanisms it cannot write:** each mechanical gate with no row in the binding table gets one backlog item through `adhd-backlog backlog create`; the item id is recorded in a `workspace-standards:testing-mechanisms` ledger block in the skeleton, so a re-run files nothing twice. `--no-file` skips filing.
 - **`--dry-run`** prints the diff and writes and files nothing. A second run on an applied repository changes nothing.
-- Exit: 0 clean, 3 drift, 4 a backlog item could not be filed, 64 usage, 65 unreadable input or malformed markers.
+- **`test-routing` capability row:** it is written as its own table between the testing markers, never merged into an existing Capabilities table. When `AGENTS.md` already has a Capabilities table outside the block, that table is left byte-identical and the run prints a warning so the row can be merged by hand.
+- Exit: 0 clean, 3 drift, 4 a backlog item could not be filed, 5 (`--check` only) the standard was never applied (a managed block, the roles file or the IMPLEMENTATION skeleton is absent; distinct from drift), 64 usage, 65 unreadable input or malformed markers.
 
 `scripts/marker-engine.mjs` is the reusable block writer (`upsertBlock(text, target, body, { force })`, parameterized by target name): replace between one pair, create the pair if absent, report drift. The decision to build it rather than add `markdown-magic` is in `decisions/reuse-decision.md`.
 

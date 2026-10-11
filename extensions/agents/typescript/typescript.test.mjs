@@ -1,10 +1,9 @@
 // Tests for the typescript agent extension, 595965cc T13 (change-scoped efficacy standard).
-// Pure file reads, git show of the base commit, and roster parsing: spawns no host and no model.
+// Pure file reads (including the committed pre-change snapshot under fixtures/) and roster parsing: spawns no host and no model.
 // Run: node --test extensions/agents/typescript/typescript.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { parseRoles, validateRoles, obligationIds, coveredIds } from '../../skills/workspace-standards/scripts/lib.mjs';
@@ -13,10 +12,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const rd = (p) => readFileSync(join(here, p), 'utf8');
 const prose = rd('typescript.md');
 const manifest = JSON.parse(rd('extension.json'));
-const BASE = '1f0568c6'; // plan branch tip before T13: the authentic pre-change shape, used as the negative control
-const base = (p) => execFileSync('git', ['show', `${BASE}:extensions/agents/typescript/${p}`], { cwd: here, encoding: 'utf8' });
-const baseProse = base('typescript.md');
-const baseManifest = JSON.parse(base('extension.json'));
+// Committed snapshot of the plan branch tip before T13 (commit 1f0568c6): the authentic pre-change shape, used as the
+// negative control. A fixture, not `git show`, so the test holds in shallow clones, after squashes, and in installed copies.
+const baseProse = rd('fixtures/base-1f0568c6.typescript.md.txt');
+const baseManifest = JSON.parse(rd('fixtures/base-1f0568c6.extension.json'));
 const testingSection = (t) => (t.match(/^## Testing standard\n([\s\S]*?)(?=^## )/m) ?? [null, ''])[1];
 const CARD = 'extensions/skills/workspace-standards/standards/testing/cards/role/implementer-light.md';
 const rolesPath = join(here, '..', '..', 'skills', 'workspace-standards', 'standards', 'testing', 'roles.md');
@@ -49,6 +48,7 @@ test('595965cc T13 AC3 body states tier S, header duties by card reference, and 
 });
 
 test('595965cc T13 AC4 description keeps its base-commit scope byte-identical (live A/B half is NOT MET, see report)', () => {
+  assert.ok(baseManifest.agent.description.length > 100, 'the committed base snapshot carries the real description');
   assert.equal(manifest.agent.description, baseManifest.agent.description);
   assert.equal(manifest.description, baseManifest.description);
   const broadened = baseManifest.agent.description + ' Also implements features and refactors.';

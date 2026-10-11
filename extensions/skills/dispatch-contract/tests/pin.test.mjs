@@ -62,7 +62,14 @@ test('5416b29f AC6: the citation duty attaches to whoever writes a test; the tes
   assert.match(brief, /## Test standard \(test-writing roles only\)/);
 });
 
-test('5416b29f AC1-AC6: this file cites every AC', () => {
+test('5416b29f AC1-AC6: every AC is cited by its own test title', () => {
   const self = readFileSync(fileURLToPath(import.meta.url), 'utf8');
-  for (let n = 1; n <= 6; n++) assert.match(self, new RegExp(`5416b29f AC[^']*\\b${n}\\b|5416b29f AC${n}`));
+  // Titles are parsed from the source: `test('<ticket> AC<n>: ...'`. A range title such as "AC1-AC6" cites no single AC.
+  const cited = [...self.matchAll(/^test\('5416b29f AC(\d+)(?=[:\s])/gm)].map((m) => Number(m[1]));
+  for (let n = 1; n <= 6; n++) {
+    assert.equal(cited.filter((c) => c === n).length, 1, `AC${n} must be cited by exactly one test title (cited: ${cited.join(',')})`);
+  }
+  // negative control: the same parse over a file whose only citation is a range title cites nothing
+  const rangeOnly = "test('5416b29f AC1-AC6: this file cites every AC', () => {});";
+  assert.deepEqual([...rangeOnly.matchAll(/^test\('5416b29f AC(\d+)(?=[:\s])/gm)], []);
 });
