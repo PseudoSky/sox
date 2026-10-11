@@ -97,7 +97,7 @@
   },
   "render": {
     "claude": {
-      "model": "opus",
+      "model": "sonnet",
       "version": "v2.1.0",
       "tools": [
         "Read",
