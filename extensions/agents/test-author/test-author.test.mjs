@@ -106,14 +106,17 @@ test('595965cc T22.AC4 eval/lib.mjs imports the shared judge and carries no seco
   assert.doesNotMatch(lib, /does not provide an export/);
 });
 
-test('595965cc T22.AC5 eval runner refuses to run without SOX_ALLOW_LIVE_EVAL=1: the guard exits 64 before the first spawn and the job list', () => {
+test('595965cc T22.AC5 eval runner carries an unconditional HARD STOP: process.exit(64) at top level, before the first spawn and the job list, with no bypass', () => {
   const run = rd('eval/run.mjs');
-  const guard = run.indexOf("process.env.SOX_ALLOW_LIVE_EVAL !== '1'");
-  assert.ok(guard >= 0, 'guard present');
-  assert.ok(run.slice(guard, guard + 300).includes('process.exit(64)'), 'guard exits 64');
-  assert.ok(run.search(/spawn\(/) > guard, 'guard precedes the first spawn');
-  assert.ok(run.indexOf('const jobs') > guard, 'guard precedes job construction');
-  assert.doesNotMatch(run, /process\.abort\(/);
+  const stop = run.indexOf('// HARD STOP');
+  const exit = run.indexOf('process.exit(64);');
+  assert.ok(stop >= 0, 'HARD STOP block present');
+  assert.ok(exit > stop, 'process.exit(64) follows the HARD STOP comment');
+  assert.doesNotMatch(run.slice(stop, exit), /\bif\b/, 'the stop is not inside a conditional');
+  assert.match(run, /^process\.exit\(64\);$/m, 'the exit is a top-level statement');
+  assert.ok(run.search(/spawn\(/) > exit, 'stop precedes the first spawn');
+  assert.ok(run.indexOf('const jobs') > exit, 'stop precedes job construction');
+  assert.doesNotMatch(run, /process\.env\.(?!TA_EVAL_MODEL\b)/, 'the stop reads no environment bypass');
 });
 
 test('595965cc T22.AC5 eval headers cite a0897ba2 and 595965cc T22', () => {

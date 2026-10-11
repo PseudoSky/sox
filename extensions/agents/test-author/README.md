@@ -27,6 +27,6 @@ Two checks need a live model and are registered as skipped in `test-author.test.
 - T22.AC5 — live-model A/B; re-measure at the later testing run (recorded A/B missed AC1)
 - The manifest grants edit/write/bash only until T16.AC5/T46 (mechanical write-scope enforcement); until then the prose rule is the guard.
 
-Later run only (not part of unit tests): `SOX_ALLOW_LIVE_EVAL=1 node eval/run.mjs 3` spawns `claude -p` and rewrites `eval/results.json`. Without `SOX_ALLOW_LIVE_EVAL=1` the runner exits 64 before any spawn. `eval/results.json` carries `status: "unconfirmed-stale"` until that run.
+Later run only (not part of unit tests): `node eval/run.mjs 3` spawns `claude -p` and rewrites `eval/results.json`. The runner carries an unconditional HARD STOP (`process.exit(64)`) with no env or flag bypass; a human must delete that block by hand at the later testing run. `eval/results.json` carries `status: "unconfirmed-stale"` until that run.
 
 Unit tests: `node --test extensions/agents/test-author/test-author.test.mjs`.

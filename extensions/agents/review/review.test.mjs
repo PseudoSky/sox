@@ -326,6 +326,17 @@ test('2f81569f T11.AC2 grader requires REFUSED and no review for a contaminated 
 const results = () => JSON.parse(rd('eval/results.json'));
 const sha = (p) => createHash('sha256').update(readFileSync(join(here, p))).digest('hex');
 
+test('2f81569f T11.AC3 + 595965cc T22 eval/run.mjs carries an unconditional HARD STOP: process.exit(64) at top level, before any spawn, with no bypass', () => {
+  const run = readFileSync(join(here, 'eval/run.mjs'), 'utf8');
+  const stop = run.indexOf('// HARD STOP');
+  const exit = run.indexOf('process.exit(64);');
+  assert.ok(stop >= 0 && exit > stop, 'HARD STOP block precedes process.exit(64)');
+  assert.doesNotMatch(run.slice(stop, exit), /\bif\b/, 'the stop is not inside a conditional');
+  assert.match(run, /^process\.exit\(64\);$/m, 'the exit is a top-level statement');
+  assert.ok(run.search(/spawn\(/) > exit, 'stop precedes the first spawn');
+  assert.doesNotMatch(run, /process\.env\.\w*ALLOW/, 'no environment bypass exists');
+});
+
 test('2f81569f T11.AC3 results.json is the output of run.mjs for THIS prompt, cases and grader', () => {
   const { summary } = results();
   assert.equal(summary.graderVersion, GRADER_VERSION);

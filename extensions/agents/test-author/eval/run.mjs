@@ -1,5 +1,5 @@
 // Golden-set A/B driver (a0897ba2 AC1/AC4/AC5; 595965cc T22). Spawns `claude -p` with tools in a throwaway sandbox; code-based grading, no LLM judge.
-// usage: SOX_ALLOW_LIVE_EVAL=1 [TA_EVAL_MODEL=sonnet] node eval/run.mjs [reps=3]  -> writes eval/results.json (the only writer)
+// usage: [TA_EVAL_MODEL=sonnet] node eval/run.mjs [reps=3]  -> writes eval/results.json (the only writer); blocked by the HARD STOP below
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,12 +7,11 @@ import { AUTHORING, BASELINE_AUTHORING, BASELINE_SYSTEM, SCOPE_CASES } from './c
 import { gradeAuthoring, gradeScope, here, sandbox, sha, STUB_SHA } from './lib.mjs';
 import { MUTANTS } from './mutants.mjs';
 
-// 595965cc T22 (H1): live-model kill switch. This eval spawns `claude -p` and rewrites results.json,
-// and live-model runs are barred until the later testing run. Set SOX_ALLOW_LIVE_EVAL=1 only with explicit user approval.
-if (process.env.SOX_ALLOW_LIVE_EVAL !== '1') {
-  console.error('This eval spawns `claude -p`; live-model runs are barred until the later testing run. Set SOX_ALLOW_LIVE_EVAL=1 only with explicit user approval.');
-  process.exit(64);
-}
+// HARD STOP (owner directive, 595965cc T22): unconditional. No env var, no argv, no condition.
+// This eval spawns `claude -p`; a run of it exhausted the owner's whole usage quota, and live-model runs are barred.
+// Only a human editing this file by hand, with explicit owner approval at the later testing run, may delete this block.
+console.error('This eval spawns `claude -p`; a run of it exhausted the owner\'s whole usage quota. Live-model runs are barred. Remove this HARD STOP by hand only with explicit owner approval at the later testing run.');
+process.exit(64);
 
 const PROMPT = join(here, '..', 'test-author.md');
 const VARIANT = readFileSync(PROMPT, 'utf8');
