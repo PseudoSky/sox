@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.0
+
+- Step 4 binds each item's roles closest-eligible by `roles-covered` before its brief (595965cc T47); an unbound role is review debt or a Deep block. Matches dispatcher 2.1.0.
+
 ## 1.6.0
 
 - Step 4 executes inside the plan worktree; a blocker at `review` unblocks its dependents and resolution waits for the release. Matches dispatcher 2.0.0.

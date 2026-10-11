@@ -1,3 +1,7 @@
+## 2.1.0
+
+- **Role holders are bound closest-eligible (595965cc T47).** Playbook pointers to dispatcher Step 2 (route, binding by `roles-covered`, review debt or Deep block for an unbound role). No other rule prose changed.
+
 ## 2.0.0
 
 - Steps 10-11 hand a verified bucket to the dispatcher's delivery lifecycle (Step 5) and release (Step 7) instead of merging on its own gates with a post-merge review; routing adds `qa` and limits `git-manager` to conflicts. Matches dispatcher 2.0.0.

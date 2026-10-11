@@ -37,7 +37,7 @@ wait.
    edge. The dispatcher never writes the graph directly (rule 15). Done-state: the ready view
    returns the first dispatchable items.
 4. **Execute from the ready view.** Dispatch the ready items through the normal `dispatch-contract`
-   brief, inside the plan worktree (dispatcher Step 5). An item whose blockers have reached `review`
+   brief, inside the plan worktree (dispatcher Step 5). Bind each item's roles first: the closest eligible agent by `roles-covered` (free-text descriptions never scored); an unbound role is review debt with an owner and expiry, or blocks at Deep (dispatcher Step 2). An item whose blockers have reached `review`
    (merged onto the plan branch) is dispatchable — resolution waits for the release. Re-read the ready
    view. Repeat until nothing is ready, then run the rest of the lifecycle; the plan is done when it
    is released and confirmed live, or blocked.

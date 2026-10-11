@@ -1,4 +1,6 @@
-## Unreleased
+## 2.1.0
+
+- **Role availability (595965cc T47).** Step 2 binds each role to the closest eligible agent by `roles-covered` (MAP §1E.4, D17, D23; `workspace-standards` `resolveRole`). An unbound role is review debt with an owner and expiry at Light and Standard, and blocks at Deep. The telemetry row names the binding (`role=<role>:<agent>` or `role=<role>:unbound`).
 
 - Reference the new `dispatch-worktrees` playbook (a78f60af): pointer in rule 22 and the Step 7 teardown, a playbook-list entry, and a `dependencies` entry. Pointers only; no rule prose changed.
 

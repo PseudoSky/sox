@@ -1,0 +1,181 @@
+/**
+ * 595965cc T47 — dispatcher role availability (MAP §1E.4, D17, D23).
+ *
+ * Arms:
+ *   - text: dispatcher.md, dispatch-direct and dispatch-plan carry the AC1–AC3 rule wording.
+ *   - behaviour: the REAL workspace-standards resolveRole, parseRoles (roles.md) and loadAgents, driven
+ *     against a seeded temp roster (every installed agent's real manifest except `review`).
+ *
+ * Not real, stated here so nobody counts it as proof of more than it is:
+ *   - bind() below transcribes dispatcher.md Step 2 (distinct-from filtering, debt, Deep block). The
+ *     dispatcher prose is executed by a model; this test proves the deterministic core it relies on, not
+ *     the model's execution of it. resolveRole does not take distinct-from; the caller applies it.
+ *   - `qa` is SEEDED in the roster (search tool and SR.1–SR.4 coverage added). The real qa manifest has no
+ *     `search` tool and covers only AU.* and SO.*, so under its real manifest a fresh qa is not eligible for
+ *     static-reviewer. That gap is reported, not fixed here.
+ *
+ * Run: node --test tests/*.test.mjs   (from extensions/agents/dispatcher)
+ */
+import { test, after } from 'node:test';
+import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { loadAgents, parseRoles, readText, resolveRole } from '../../../skills/workspace-standards/scripts/lib.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO = path.resolve(HERE, '../../../..');
+const AGENTS = path.join(REPO, 'extensions/agents');
+const { roles } = parseRoles(readText(path.join(REPO, 'extensions/skills/workspace-standards/standards/testing/roles.md')));
+const role = (name) => {
+  const r = roles.find((x) => x.name === name);
+  assert.ok(r, `roles.md defines role ${name}`);
+  return r;
+};
+const EXPIRY = '2026-12-31';
+const PROSE = {
+  dispatcher: path.join(REPO, 'extensions/agents/dispatcher/dispatcher.md'),
+  direct: path.join(REPO, 'extensions/skills/dispatch-direct/SKILL.md'),
+  plan: path.join(REPO, 'extensions/skills/dispatch-plan/SKILL.md'),
+};
+const prose = (k) => fs.readFileSync(PROSE[k], 'utf8').replace(/\s+/g, ' ');
+
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 't47-roster-'));
+after(() => fs.rmSync(TMP, { recursive: true, force: true }));
+let rosterN = 0;
+
+/** Writes manifests into a fresh roster dir under TMP; returns loadAgents() output. */
+function writeRoster(manifests) {
+  const dir = path.join(TMP, `roster-${rosterN++}`);
+  for (const [id, m] of Object.entries(manifests)) {
+    fs.mkdirSync(path.join(dir, id), { recursive: true });
+    fs.writeFileSync(path.join(dir, id, 'extension.json'), JSON.stringify(m));
+  }
+  return loadAgents(dir);
+}
+
+/** SEEDED qa (fixture, not the real manifest): adds `grep` (search) and SR.1–SR.4 coverage. */
+function seededQa(m) {
+  return {
+    ...m,
+    seeded: 'T47 fixture: real qa has no search tool and covers no SR obligation',
+    agent: { ...m.agent, tools: [...m.agent.tools, 'grep'] },
+    capabilities: [...(m.capabilities ?? []), 'roles-covered:SR.1', 'roles-covered:SR.2', 'roles-covered:SR.3', 'roles-covered:SR.4'],
+  };
+}
+
+/** The installed roster with `review` removed; every other agent is its real manifest. */
+function seededRosterWithoutReview() {
+  const manifests = {};
+  for (const id of fs.readdirSync(AGENTS)) {
+    const f = path.join(AGENTS, id, 'extension.json');
+    if (id === 'review' || !fs.existsSync(f)) continue;
+    const m = JSON.parse(fs.readFileSync(f, 'utf8'));
+    manifests[id] = id === 'qa' ? seededQa(m) : m;
+  }
+  return writeRoster(manifests);
+}
+
+/**
+ * Transcription of dispatcher.md Step 2 (595965cc T47). session = the authoring session
+ * { agent, holds } — it cannot hold a role whose distinct-from list names a role it holds.
+ */
+function bind({ roleName, agents, rigor, session = null, expiry = EXPIRY }) {
+  const r = role(roleName);
+  const eligible = agents.filter(
+    (a) => !(session && a.agent === session.agent && r.distinctFrom.some((d) => session.holds.includes(d))),
+  );
+  const got = resolveRole(r, eligible);
+  if (got.holder) return { outcome: 'bound', holder: got.holder, covered: got.covered };
+  if (rigor === 'deep' && r.deepBlocks) return { outcome: 'blocked', role: r.name };
+  if (!expiry) throw new Error('review debt requires an expiry');
+  const owner = resolveRole(role('risk-owner'), eligible).holder ?? 'user';
+  return { outcome: 'debt', role: r.name, owner, expiry };
+}
+
+const AUTHORED_QA = { agent: 'qa', holds: ['test-author'] };
+const AC = (n, s) => `595965cc T47 AC${n} — ${s}`;
+
+test(AC(1, 'resolveRole binds the closest eligible agent by roles-covered; description text is never scored'), () => {
+  const agents = writeRoster({
+    wide: { id: 'wide', agent: { tools: ['read', 'grep', 'bash', 'edit'] }, capabilities: ['roles-covered:SR.1', 'roles-covered:SR.2'] },
+    narrow: {
+      id: 'narrow',
+      description: 'static review of SR.1 SR.2 SR.3 SR.4 — a static-reviewer, read-only reviewer',
+      agent: { tools: ['read', 'grep'] },
+      capabilities: ['roles-covered:SR.1'],
+    },
+    nosearch: {
+      id: 'nosearch',
+      agent: { tools: ['read', 'bash'] },
+      capabilities: ['roles-covered:SR.1', 'roles-covered:SR.2', 'roles-covered:SR.3', 'roles-covered:SR.4'],
+    },
+  });
+  const got = resolveRole(role('static-reviewer'), agents);
+  assert.equal(got.holder, 'wide');
+  assert.deepEqual(got.covered, ['SR.1', 'SR.2']);
+});
+
+test(AC(1, 'dispatcher.md, dispatch-direct and dispatch-plan carry the closest-eligible rule wording'), () => {
+  for (const k of ['dispatcher', 'direct', 'plan']) {
+    const p = prose(k);
+    assert.match(p, /closest eligible/, k);
+    assert.match(p, /roles-covered/, k);
+    assert.match(p, /[Ff]ree-text/, k);
+  }
+  const d = prose('dispatcher');
+  assert.match(d, /fewest other roles/);
+  assert.match(d, /break remaining ties/);
+});
+
+test(AC(2, 'the dispatcher telemetry row names the bound agent with covered ids, or the unbound role'), () => {
+  const d = prose('dispatcher');
+  assert.match(d, /telemetry row names `role=<role>:<agent>` with its covered ids/);
+  assert.match(d, /`role=<role>:unbound` with the debt owner and expiry, or the block/);
+});
+
+test(AC(3, 'unbound roles record review debt with owner and expiry at Light and Standard; Deep blocks'), () => {
+  for (const k of ['dispatcher', 'direct', 'plan']) {
+    const p = prose(k);
+    assert.match(p, /review debt/, k);
+    assert.match(p, /\bowner\b/, k);
+    assert.match(p, /\bexpiry\b/, k);
+    assert.match(p, /blocks? at Deep|Deep, an unbound role/, k);
+  }
+  assert.match(prose('dispatcher'), /At Light and Standard/);
+});
+
+test(AC(4, 'Light, review removed, authoring qa: static-reviewer is unbound and review debt is recorded with owner and expiry'), () => {
+  const got = bind({ roleName: 'static-reviewer', agents: seededRosterWithoutReview(), rigor: 'light', session: AUTHORED_QA });
+  assert.deepEqual(got, { outcome: 'debt', role: 'static-reviewer', owner: 'user', expiry: EXPIRY });
+});
+
+test(AC(4, 'Standard, review removed: a fresh qa dispatch is the closest eligible holder of static-reviewer'), () => {
+  const got = bind({ roleName: 'static-reviewer', agents: seededRosterWithoutReview(), rigor: 'standard' });
+  assert.equal(got.outcome, 'bound');
+  assert.equal(got.holder, 'qa');
+  assert.deepEqual([...got.covered].sort(), ['SR.1', 'SR.2', 'SR.3', 'SR.4']);
+});
+
+test(AC(4, 'Standard, review removed: a qa session that authored the tests is excluded, so the role is unbound with debt'), () => {
+  const got = bind({ roleName: 'static-reviewer', agents: seededRosterWithoutReview(), rigor: 'standard', session: AUTHORED_QA });
+  assert.equal(got.outcome, 'debt');
+  assert.notEqual(got.holder, 'qa');
+});
+
+test(AC(4, 'Deep, no eligible agent: the change is blocked and reported; a deep-blocks: no role does not block'), () => {
+  const roster = seededRosterWithoutReview();
+  assert.deepEqual(
+    bind({ roleName: 'static-reviewer', agents: roster, rigor: 'deep', session: AUTHORED_QA }),
+    { outcome: 'blocked', role: 'static-reviewer' },
+  );
+  assert.equal(bind({ roleName: 'static-reviewer', agents: roster, rigor: 'deep' }).holder, 'qa');
+  assert.equal(role('triager').deepBlocks, false);
+  assert.equal(bind({ roleName: 'triager', agents: [], rigor: 'deep' }).outcome, 'debt');
+});
+
+test(AC(5, 'tools/test-dispatcher-ac-citation.mjs still exits 0'), () => {
+  execFileSync(process.execPath, [path.join(REPO, 'tools/test-dispatcher-ac-citation.mjs')], { stdio: 'pipe' });
+});
