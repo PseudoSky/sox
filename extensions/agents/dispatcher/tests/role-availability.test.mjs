@@ -10,9 +10,9 @@
  *   - bind() below transcribes the debt and Deep-block steps of dispatcher.md Step 2. The dispatcher
  *     prose is executed by a model; this test proves the deterministic core it relies on, not the model's
  *     execution of it. Eligibility, including distinct-from, is resolveRole's own (options.session).
- *   - `qa` is SEEDED in the roster (search tool and SR.1–SR.4 coverage added). The real qa manifest has no
- *     `search` tool and covers only AU.* and SO.*, so under its real manifest a fresh qa is not eligible for
- *     static-reviewer. That gap is reported, not fixed here.
+ *   - `qa` is SEEDED in the roster with SR.1–SR.4 coverage. The real qa manifest has search tools
+ *     (grep/glob, commit 35dfa854) and holds the Auditor role, but declares no SR.* coverage, so the seed
+ *     adds that coverage to make a covered static-reviewer candidate.
  *
  * Run: node --test tests/*.test.mjs   (from extensions/agents/dispatcher)
  */
@@ -56,12 +56,12 @@ function writeRoster(manifests) {
   return loadAgents(dir);
 }
 
-/** SEEDED qa (fixture, not the real manifest): adds `grep` (search) and SR.1–SR.4 coverage. */
+/** SEEDED qa (fixture, not the real manifest): adds SR.1–SR.4 coverage (and `grep` if the manifest lacks it). */
 function seededQa(m) {
   return {
     ...m,
-    seeded: 'T47 fixture: real qa has no search tool and covers no SR obligation',
-    agent: { ...m.agent, tools: [...m.agent.tools, 'grep'] },
+    seeded: 'T47 fixture: real qa covers no SR obligation',
+    agent: { ...m.agent, tools: [...new Set([...m.agent.tools, 'grep'])] },
     capabilities: [...(m.capabilities ?? []), 'roles-covered:SR.1', 'roles-covered:SR.2', 'roles-covered:SR.3', 'roles-covered:SR.4'],
   };
 }
@@ -138,6 +138,11 @@ test(AC(2, 'the dispatcher telemetry row names the bound agent with covered ids,
   const d = prose('dispatcher');
   assert.match(d, /telemetry row names `role=<role>:<agent>` with its covered ids/);
   assert.match(d, /`role=<role>:unbound` with the debt owner and expiry, or the block/);
+});
+
+test('595965cc T47 AC1 rank0-3: the telemetry text names the no-declared-coverage flag for a closeness-0 binding', () => {
+  const d = prose('dispatcher');
+  assert.match(d, /closeness-0 binding records covered ids `none` and the flag `no-declared-coverage`/);
 });
 
 test(AC(3, 'unbound roles record review debt with owner and expiry at Light and Standard; Deep blocks'), () => {

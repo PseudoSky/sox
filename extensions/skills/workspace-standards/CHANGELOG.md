@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Closeness-0 bindings are flagged `bound-no-coverage` (595965cc T47 rank0).** Resolution is unchanged. `composeRouting` now returns `boundNoCoverage` (`<standard>/<role>` for every role whose holder covers none of its obligations), adds a `bound-no-coverage:` warning per such role, and shows `none (bound-no-coverage)` in the role-holders table. `applyFoundation` (and so `review routing`) reports `boundNoCoverage` and a `level` of `full` or `lowered`; unbound and closeness-0 roles both lower it. Exit codes are unchanged (a thin roster lowers the reported level instead of failing). Version is left to the Changesets release flow.
 - **`resolveRole` follows the closest-available-agent rule (595965cc T47 AC1, MAP 1E.4).** An agent is eligible when it has the role's tools and breaks no independence constraint; obligation coverage no longer gates eligibility, so a zero-coverage agent with the tools is eligible at closeness 0 and is chosen only when no covered agent is. Ranking is closeness, then fewest other roles already held in the change, then `roles.md` hints, then name. A new optional third argument `{ session, held }` applies `distinct-from` inside the function (the authoring session is excluded from a role whose `distinct-from` names a role it holds; a fresh dispatch of the same agent stays eligible) and supplies the held-role counts. The result gains `held`. Calls without the argument keep the static routing-table behavior. Descriptions are never scored. Version is left to the Changesets release flow.
 
 ## 0.1.0

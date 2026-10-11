@@ -435,7 +435,7 @@ costs. Cost-at-decision-time still governs (rule 21); only its rendering is defe
 - **Eligible:** the agent's tools cover the role's `tools`, and it holds none of the role's `distinct-from` roles in this change. A session never approves what it authored, so a `qa` session that wrote the tests cannot hold `static-reviewer`.
 - **Closest:** the most obligation ids the agent lists in its `roles-covered:<ID>` capabilities; then the fewest other roles it already holds in this change. `hints` break remaining ties only. Free-text descriptions are never scored.
 - **Bound or unbound:** the closest eligible agent holds the role. With none eligible the role is unbound. At Light and Standard its clauses become **review debt** on the affected tests, with an **owner** (the resolved `risk-owner` holder, else the user) and an **expiry** the user or the plan sets; a debt record without an expiry is refused. At Deep, an unbound role whose `no-holder` says `deep-blocks: yes` **blocks** the change: report the block to the user and stop.
-- **Telemetry:** the dispatch's telemetry row names `role=<role>:<agent>` with its covered ids, or `role=<role>:unbound` with the debt owner and expiry, or the block.
+- **Telemetry:** the dispatch's telemetry row names `role=<role>:<agent>` with its covered ids (a closeness-0 binding records covered ids `none` and the flag `no-declared-coverage`), or `role=<role>:unbound` with the debt owner and expiry, or the block.
 
 ### Step 3
  — Dispatch

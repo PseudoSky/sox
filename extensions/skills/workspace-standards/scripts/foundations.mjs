@@ -26,6 +26,8 @@ export const GATE_TABLE_REL = 'gates.table.json';
 export const ROSTER_GUARD_REL = 'tools/test-roster-guard.mjs';
 export const LEDGER_TARGET = 'foundations-filed';
 const RUNNER_USAGE = 'node <skill>/engine/cli.mjs run --step <A-H> --class <class> --rigor <rigor> --changed <path> --root <repo>: one report for every gate set bound to the step; a standard adds no runner of its own';
+/** Flag for a role held at closeness 0: the holder has the tools but declares no obligation coverage. */
+export const BOUND_NO_COVERAGE = 'bound-no-coverage';
 const ROLE_USAGE = 'node <skill>/scripts/foundations.mjs review routing: each role resolves to the closest installed agent; drift and unbound roles are reported';
 const STAGES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 
@@ -65,6 +67,7 @@ export function composeRouting({ standards, agents }) {
   const holderRows = [];
   const taskRows = [];
   const unbound = [];
+  const boundNoCoverage = [];
   const active = [];
   for (const s of standards) {
     if (s.own.routing) { skipped.push(`${s.id}: declares routing: own; apply routing skips it`); continue; }
@@ -72,8 +75,14 @@ export function composeRouting({ standards, agents }) {
     for (const role of s.roles) {
       const r = resolveRole(role, agents);
       holders.set(role.name, r.holder);
-      holderRows.push([role.name, s.id, r.holder ? `\`${r.holder}\`` : '_unbound_', r.covered.join(', ') || 'none']);
+      // 595965cc T47 rank0: a closeness-0 binding (holder with no covered obligation) is eligible by tools alone; flag it, never hide it.
+      const noCoverage = !!r.holder && r.covered.length === 0;
+      holderRows.push([role.name, s.id, r.holder ? `\`${r.holder}\`` : '_unbound_', r.covered.join(', ') || (noCoverage ? `none (${BOUND_NO_COVERAGE})` : 'none')]);
       if (!r.holder) unbound.push(`${s.id}/${role.name}`);
+      if (noCoverage) {
+        boundNoCoverage.push(`${s.id}/${role.name}`);
+        warnings.push(`${BOUND_NO_COVERAGE}: ${s.id}: role ${role.name} is held by ${r.holder}, which declares no roles-covered obligation for it (closeness 0)`);
+      }
       if (!r.holder && !declaresUnbound(role)) warnings.push(`${s.id}: role ${role.name} has no eligible holder and does not declare no-holder: unbound`);
     }
   }
@@ -102,7 +111,7 @@ export function composeRouting({ standards, agents }) {
     '### Capabilities',
     table(['capability', 'tool', 'usage'], [['role-routing', 'workspace-standards', `\`${ROLE_USAGE}\``]]),
   ].join('\n');
-  return { body, skipped, warnings, unbound };
+  return { body, skipped, warnings, unbound, boundNoCoverage };
 }
 
 /**
@@ -167,7 +176,7 @@ export function applyFoundation({ target, root, standards = loadStandards(), age
   const bindingText = bindingAbs ? readIfExists(bindingAbs) ?? '' : '';
   const testingBound = bindingText ? boundGates(bindingText) : new Set();
   const testingLedger = bindingText ? ledgerRows(bindingText, 'testing-mechanisms') : new Map();
-  const result = { target, blocks: [], skipped: [], unbound: [], filed: [], failed: [], wouldFile: [], drift: [], warnings: [], diff: '', wrote: [], exit: EXIT.OK };
+  const result = { target, blocks: [], skipped: [], unbound: [], boundNoCoverage: [], level: 'full', filed: [], failed: [], wouldFile: [], drift: [], warnings: [], diff: '', wrote: [], exit: EXIT.OK };
   const files = new Map();
   const agentsAbs = path.join(root, AGENTS_REL);
   const stage = (abs, rel, mutate) => {
@@ -209,6 +218,9 @@ export function applyFoundation({ target, root, standards = loadStandards(), age
     result.skipped.push(...r.skipped.map((s) => `routing: ${s}`));
     result.warnings.push(...r.warnings);
     result.unbound.push(...r.unbound);
+    result.boundNoCoverage.push(...r.boundNoCoverage);
+    // D17: a thin roster lowers the reported level instead of failing; unbound and closeness-0 roles both count.
+    if (result.unbound.length + result.boundNoCoverage.length > 0) result.level = 'lowered';
     block('routing', r.body);
     const roles = composeRoles({ standards });
     if (roles !== null) stageWhole(ROLES_REL, roles);

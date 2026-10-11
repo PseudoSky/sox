@@ -1,3 +1,7 @@
+## Unreleased
+
+- **Closeness-0 bindings are named in telemetry (595965cc T47).** Step 2's telemetry bullet records a role bound with no declared obligation coverage as `role=<role>:<agent>` with covered ids `none` and the flag `no-declared-coverage`. Version is left to the Changesets release flow.
+
 ## 2.1.0
 
 - **Role availability (595965cc T47).** Step 2 binds each role to the closest eligible agent by `roles-covered` (MAP §1E.4, D17, D23; `workspace-standards` `resolveRole`). An unbound role is review debt with an owner and expiry at Light and Standard, and blocks at Deep. The telemetry row names the binding (`role=<role>:<agent>` or `role=<role>:unbound`).
