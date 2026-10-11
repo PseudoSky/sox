@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DISPATCHER_REL, AGENTS_MD_REL, GuardError, parseDispatcherRoutes, parseAgentsMdTable,
-  makeSource, checkRoster, checkRoles, ROLES_REL, formatReport, main,
+  makeSource, checkRoster, checkRoles, listInstalled, readAgentManifests, ROLES_REL, formatReport, main,
 } from './test-roster-guard.mjs';
 
 const TOOLS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -123,7 +123,7 @@ test('3fe895f3 T10.AC3: the same fixture goes green once the invalid name is ins
   const files = roster(['qa', 'refactor'], 'QA → `qa`; restructure → `refactor`');
   const r = checkRoster(makeSource({ root: '/', fsApi: fakeRepo(files).fsApi }));
   assert.equal(r.unresolved.length, 0);
-  assert.match(formatReport(r), /^PASS:/m);
+  assert.match(formatReport(r), /^PASS\(names\):/m);
 });
 
 test('3fe895f3 T10.AC1: main exits 1 on an unresolved name, 0 when clean, 2 when it cannot run', () => {
@@ -273,7 +273,7 @@ test('ff15d348 AC1: a role with a closest eligible agent by roles-covered resolv
 });
 
 test('ff15d348 AC1: a role no agent resolves but that declares itself unbound is accepted', () => {
-  const files = rolesRepo(rolesMd(roleBlock({ name: 'beta', prefix: 'BB', tools: 'read', noHolder: UNBOUND })), { aud: [['read'], ['AA.1']] });
+  const files = rolesRepo(rolesMd(roleBlock({ name: 'beta', prefix: 'BB', tools: 'edit', noHolder: UNBOUND })), { aud: [['read'], ['AA.1']] });
   const r = rolesOf(files);
   assert.deepEqual(outcomes(r), { beta: 'unbound' });
   assert.deepEqual(r.unresolved, []);
@@ -282,40 +282,43 @@ test('ff15d348 AC1: a role no agent resolves but that declares itself unbound is
 test('ff15d348 AC1: a role that resolves to no agent and is not declared unbound is unresolved, and main exits 1', () => {
   const files = {
     ...roster(['aud'], 'QA → `aud`'),
-    ...rolesRepo(rolesMd(roleBlock({ name: 'gamma', prefix: 'GG', tools: 'read', noHolder: 'escalate to the owner; deep-blocks: no' })), { aud: [['read'], ['AA.1']] }),
+    ...rolesRepo(rolesMd(roleBlock({ name: 'gamma', prefix: 'GG', tools: 'edit', noHolder: 'escalate to the owner; deep-blocks: no' })), { aud: [['read'], ['AA.1']] }),
   };
   files['extensions/agents/aud/extension.json'] = agentManifest('aud', ['read'], ['AA.1']);
   assert.deepEqual(rolesOf(files).unresolved.map((x) => x.role), ['gamma']);
   const r = runMain(files, ['--ref', 'r']);
   assert.equal(r.code, 1, `${r.out}\n${r.err}`);
   assert.match(r.out, /UNRESOLVED ROLE: gamma /);
-  assert.match(r.out, /FAIL: 1 role\(s\)/);
+  assert.match(r.out, /^FAIL\(roles\): 1 role\(s\)/m);
 });
 
 test('ff15d348 AC1: one fixture roster proves all three outcomes (resolved, unbound, neither) and exit 0 once the missing agent is added', () => {
   const roles = rolesMd(
     roleBlock({ name: 'alpha', prefix: 'AA', tools: 'read', noHolder: 'escalate; deep-blocks: no' }),
-    roleBlock({ name: 'beta', prefix: 'BB', tools: 'read', noHolder: UNBOUND }),
-    roleBlock({ name: 'gamma', prefix: 'GG', tools: 'read', noHolder: 'escalate; deep-blocks: no' }),
+    roleBlock({ name: 'beta', prefix: 'BB', tools: 'edit', noHolder: UNBOUND }),
+    roleBlock({ name: 'gamma', prefix: 'GG', tools: 'backlog', noHolder: 'escalate; deep-blocks: no' }),
   );
   const base = { ...roster(['one'], 'x → `one`'), ...rolesRepo(roles, { one: [['read'], ['AA.1']] }) };
   assert.deepEqual(outcomes(rolesOf(base)), { alpha: 'resolved', beta: 'unbound', gamma: 'unresolved' });
   assert.equal(runMain(base, ['--ref', 'r']).code, 1);
   const fixed = {
     ...base,
-    'extensions/agents/gm/extension.json': agentManifest('gm', ['read'], ['GG.2']),
+    'extensions/agents/gm/extension.json': agentManifest('gm', ['read', { logical: 'backlog', server: 'backlog' }], ['GG.2']),
   };
   assert.deepEqual(outcomes(rolesOf(fixed)), { alpha: 'resolved', beta: 'unbound', gamma: 'resolved' });
-  const ok = runMain({ ...fixed, ...roster(['one', 'gm'], 'x → `one`; y → `gm`') , ...rolesRepo(roles, { one: [['read'], ['AA.1']], gm: [['read'], ['GG.2']] }) }, ['--ref', 'r']);
+  const ok = runMain({ ...fixed, ...roster(['one', 'gm'], 'x → `one`; y → `gm`') , ...rolesRepo(roles, { one: [['read'], ['AA.1']], gm: [['read', { logical: 'backlog', server: 'backlog' }], ['GG.2']] }) }, ['--ref', 'r']);
   assert.equal(ok.code, 0, `${ok.out}\n${ok.err}`);
   assert.match(ok.out, /role alpha: resolved -> one/);
 });
 
-test('ff15d348 AC1: an agent that covers the role but lacks a required tool is ineligible; an agent covering nothing is not a holder', () => {
+test('ff15d348 AC1: an agent that covers the role but lacks a required tool is ineligible; a tool-capable agent covering nothing is eligible only at closeness 0 (resolveRole parity)', () => {
   const roles = rolesMd(roleBlock({ name: 'shelly', prefix: 'SH', tools: 'read, shell, edit, backlog', noHolder: 'escalate; deep-blocks: no' }));
-  const noTool = rolesRepo(roles, { weak: [['read', 'bash', 'edit'], ['SH.1']], idle: [['read', 'bash', 'edit', { logical: 'backlog', server: 'backlog' }], []] });
-  assert.deepEqual(outcomes(rolesOf(noTool)), { shelly: 'unresolved' });
-  const full = rolesRepo(roles, { weak: [['read', 'bash', 'edit'], ['SH.1']], strong: [['read', 'bash', 'write', { logical: 'backlog', server: 'backlog' }], ['SH.2']] });
+  const bl = { logical: 'backlog', server: 'backlog' };
+  const onlyWeak = rolesRepo(roles, { weak: [['read', 'bash', 'edit'], ['SH.1']] });
+  assert.deepEqual(outcomes(rolesOf(onlyWeak)), { shelly: 'unresolved' });
+  const idleOnly = rolesRepo(roles, { weak: [['read', 'bash', 'edit'], ['SH.1']], idle: [['read', 'bash', 'edit', bl], []] });
+  assert.deepEqual(rolesOf(idleOnly).results.map((x) => [x.outcome, x.holder, x.covered]), [['resolved', 'idle', []]]);
+  const full = rolesRepo(roles, { weak: [['read', 'bash', 'edit'], ['SH.1']], idle: [['read', 'bash', 'edit', bl], []], strong: [['read', 'bash', 'write', bl], ['SH.2']] });
   const r = rolesOf(full);
   assert.deepEqual(r.results.map((x) => [x.holder, x.covered]), [['strong', ['SH.2']]]);
 });
@@ -341,10 +344,65 @@ test('ff15d348 AC1: a repo/ref with no roles.md says so and checks no roles; inv
   assert.match(r.err, /roles\.md/);
 });
 
-test('ff15d348 AC2: the real roster (working tree) has no unresolved role', () => {
+/**
+ * Roster soundness over role results: every outcome is resolved or unbound, and every resolved holder is a
+ * real installed agent. Returns the list of problems (empty = sound) so a negative control can prove it fails.
+ */
+const rosterProblems = (results, installed) => results.flatMap((r) => {
+  if (r.outcome === 'resolved') return installed.has(r.holder) ? [] : [`role ${r.role}: holder ${r.holder} is not an installed agent`];
+  if (r.outcome === 'unbound') return r.holder === null ? [] : [`role ${r.role}: unbound but names holder ${r.holder}`];
+  return [`role ${r.role}: outcome ${r.outcome}`];
+});
+
+test('ff15d348 AC2: the real roster (working tree): every role is resolved to an installed agent or declared unbound', () => {
   const root = path.resolve(TOOLS_DIR, '..');
-  const r = checkRoles(makeSource({ root }));
+  const source = makeSource({ root });
+  const r = checkRoles(source);
+  const { installed } = listInstalled(source);
   assert.equal(r.state, 'checked');
   assert.ok(r.results.length >= 13, `expected the 13 testing-standard roles, got ${r.results.length}`);
-  assert.deepEqual(r.unresolved.map((x) => x.role), []);
+  assert.deepEqual(rosterProblems(r.results, installed), []);
+  // Not vacuous: at least one real role resolves to a real holder that covers a role obligation.
+  const real = r.results.filter((x) => x.outcome === 'resolved' && x.covered.length > 0);
+  assert.ok(real.length > 0, 'no role resolved to an agent that covers any obligation');
+  for (const x of real) assert.ok(installed.has(x.holder), `${x.role} -> ${x.holder} is not installed`);
+});
+
+test('ff15d348 AC2: negative control, the soundness check fails on an unresolved role and on a holder that is not an installed agent', () => {
+  const unresolvedFixture = rolesRepo(rolesMd(roleBlock({ name: 'gamma', prefix: 'GG', tools: 'read', noHolder: 'escalate; deep-blocks: no' })), { aud: [['grep'], ['GG.1']] });
+  const source = makeSource({ root: '/', fsApi: fakeRepo(unresolvedFixture).fsApi });
+  const r = checkRoles(source);
+  assert.deepEqual(rosterProblems(r.results, listInstalled(source).installed), ['role gamma: outcome unresolved']);
+  const ghost = [{ role: 'delta', outcome: 'resolved', holder: 'nonexistent-agent', covered: ['DD.1'] }];
+  assert.deepEqual(rosterProblems(ghost, new Set(['aud'])), ['role delta: holder nonexistent-agent is not an installed agent']);
+  const fixed = rolesRepo(rolesMd(roleBlock({ name: 'gamma', prefix: 'GG', tools: 'read', noHolder: 'escalate; deep-blocks: no' })), { aud: [['read'], ['GG.1']] });
+  const s2 = makeSource({ root: '/', fsApi: fakeRepo(fixed).fsApi });
+  assert.deepEqual(rosterProblems(checkRoles(s2).results, listInstalled(s2).installed), []);
+});
+
+test('ff15d348 AC1: role resolution delegates to the skill resolveRole (hint position, held-free ordering) rather than a local copy', () => {
+  const roles = rolesMd(roleBlock({ name: 'alpha', prefix: 'AA', tools: 'read', noHolder: UNBOUND })).replace('- hints:', '- hints: zed, mid');
+  const files = rolesRepo(roles, { aaa: [['read'], ['AA.1']], mid: [['read'], ['AA.1']], zed: [['read'], ['AA.1']] });
+  assert.equal(rolesOf(files).results[0].holder, 'zed'); // earlier hint wins
+});
+
+test('ff15d348 AC1: each manifest is read exactly once per roster check (shared pass for names and roles)', () => {
+  const files = { ...roster(['qa'], 'QA → `qa`'), ...rolesRepo(rolesMd(roleBlock({ name: 'alpha', prefix: 'AA', tools: 'read', noHolder: UNBOUND })), { qa: [['read'], ['AA.1']] }) };
+  const reads = {};
+  const inner = makeSource({ root: '/', fsApi: fakeRepo(files).fsApi });
+  const counting = { ...inner, readFile: (rel) => { reads[rel] = (reads[rel] ?? 0) + 1; return inner.readFile(rel); } };
+  const r = checkRoster(counting);
+  assert.equal(r.unresolved.length, 0);
+  assert.equal(reads['extensions/agents/qa/extension.json'], 1);
+  assert.deepEqual(readAgentManifests(inner).agents.map((a) => a.id), ['qa']);
+});
+
+test('ff15d348 AC1: the report labels the two verdict lines unambiguously, PASS(names)/PASS(roles) and FAIL(names)/FAIL(roles)', () => {
+  const ok = formatReport(checkRoster(makeSource({ root: '/', fsApi: fakeRepo({ ...roster(['qa'], 'QA → `qa`'), ...rolesRepo(rolesMd(roleBlock({ name: 'alpha', prefix: 'AA', tools: 'read', noHolder: UNBOUND })), { qa: [['read'], ['AA.1']] }) }).fsApi })));
+  assert.match(ok, /^PASS\(names\):/m);
+  assert.match(ok, /^PASS\(roles\):/m);
+  assert.doesNotMatch(ok, /^(PASS|FAIL):/m);
+  const bad = formatReport(checkRoster(makeSource({ root: '/', fsApi: fakeRepo({ ...roster(['qa'], 'QA → `qa`; x → `nope`'), ...rolesRepo(rolesMd(roleBlock({ name: 'gamma', prefix: 'GG', tools: 'read', noHolder: 'escalate; deep-blocks: no' })), { qa: [['grep'], []] }) }).fsApi })));
+  assert.match(bad, /^FAIL\(names\): 1 routed name/m);
+  assert.match(bad, /^FAIL\(roles\): 1 role/m);
 });

@@ -24,10 +24,12 @@
  *
  * Role resolution (backlog ff15d348, T10b): for every role in the testing standard's roles.md the
  * guard applies the routing foundation's `run` steps 1-5 statically. A role is
- *   resolved   an installed agent is eligible (its tools cover the role's `tools`) and covers at
- *              least one of the role's obligation ids by its `roles-covered:<ID>` capabilities
- *              (closeness = count of ids; ties broken by the role's hints, then agent name);
- *   unbound    nothing resolves and the role's `no-holder` field declares `unbound`;
+ *   resolved   the skill's resolveRole (workspace-standards scripts/lib.mjs, the single implementation
+ *              of role resolution) names a holder: an installed agent whose tools cover the role's
+ *              `tools`, ranked by closeness (count of the role's obligation ids in its
+ *              `roles-covered:<ID>` capabilities), then hints order, then agent name. An agent covering
+ *              none of the ids stays eligible at closeness 0, exactly as in the skill;
+ *   unbound    resolveRole names no holder and declaresUnbound(role) (the `no-holder` field);
  *   unresolved neither: that fails the guard.
  * `distinct-from` is a per-change rule and needs the roles already held, so it is not evaluated here.
  * When roles.md is absent from the source (older refs) the report says so and no role is checked.
@@ -42,7 +44,7 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // The skill's parser is the single source of truth for roles.md; it is a plain script, not an nx-importable package.
 // eslint-disable-next-line @nx/enforce-module-boundaries
-import { coveredIds, parseRoles, validateRoles } from '../extensions/skills/workspace-standards/scripts/lib.mjs';
+import { declaresUnbound, parseRoles, resolveRole, validateRoles } from '../extensions/skills/workspace-standards/scripts/lib.mjs';
 
 export const DISPATCHER_REL = 'extensions/agents/dispatcher/dispatcher.md';
 export const AGENTS_DIR_REL = 'extensions/agents';
@@ -166,9 +168,13 @@ export function makeSource({ root, ref = null, git, fsApi = fs }) {
   };
 }
 
-/** Installed names = extension.json ids of every directory under extensions/agents/. */
-export function listInstalled(source) {
-  const installed = new Set();
+/**
+ * One pass over extensions/agents/: every directory's extension.json is read and parsed exactly once.
+ * Both the installed-name check and the role check consume this result.
+ * @returns {{ agents: { id: string, manifest: object }[], warnings: string[] }}
+ */
+export function readAgentManifests(source) {
+  const agents = [];
   const warnings = [];
   for (const dir of source.listDirs(AGENTS_DIR_REL)) {
     const rel = `${AGENTS_DIR_REL}/${dir}/extension.json`;
@@ -183,12 +189,18 @@ export function listInstalled(source) {
     } catch (e) {
       throw new GuardError(`${rel}: invalid JSON: ${e.message}`);
     }
-    if (typeof manifest.id !== 'string' || manifest.id === '') {
+    if (typeof manifest?.id !== 'string' || manifest.id === '') {
       throw new GuardError(`${rel}: missing string "id"`);
     }
-    installed.add(manifest.id);
+    agents.push({ id: manifest.id, manifest });
   }
-  return { installed, warnings };
+  return { agents, warnings };
+}
+
+/** Installed names = extension.json ids of every directory under extensions/agents/. */
+export function listInstalled(source) {
+  const { agents, warnings } = readAgentManifests(source);
+  return { installed: new Set(agents.map((a) => a.id)), warnings };
 }
 
 /**
@@ -215,13 +227,21 @@ export function checkRoster(source) {
       }
     }
   }
-  const { installed, warnings } = listInstalled(source);
+  const { agents, warnings } = readAgentManifests(source);
+  const installed = new Set(agents.map((a) => a.id));
   const unresolved = routed.filter((r) => !installed.has(r.name));
-  const roles = checkRoles(source);
+  const roles = checkRoles(source, agents);
   return { routed, installed, unresolved, roles, agentsMdTable, warnings, tableWarnings, label: source.label };
 }
 
-/** Which role-tool vocabulary entries an agent manifest's `agent.tools` provides. */
+/**
+ * Which role-tool vocabulary entries an agent manifest's `agent.tools` provides.
+ * Kept as a deliberate copy of agentToolSet in extensions/skills/workspace-standards/scripts/lib.mjs
+ * (the block commented "Mirrors the mapping the roster guard applies", ~lines 522-538): the skill is
+ * installable without tools/, so it cannot import this file, and this exported copy is for callers of
+ * the guard. The parity test in extensions/skills/workspace-standards/tests/foundations.test.mjs keeps
+ * the two mappings equal. resolveRole uses the skill's copy for role resolution.
+ */
 export function agentToolSet(manifest) {
   const have = new Set();
   for (const t of manifest?.agent?.tools ?? []) {
@@ -235,49 +255,22 @@ export function agentToolSet(manifest) {
   return have;
 }
 
-/** Declared unbound = the role's no-holder field starts with the word `unbound`. */
-const declaresUnbound = (role) => /^unbound\b/i.test(role.noHolder.trim());
-
-/** Load installed agents with their manifests (same listing rule as listInstalled). */
-function loadAgentManifests(source) {
-  const agents = [];
-  for (const dir of source.listDirs(AGENTS_DIR_REL)) {
-    const rel = `${AGENTS_DIR_REL}/${dir}/extension.json`;
-    const raw = source.readFile(rel);
-    if (raw === null) continue;
-    let manifest;
-    try {
-      manifest = JSON.parse(raw);
-    } catch (e) {
-      throw new GuardError(`${rel}: invalid JSON: ${e.message}`);
-    }
-    if (typeof manifest.id === 'string' && manifest.id !== '') agents.push({ id: manifest.id, manifest });
-  }
-  return agents;
-}
-
 /**
- * Resolve every role in roles.md against the installed agents. Pure; never prints or exits.
+ * Resolve every role in roles.md against the installed agents via the skill's resolveRole. Pure; never
+ * prints or exits. `agents` is the readAgentManifests() list; omitted, it is read from `source`.
  * @returns {{ state:'absent'|'checked', results:{role:string,outcome:'resolved'|'unbound'|'unresolved',
  *             holder:string|null, covered:string[]}[], unresolved:{role:string}[] }}
  */
-export function checkRoles(source) {
+export function checkRoles(source, agents = readAgentManifests(source).agents) {
   const text = source.readFile(ROLES_REL);
   if (text === null) return { state: 'absent', results: [], unresolved: [] };
   const parsed = parseRoles(text);
   const errors = validateRoles(parsed);
   if (errors.length > 0) throw new GuardError(`${ROLES_REL}: invalid: ${errors.join('; ')}`);
-  const agents = loadAgentManifests(source).map((a) => ({ id: a.id, tools: agentToolSet(a.manifest), covered: new Set(coveredIds(a.manifest)) }));
+  const candidates = agents.map((a) => ({ agent: a.id, manifest: a.manifest }));
   const results = parsed.roles.map((role) => {
-    const ids = role.obligations.map((o) => o.id);
-    const ranked = agents
-      .filter((a) => role.tools.every((t) => a.tools.has(t)))
-      .map((a) => ({ id: a.id, covered: ids.filter((i) => a.covered.has(i)) }))
-      .filter((a) => a.covered.length > 0)
-      .sort((x, y) => y.covered.length - x.covered.length
-        || (role.hints.includes(y.id) ? 1 : 0) - (role.hints.includes(x.id) ? 1 : 0)
-        || x.id.localeCompare(y.id));
-    if (ranked.length > 0) return { role: role.name, outcome: 'resolved', holder: ranked[0].id, covered: ranked[0].covered };
+    const { holder, covered } = resolveRole(role, candidates);
+    if (holder !== null) return { role: role.name, outcome: 'resolved', holder, covered };
     return { role: role.name, outcome: declaresUnbound(role) ? 'unbound' : 'unresolved', holder: null, covered: [] };
   });
   return { state: 'checked', results, unresolved: results.filter((r) => r.outcome === 'unresolved') };
@@ -293,21 +286,21 @@ export function formatReport(result) {
     lines.push('  AGENTS.md: NO task-to-agent routing table found; only the dispatcher routing rule was checked');
   } else lines.push('  AGENTS.md: file not present; only the dispatcher routing rule was checked');
   for (const w of result.warnings) lines.push(`  warning: ${w}`);
-  if (result.unresolved.length === 0) lines.push('PASS: every routed agent name matches an installed extension');
+  if (result.unresolved.length === 0) lines.push('PASS(names): every routed agent name matches an installed extension');
   else {
     for (const u of result.unresolved) lines.push(`UNRESOLVED: ${u.name} (routed in ${u.source}) matches no installed extension`);
-    lines.push(`FAIL: ${result.unresolved.length} routed name(s) unresolved: ${result.unresolved.map((u) => u.name).join(', ')}`);
+    lines.push(`FAIL(names): ${result.unresolved.length} routed name(s) unresolved: ${result.unresolved.map((u) => u.name).join(', ')}`);
   }
   const roles = result.roles;
   if (roles.state === 'absent') lines.push(`  roles: ${ROLES_REL} not present; role resolution not checked`);
   else {
     for (const r of roles.results) {
-      if (r.outcome === 'resolved') lines.push(`  role ${r.role}: resolved -> ${r.holder} (covers ${r.covered.join(', ')})`);
+      if (r.outcome === 'resolved') lines.push(`  role ${r.role}: resolved -> ${r.holder} (${r.covered.length > 0 ? `covers ${r.covered.join(', ')}` : 'covers none: closeness 0'})`);
       else if (r.outcome === 'unbound') lines.push(`  role ${r.role}: unbound (declared in roles.md no-holder)`);
     }
     for (const r of roles.unresolved) lines.push(`UNRESOLVED ROLE: ${r.role} resolves to no eligible agent and does not declare itself unbound`);
-    if (roles.unresolved.length === 0) lines.push(`PASS: all ${roles.results.length} roles resolve or are declared unbound`);
-    else lines.push(`FAIL: ${roles.unresolved.length} role(s) unresolved: ${roles.unresolved.map((r) => r.role).join(', ')}`);
+    if (roles.unresolved.length === 0) lines.push(`PASS(roles): all ${roles.results.length} roles resolve or are declared unbound`);
+    else lines.push(`FAIL(roles): ${roles.unresolved.length} role(s) unresolved: ${roles.unresolved.map((r) => r.role).join(', ')}`);
   }
   return lines.join('\n');
 }
