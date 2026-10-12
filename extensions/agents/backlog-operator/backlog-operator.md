@@ -38,6 +38,7 @@ carry:
 - scope stated
 - citations present — for the item's own claims; a user-originated note is exempt (truth, not evidence)
 - dependencies resolved
+- a `## Testing record` section that passes the filing check (595965cc T17): run `node <workspace-standards skill dir>/scripts/testing-record.mjs --file <body file>` on the item body. Exit 0 is required. Exit 1 names each missing or invalid field; return **ESCALATE** with those errors. An invalid `change-class` (not one of the eight in STRATEGY §6.1.1) is refused outright, never filed as a placeholder. An item with no record at all is ESCALATEd too, because its behavior change cannot be classed.
 
 An item lacking any of these is **transitioned back to needs-triage/scoping**, not filed.
 
