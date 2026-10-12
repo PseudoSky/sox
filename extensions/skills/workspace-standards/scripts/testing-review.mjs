@@ -8,7 +8,7 @@ import { loadAgents, parseRoles, resolveRole, takeOption } from './lib.mjs';
 
 /** The purpose-tag names of STRATEGY §2.3 (the first column of that section's table, every backticked token). */
 export function purposeTags(strategyText) {
-  const m = /^### 2\.3\b[^\n]*\n([\s\S]*?)(?=^#{1,3} )/m.exec(strategyText);
+  const m = /^### 2\.3\b[^\n]*\n([\s\S]*?)(?=^#{1,3} |(?![\s\S]))/m.exec(strategyText);
   if (!m) return null;
   const tags = new Set();
   for (const line of m[1].split('\n')) {

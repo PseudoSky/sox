@@ -17,6 +17,13 @@ if (exit === undefined || outputFile === undefined) {
   process.stderr.write(JSON.stringify({ ok: false, error: { code: 'E_USAGE', exit: 64, message: 'usage: red-check.mjs --exit <n> --output <file>' } }) + '\n');
   process.exit(64);
 }
-const verdict = judgeRedRecord({ exit, output: fs.readFileSync(outputFile, 'utf8') });
+let output;
+try {
+  output = fs.readFileSync(outputFile, 'utf8');
+} catch (err) {
+  process.stderr.write(JSON.stringify({ ok: false, error: { code: 'E_IO', exit: 65, message: `cannot read --output ${outputFile}: ${err.code ?? err.message}` } }) + '\n');
+  process.exit(65);
+}
+const verdict = judgeRedRecord({ exit, output });
 process.stdout.write(JSON.stringify({ ok: verdict.red, ...verdict }, null, 2) + '\n');
 process.exit(verdict.red ? 0 : 1);

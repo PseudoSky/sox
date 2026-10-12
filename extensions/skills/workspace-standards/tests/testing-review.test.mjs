@@ -81,3 +81,16 @@ test('595965cc T41.AC6 CLI exits 1 on a seeded violation and 0 on a clean docume
   assert.equal(JSON.parse(usage.stderr).error.code, 'E_USAGE');
   assert.equal(loadAgents(agentsDir).length, 1);
 });
+
+test('595965cc T41.AC6 purposeTags reads §2.3 when it is the last section of the file', () => {
+  const tags = purposeTags('# S\n\n### 2.3 Purpose\n\n| `smoke` | a |\n| `regression:<id>` | b |\n');
+  assert.ok(tags && tags.has('smoke') && tags.has('regression'), 'tags parsed to end of file');
+});
+
+test('595965cc T41.AC7 a roles-covered:none agent never holds a role, even at closeness 0 (CONTRACT.md)', async () => {
+  const { resolveRole, parseRoles } = await import('../scripts/lib.mjs');
+  const roles = parseRoles(fs.readFileSync(REAL_ROLES, 'utf8')).roles;
+  const auditor = roles.find((r) => r.name === 'auditor');
+  const agents = [{ agent: 'plain', manifest: { id: 'plain', agent: { tools: ['read', 'grep', 'bash', 'edit', 'backlog'] }, capabilities: ['roles-covered:none'] } }];
+  assert.equal(resolveRole(auditor, agents).holder, null, 'a none-only agent is never the holder');
+});

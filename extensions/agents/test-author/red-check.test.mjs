@@ -29,3 +29,9 @@ test('595965cc T23.AC8 usage without --output is E_USAGE (exit 64)', () => {
   const r = spawnSync(process.execPath, [CLI, '--exit', '1'], { encoding: 'utf8' });
   assert.equal(r.status, 64);
 });
+
+test('595965cc T23.AC8 an unreadable --output is E_IO (exit 65), never a red verdict', () => {
+  const r = spawnSync(process.execPath, [CLI, '--exit', '1', '--output', '/nonexistent/red-record.txt'], { encoding: 'utf8' });
+  assert.equal(r.status, 65);
+  assert.equal(JSON.parse(r.stderr).error.code, 'E_IO');
+});

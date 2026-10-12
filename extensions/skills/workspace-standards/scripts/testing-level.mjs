@@ -22,7 +22,8 @@ export function parseBindingTable(md) {
   const lines = String(md ?? '').split('\n');
   for (let i = 0; i + 1 < lines.length; i++) {
     const header = splitRow(lines[i]);
-    if (!header || !/^---/.test(lines[i + 1].trim().replace(/\|/g, ''))) continue;
+    const sep = splitRow(lines[i + 1]);
+    if (!header || !sep || !sep.every((c) => /^:?-{3,}:?$/.test(c))) continue;
     const cols = header.map((h) => h.toLowerCase());
     if (!cols.includes('clause') || !cols.includes('status')) continue;
     const rows = [];
@@ -56,7 +57,8 @@ export function computeLevel({ rows, unboundRoles = [] }) {
     const id = String(row.clause ?? '').trim();
     if (!/^G\d+$/.test(id)) continue;
     const reasons = [];
-    if (row.status !== 'enforced') reasons.push(`status "${row.status ?? ''}"`);
+    const status = String(row.status ?? '').trim().toLowerCase();
+    if (status !== 'enforced') reasons.push(`status "${row.status ?? ''}"`);
     if (!row['command or path']) reasons.push('no command or path');
     if (!row.owner) reasons.push('no owner');
     else if (unbound.has(row.owner)) reasons.push(`owner ${row.owner} is unbound or held at closeness 0`);
@@ -85,7 +87,11 @@ function main(argv) {
     process.stderr.write(JSON.stringify({ ok: false, error: { code: 'E_TABLE', exit: 65, message: 'no binding table with clause and status columns' } }) + '\n');
     return 65;
   }
-  const unboundRoles = unboundArg === -1 ? [] : argv[unboundArg + 1].split(',').filter(Boolean);
+  if (unboundArg !== -1 && (argv[unboundArg + 1] === undefined || argv[unboundArg + 1].startsWith('--'))) {
+    process.stderr.write(JSON.stringify({ ok: false, error: { code: 'E_USAGE', exit: 64, message: '--unbound needs a comma-separated value (use an empty string for none)' } }) + '\n');
+    return 64;
+  }
+  const unboundRoles = unboundArg === -1 ? [] : argv[unboundArg + 1].split(',').map((s) => s.trim()).filter(Boolean);
   const result = computeLevel({ rows, unboundRoles });
   process.stdout.write(JSON.stringify({ ok: true, ...result }, null, 2) + '\n');
   return 0;

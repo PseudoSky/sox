@@ -30,9 +30,10 @@ export function checkTestingRecord(body) {
   if (!RIGORS.includes(f.rigor)) errors.push(`rigor "${f.rigor ?? ''}" is not one of ${RIGORS.join(', ')}`);
   if (!/\bAC\d+\b/.test(f.ac ?? '')) errors.push('ac: names no AC id (expected AC1 <criterion> ; ...)');
   if (!f.plan) errors.push('plan: is missing');
+  // formats/testing-record.md: not-testing is required at Standard and Deep, and "none" is a valid answer.
   const notTesting = f['not-testing'];
-  if (notTesting === undefined || notTesting === '') errors.push('not-testing: is missing (write "none" when nothing is left untested)');
-  if (['standard', 'deep'].includes(f.rigor) && notTesting === 'none') errors.push(`not-testing: "none" is refused at ${f.rigor} rigor (G12)`);
+  const strict = ['standard', 'deep'].includes(f.rigor);
+  if (strict && (notTesting === undefined || notTesting === '')) errors.push('not-testing: is missing (required at standard and deep)');
   return { ok: errors.length === 0, errors };
 }
 

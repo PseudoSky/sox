@@ -46,3 +46,27 @@ test('595965cc T41.AC5 the result always lists the manual L1 clauses no row prov
   const r = computeLevel({ rows: parseBindingTable(table(gates(LEVEL_GATES.L1))) });
   assert.ok(r.manualL1Clauses.length >= 4);
 });
+
+test('595965cc T41.AC5 the separator forms | --- | and |:---| and a capitalised status all parse and count', () => {
+  const md = ['| clause | mechanism | command or path | owner | status |', '| --- | --- | --- | --- | --- |', '| G1 | C2 | npm run check | qa | Enforced |'].join('\n');
+  assert.equal(parseBindingTable(md)[0].clause, 'G1');
+  const aligned = md.replace('| --- | --- | --- | --- | --- |', '|:---|:---:|---|---|---:|');
+  assert.equal(parseBindingTable(aligned)[0].status, 'Enforced');
+  assert.equal(computeLevel({ rows: parseBindingTable(aligned) }).missing.L1.some((m) => m.gate === 'G1'), false, 'G1 counts (Enforced is case-insensitive)');
+  assert.equal(computeLevel({ rows: parseBindingTable(table(gates(LEVEL_GATES.L1))).map((r) => ({ ...r, status: 'Enforced' })) }).level, 'L1');
+});
+
+test('595965cc T41.AC5 --unbound with no value is E_USAGE (exit 64), not a crash', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const fs2 = await import('node:fs');
+  const os = await import('node:os');
+  const path2 = await import('node:path');
+  const dir = fs2.mkdtempSync(path2.join(os.tmpdir(), 'lvl-'));
+  const f = path2.join(dir, 'IMPL.md');
+  fs2.writeFileSync(f, table(gates(LEVEL_GATES.L1)));
+  const cli = path2.join(path2.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'testing-level.mjs');
+  const r = spawnSync(process.execPath, [cli, '--implementation', f, '--unbound'], { encoding: 'utf8' });
+  assert.equal(r.status, 64);
+  assert.equal(JSON.parse(r.stderr).error.code, 'E_USAGE');
+});

@@ -37,8 +37,9 @@ test('595965cc T17.AC1 missing ac ids, plan, or not-testing are each named; none
   assert.match(checkTestingRecord(good({ plan: '' })).errors.join(' '), /plan: is missing/);
   const noNt = good().replace('not-testing: load behaviour, owned by performance\n', '');
   assert.match(checkTestingRecord(noNt).errors.join(' '), /not-testing: is missing/);
-  assert.match(checkTestingRecord(good({ 'not-testing': 'none' })).errors.join(' '), /"none" is refused at standard/);
-  assert.equal(checkTestingRecord(good({ rigor: 'light', 'not-testing': 'none' })).ok, true, 'none is allowed below standard');
+  assert.equal(checkTestingRecord(good({ 'not-testing': 'none' })).ok, true, 'none is a valid answer at standard (formats/testing-record.md)');
+  const light = good({ rigor: 'light' }).replace('not-testing: load behaviour, owned by performance\n', '');
+  assert.equal(checkTestingRecord(light).ok, true, 'not-testing is optional below standard');
 });
 
 test('595965cc T17.AC2 the CLI exits 0 on a valid body, 1 on an invalid one, 64 on usage', () => {

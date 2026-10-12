@@ -322,11 +322,8 @@ export function reviewRouting({ agents, obligations, roles = null }) {
     const covered = coveredIds(manifest);
     const declaresNone = covered.includes(NO_ROLE_ID);
     report.push({ agent, covered: covered.filter((id) => id !== NO_ROLE_ID) });
-    if (declaresNone) {
-      if (covered.length > 1) findings.push({ agent, id: 'none-with-obligations', detail: `roles-covered:${NO_ROLE_ID} declares no testing role and cannot be combined with obligation ids` });
-      continue;
-    }
-    if (covered.length === 0) {
+    if (declaresNone && covered.length > 1) findings.push({ agent, id: 'none-with-obligations', detail: `roles-covered:${NO_ROLE_ID} declares no testing role and cannot be combined with obligation ids` });
+    if (!declaresNone && covered.length === 0) {
       const misplaced = manifest.agent?.['roles-covered'];
       findings.push({
         agent,
@@ -338,6 +335,7 @@ export function reviewRouting({ agents, obligations, roles = null }) {
       continue;
     }
     for (const id of covered) {
+      if (id === NO_ROLE_ID) continue;
       if (!OBLIGATION_ID.test(id)) findings.push({ agent, id: 'malformed-obligation-id', detail: id });
       else if (!obligations.has(id)) findings.push({ agent, id: 'unknown-obligation-id', detail: id });
     }
@@ -574,6 +572,8 @@ export function resolveRole(role, agents, options = {}) {
   const candidates = [];
   for (const a of agents) {
     if (a.loadError || a.shapeError) continue;
+    // An explicit roles-covered:none agent never holds a role, not even at closeness 0 (CONTRACT.md).
+    if (coveredIds(a.manifest).includes(NO_ROLE_ID)) continue;
     if (session && a.agent === session.agent && role.distinctFrom.some((d) => (session.holds ?? []).includes(d))) continue;
     const have = agentToolSet(a.manifest);
     const toolsMatched = role.tools.filter((t) => have.has(t));
