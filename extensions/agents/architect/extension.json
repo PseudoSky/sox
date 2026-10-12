@@ -36,7 +36,9 @@
       "bash",
       "task",
       "question",
-      "skill"
+      "skill",
+      "grep",
+      "glob"
     ],
     "permission": {
       "read": "allow",

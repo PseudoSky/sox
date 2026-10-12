@@ -48,6 +48,10 @@
       {
         "logical": "memory",
         "server": "memory-server"
+      },
+      {
+        "logical": "backlog",
+        "server": "backlog"
       }
     ],
     "permission": {

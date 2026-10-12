@@ -59,6 +59,10 @@
       {
         "logical": "memory",
         "server": "memory-server"
+      },
+      {
+        "logical": "backlog",
+        "server": "backlog"
       }
     ],
     "permission": {
@@ -210,6 +214,9 @@
   "capabilities": [
     "roles-covered:VR.1",
     "roles-covered:VR.2",
-    "roles-covered:VR.3"
+    "roles-covered:VR.3",
+    "roles-covered:CO.1",
+    "roles-covered:CO.2",
+    "roles-covered:CO.3"
   ]
 }

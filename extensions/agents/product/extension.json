@@ -61,6 +61,10 @@
       {
         "logical": "search",
         "server": "search"
+      },
+      {
+        "logical": "backlog",
+        "server": "backlog"
       }
     ],
     "permission": {
