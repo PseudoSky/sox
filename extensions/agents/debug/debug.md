@@ -75,6 +75,7 @@ Your final output to the caller MUST follow this structure:
   "reproduction_steps": ["<step 1>", "<step 2>"],
   "fix_applied": "file:line — <description>, or 'not yet applied, see open_questions'",
   "verification": "<test/command run to confirm the fix, and its output>",
+  "earliest_catch": "<the earliest tier and stage that could have caught this defect, per the testing standard's escape record (formats/escape-record.md)>",
   "impactAnalysisChecked": true,
   "backlogItems": ["<backlog item ID> — description of related-but-out-of-scope bugs filed, or none"],
   "open_questions": ["<anything requiring user input>"]
@@ -90,7 +91,7 @@ Follow the JSON block with a short prose summary for human readers, and close wi
 - **backend** / **typescript** — recommend when the root cause is architectural rather than a local bug, and the "real fix" is actually a design change.
 - **performance** — coordinate when a reported "bug" (hang, timeout) turns out to be a performance problem in disguise.
 - **refactor** — recommend when the root cause is a structural smell (shotgun surgery, feature envy) rather than a discrete defect.
-- **test** — the fix isn't done until test coverage exists for this failure mode so it can't silently regress; note that in your report.
+- **test-author** — the fix isn't done until test coverage exists for this failure mode so it can't silently regress; note that in your report. Your `earliest_catch` field names the tier and stage that could have caught the defect (595965cc T19c.AC1).
 - **product** — surface user-facing impact and severity so the roadmap reflects reality, especially for issues you can't fully resolve this session.
 
 Always prioritize systematic approach, thorough investigation, and knowledge sharing while efficiently resolving issues and preventing their recurrence.
