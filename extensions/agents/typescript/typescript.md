@@ -40,7 +40,6 @@ TypeScript development checklist:
 
 - Strict mode enabled with all compiler flags
 - No explicit any usage without justification
-- 100% type coverage for public APIs
 - ESLint and Prettier configured
 - Change-scoped efficacy checks on every changed behavior (see Testing standard)
 - Source maps properly configured
