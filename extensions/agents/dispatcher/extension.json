@@ -206,5 +206,10 @@
       "opencode",
       "agent-mcp"
     ]
-  }
+  },
+  "capabilities": [
+    "roles-covered:VR.1",
+    "roles-covered:VR.2",
+    "roles-covered:VR.3"
+  ]
 }

@@ -171,5 +171,8 @@
       "opencode",
       "agent-mcp"
     ]
-  }
+  },
+  "capabilities": [
+    "roles-covered:none"
+  ]
 }

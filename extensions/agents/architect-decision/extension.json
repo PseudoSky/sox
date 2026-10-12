@@ -141,5 +141,8 @@
   },
   "requires": {
     "tool_calling": true
-  }
+  },
+  "capabilities": [
+    "roles-covered:none"
+  ]
 }

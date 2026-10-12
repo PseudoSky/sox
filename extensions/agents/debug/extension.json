@@ -182,5 +182,10 @@
   },
   "requires": {
     "tool_calling": true
-  }
+  },
+  "capabilities": [
+    "roles-covered:TR.1",
+    "roles-covered:TR.2",
+    "roles-covered:TR.3"
+  ]
 }

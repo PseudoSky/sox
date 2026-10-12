@@ -152,5 +152,9 @@
   "requires": {
     "tool_calling": true
   },
-  "version": "0.6.4"
+  "version": "0.6.4",
+  "capabilities": [
+    "roles-covered:RK.1",
+    "roles-covered:RK.4"
+  ]
 }

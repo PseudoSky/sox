@@ -102,10 +102,9 @@ describe('9024e9ac T14 e2e on one scaffold', () => {
     const realDir = path.resolve(SRC, '..', '..', 'agents');
     if (fs.existsSync(realDir)) {
       const real = run('review-routing.mjs', ['--agents-dir', realDir, '--roles', realRoles]);
-      const dirs = fs.readdirSync(realDir, { withFileTypes: true }).filter((d) => d.isDirectory() && fs.existsSync(path.join(realDir, d.name, 'extension.json'))).length;
       const missing = JSON.parse(real.stdout).findings.filter((f) => f.id === 'no-roles-covered-declaration').length;
-      assert.equal(real.status, missing === 0 ? 0 : 1);
-      assert.equal(missing, dirs - JSON.parse(real.stdout).agents.filter((a) => a.covered.length > 0).length);
+      assert.equal(real.status, 0, 'every real agent declares roles-covered: an obligation list or the explicit none');
+      assert.equal(missing, 0);
     }
     assert.equal(run('review-routing.mjs', ['--agents-dir', fx('agents-ok')]).status, 64);
     // A flag whose value is missing must not swallow the next flag as its value.

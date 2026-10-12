@@ -223,6 +223,21 @@ test('9024e9ac T14.AC10 reviewRouting flags a misplaced roles-covered list and h
   assert.equal(clean.findings.some((f) => f.id === 'unresolved-hint'), false);
 });
 
+test('595965cc T19a.AC3 roles-covered:none is an explicit zero-coverage declaration, never a finding', () => {
+  const oblig = obligationIds(parseRoles(readText(path.join(std, 'roles.md'))));
+  const agents = [
+    { agent: 'none-only', manifest: { id: 'none-only', capabilities: ['roles-covered:none'] } },
+    { agent: 'none-mixed', manifest: { id: 'none-mixed', capabilities: ['roles-covered:none', 'roles-covered:AU.1'] } },
+    { agent: 'missing', manifest: { id: 'missing', capabilities: [] } },
+  ];
+  const r = reviewRouting({ agents, obligations: oblig });
+  const by = (id) => r.findings.filter((f) => f.id === id).map((f) => f.agent);
+  assert.deepEqual(by('none-with-obligations'), ['none-mixed']);
+  assert.deepEqual(by('no-roles-covered-declaration'), ['missing'], 'a bare absence is still a finding; none is not an absence');
+  assert.deepEqual(r.agents.find((a) => a.agent === 'none-only').covered, [], 'none resolves no obligation');
+  assert.equal(r.findings.some((f) => f.agent === 'none-only'), false);
+});
+
 test('9024e9ac T14.AC10 the roles-covered schema pins the obligation-id shape', () => {
   const s = readJson(path.join(SKILL_ROOT, 'schemas/roles-covered.schema.json'));
   const idPattern = new RegExp(s.properties['roles-covered'].items.pattern);

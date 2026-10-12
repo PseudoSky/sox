@@ -11,6 +11,8 @@ export const VERBS = ['review', 'run', 'apply'];
 export const TOOL_VOCAB = ['read', 'search', 'shell', 'edit', 'backlog'];
 export const OBLIGATION_ID = /^[A-Z]{2}\.[0-9]+$/;
 export const ROLES_COVERED_PREFIX = 'roles-covered:';
+/** A declaration that the agent performs no testing role. Explicit, so a missing list is never read as "none". */
+export const NO_ROLE_ID = 'none';
 
 /** True for a plain JSON object (not null, not an array). */
 export const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -318,7 +320,12 @@ export function reviewRouting({ agents, obligations, roles = null }) {
       continue;
     }
     const covered = coveredIds(manifest);
-    report.push({ agent, covered });
+    const declaresNone = covered.includes(NO_ROLE_ID);
+    report.push({ agent, covered: covered.filter((id) => id !== NO_ROLE_ID) });
+    if (declaresNone) {
+      if (covered.length > 1) findings.push({ agent, id: 'none-with-obligations', detail: `roles-covered:${NO_ROLE_ID} declares no testing role and cannot be combined with obligation ids` });
+      continue;
+    }
     if (covered.length === 0) {
       const misplaced = manifest.agent?.['roles-covered'];
       findings.push({

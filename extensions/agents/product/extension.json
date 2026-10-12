@@ -209,5 +209,9 @@
         }
       }
     }
-  }
+  },
+  "capabilities": [
+    "roles-covered:CL.1",
+    "roles-covered:RO.1"
+  ]
 }
