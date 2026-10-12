@@ -15,6 +15,7 @@ Separated test authorship (595965cc T22). Plans a bucket's tests and authors fai
 Test support owned by this agent (fakes, fixtures, builders; no production behavior):
 
 - `support/red-record.mjs` — pure judge of a `red:` record, per failing test block (exit non-zero; each block an assertion or the `STUB_MARKER_TOKEN` marker; any structural block or preamble rejected). `eval/lib.mjs` imports this judge; there is no second rule.
+- `support/red-check.mjs` — the CLI the dispatcher runs before it accepts a `red:` record (`--exit <n> --output <file>`): exit 0 only when `judgeRedRecord` judges it red; exit 1 with the reason; exit 64 on usage. Tested by `red-check.test.mjs`.
 - `support/fixtures/stub-marker.txt`, `support/fixtures/assertion.txt`, `support/fixtures/missing-export.txt`, `support/fixtures/mixed-red.txt`, `support/fixtures/assertion-names-missing-binding.txt` — real `node --test` output (node v24.11.1) the judge is tested against.
 
 The `eval/` directory (golden-set harness, fixture, seeded faults, recorded results) is the A/B evidence, not unit-test support.
