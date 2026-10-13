@@ -1,12 +1,5 @@
 # @adhd/sox-mcp-runtime
 
-## 0.3.6
-
-### Patch Changes
-
-- Updated dependencies [5550bb8]
-  - @adhd/sox-service-proxy@0.6.0
-
 ## 0.3.5
 
 ### Patch Changes
