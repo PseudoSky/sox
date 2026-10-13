@@ -20,6 +20,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { buildFailureRecord, classifyListenError, emitListenFailure } from '@adhd/sox-listen-guard';
 import { encodeFrame, FrameDecoder } from './framing.js';
+import {
+  createConnectionTracker,
+  type ClientDisconnectReason,
+  type ConnectionContext,
+  type ConnectionTracker,
+} from './connection-tracker.js';
 import { probeSocketLive } from './ensure-backend.js';
 import { ensurePrivateSocketDir, isUdsDirUnsafeError } from './socket-dir.js';
 import {
@@ -30,9 +36,16 @@ import {
   isNotification,
 } from './jsonrpc.js';
 
-/** A request handler: receives a JSON-RPC request, returns a response. */
+export type { ClientDisconnectReason, ConnectionContext };
+
+/**
+ * A request handler: receives a JSON-RPC request and the {@link ConnectionContext}
+ * of the connection it arrived on, returns a response. A one-argument handler
+ * (the 0.5.0 shape) is still assignable and behaves exactly as before.
+ */
 export type BackendHandler = (
   request: JsonRpcRequest,
+  ctx: ConnectionContext,
 ) => Promise<JsonRpcResponse | undefined> | JsonRpcResponse | undefined;
 
 /** Options for {@link serveBackend}. */
@@ -66,6 +79,19 @@ export interface ServeBackendOptions {
    * nothing.
    */
   onClientCountChange?: (active: number) => void;
+  /**
+   * Called once per accepted connection with its {@link ConnectionContext.connectionId},
+   * AFTER `onClientCountChange` for that connect. Purely observational: a throwing
+   * hook is reported through `onDiagnostic` and never breaks the connection.
+   */
+  onClientConnect?: (connectionId: string) => void;
+  /**
+   * Called once per connection when it closes, BEFORE the `onClientCountChange`
+   * for that disconnect. `reason` is `'closed-by-backend'` when `handle.close()`
+   * destroyed it, `'error'` after a socket error or frame error, else `'end'`
+   * (a SIGKILLed peer normally reads as `'end'`). Purely observational.
+   */
+  onClientDisconnect?: (connectionId: string, reason: ClientDisconnectReason) => void;
 }
 
 /** A running backend listener handle. */
@@ -112,7 +138,13 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
     }
   };
 
-  async function onFrame(msg: unknown, socket: net.Socket): Promise<void> {
+  const tracker: ConnectionTracker<net.Socket> = createConnectionTracker<net.Socket>({
+    onClientConnect: opts.onClientConnect,
+    onClientDisconnect: opts.onClientDisconnect,
+    diag,
+  });
+
+  async function onFrame(msg: unknown, socket: net.Socket, ctx: ConnectionContext): Promise<void> {
     if (!isJsonRpcRequest(msg)) {
       diag(`[service-proxy backend] dropping non-request frame`);
       return;
@@ -120,7 +152,7 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
     const req = msg as JsonRpcRequest;
     let resp: JsonRpcResponse | undefined;
     try {
-      resp = (await opts.handler(req)) ?? undefined;
+      resp = (await opts.handler(req, ctx)) ?? undefined;
     } catch (e) {
       diag(`[service-proxy backend] handler threw: ${(e as Error).message}`);
       if (!isNotification(req)) {
@@ -138,20 +170,24 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
   const server = net.createServer((socket) => {
     sockets.add(socket);
     notifyClientCount();
+    const ctx = tracker.connected(socket);
     const decoder = new FrameDecoder(
-      (msg) => { void onFrame(msg, socket); },
+      (msg) => { void onFrame(msg, socket, ctx); },
       (err) => {
         diag(`[service-proxy backend] frame error: ${err.message}`);
+        tracker.markError(socket);
         socket.destroy();
       },
     );
 
     socket.on('data', (chunk: Buffer) => decoder.push(chunk));
     socket.on('error', (err) => {
+      tracker.markError(socket);
       diag(`[service-proxy backend] socket error: ${err.message}`);
     });
     socket.on('close', () => {
       decoder.reset();
+      tracker.disconnected(socket);
       sockets.delete(socket);
       notifyClientCount();
     });
@@ -186,7 +222,7 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
       }
 
       // SA-4: Probe-connect before bind — NEVER steal a live socket.
-      const doBind = () => doListen(server, opts, resolve, diag, sockets);
+      const doBind = () => doListen(server, opts, resolve, diag, sockets, tracker);
 
       if (fs.existsSync(opts.socketPath)) {
         probeSocketLive(opts.socketPath, 250).then((live) => {
@@ -225,7 +261,10 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
           socketPath: opts.socketPath,
           close: () =>
             new Promise<void>((res) => {
-              for (const s of sockets) s.destroy();
+              for (const s of sockets) {
+                tracker.markClosingByBackend(s);
+                s.destroy();
+              }
               sockets.clear();
               notifyClientCount();
               server.close(() => res());
@@ -233,7 +272,7 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
         });
       });
     } else {
-      doListen(server, opts, resolve, diag, sockets);
+      doListen(server, opts, resolve, diag, sockets, tracker);
     }
   });
 }
@@ -247,6 +286,7 @@ function doListen(
   resolve: (h: BackendHandle) => void,
   diag: (line: string) => void,
   sockets: Set<net.Socket>,
+  tracker: ConnectionTracker<net.Socket>,
 ): void {
   server.listen(opts.socketPath, () => {
     try {
@@ -264,7 +304,10 @@ function doListen(
       socketPath: opts.socketPath,
       close: () =>
         new Promise<void>((res) => {
-          for (const s of sockets) s.destroy();
+          for (const s of sockets) {
+            tracker.markClosingByBackend(s);
+            s.destroy();
+          }
           sockets.clear();
           opts.onClientCountChange?.(0);
           server.close(() => {
