@@ -584,7 +584,9 @@ export function resolveRole(role, agents, options = {}) {
   }
   candidates.sort((x, y) => y.rank - x.rank || x.held - y.held || x.hint - y.hint || x.agent.localeCompare(y.agent));
   const won = candidates[0];
-  if (!won) return { role: role.name, holder: null, covered: [], toolsMatched: [], rank: 0, held: 0 };
+  // A holder must cover at least one of the role's obligations. A tool-eligible agent with no declared coverage is
+  // not a holder: the role is unbound and follows its roles.md no-holder entry (595965cc, owner ruling).
+  if (!won || won.rank === 0) return { role: role.name, holder: null, covered: [], toolsMatched: [], rank: 0, held: 0 };
   return { role: role.name, holder: won.agent, covered: won.covered, toolsMatched: won.toolsMatched, rank: won.rank, held: won.held };
 }
 

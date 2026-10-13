@@ -56,10 +56,9 @@ test('595965cc T41.AC7 unboundRoles lists unbound and closeness-0 roles, and omi
   const auditor = debt.find((d) => d.role === 'auditor');
   assert.equal(auditor, undefined, 'the auditor is fully covered by covers-au');
   const triager = debt.find((d) => d.role === 'triager');
-  assert.equal(triager.status, 'no-declared-coverage', 'plain is eligible at closeness 0');
-  // Closeness-0 eligibility is the existing rule (resolveRole); the tie goes to the first name. Recorded as review debt, not a block.
-  assert.equal(triager.holder, 'covers-au');
-  assert.equal(debt.find((d) => d.role === 'risk-owner').status, 'no-declared-coverage');
+  assert.equal(triager.status, 'unbound', 'no agent covers triager obligations; a none-only agent is not a holder');
+  assert.equal(triager.holder, null);
+  assert.equal(debt.find((d) => d.role === 'risk-owner').status, 'unbound');
 });
 
 test('595965cc T41.AC6 CLI exits 1 on a seeded violation and 0 on a clean document; a missing strategy is E_USAGE', () => {

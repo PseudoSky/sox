@@ -84,13 +84,13 @@ describe('T49 routing composition', () => {
     assert.ok(body.includes('| role-routing | workspace-standards |'), 'role-resolution capability row');
     const roles = read(dir, 'docs/standards/roles.md');
     for (const role of TESTING.roles) assert.ok(roles.includes(`## role: ${role.name}\n`), `roles.md defines ${role.name}`);
-    // 595965cc T47 AC1 fix-1: zero-coverage agents with the tools are eligible, so only roles whose tools no
-    // fixture agent provides stay unbound (the fixtures provide read, search, shell, edit and backlog).
+    // 595965cc T47 AC1 (owner ruling): a tool-eligible agent with no declared coverage is not a holder. Roles whose
+    // obligations no fixture agent declares are unbound, whatever tools the fixtures provide.
     const provided = new Set(['read', 'search', 'shell', 'edit', 'backlog']);
     const toolBlocked = TESTING.roles.filter((x) => !x.tools.every((t) => provided.has(t))).map((x) => `testing/${x.name}`);
-    assert.deepEqual(r.unbound, toolBlocked, 'a role is unbound only when no agent has its tools');
+    for (const id of toolBlocked) assert.ok(r.unbound.includes(id), `${id} is unbound: no agent has its tools`);
     const holderOf = (name) => body.match(new RegExp(`^\\| ${name} \\| testing \\| (\\S+) \\|`, 'm'))?.[1];
-    assert.equal(holderOf('risk-owner'), TESTING.roles.find((x) => x.name === 'risk-owner').tools.every((t) => provided.has(t)) ? '`author-fixture`' : '_unbound_', 'a role with no covering agent binds the first tool-eligible agent at closeness 0');
+    assert.equal(holderOf('risk-owner'), '_unbound_', 'no fixture agent declares risk-owner obligations: unbound, not a closeness-0 holder');
   });
 
   test('595965cc T49 AC1: the skill agentToolSet maps every tool entry exactly as the T10 guard does', () => {

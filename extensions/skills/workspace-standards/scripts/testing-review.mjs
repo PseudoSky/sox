@@ -2,7 +2,7 @@
 // 595965cc T41.AC6 (name independence) and T41.AC7 (unbound roles): the testing-specific checks of `review testing`.
 // usage: testing-review.mjs --agents-dir <dir> --roles <roles.md> --strategy <STRATEGY.md> [--doc <file>]...
 // Exit 1 when a document names an installed agent outside the purpose tags of STRATEGY §2.3. Unbound and
-// closeness-0 roles are listed as review debt and do not fail the run.
+// unbound roles are listed as review debt and do not fail the run.
 import fs from 'node:fs';
 import { loadAgents, parseRoles, resolveRole, takeOption } from './lib.mjs';
 
@@ -31,13 +31,12 @@ export function nameIndependence({ text, agentNames, exempt }) {
   return findings;
 }
 
-/** Roles that no installed agent holds with coverage: unbound, or held only at closeness 0 (review debt). */
+/** Roles no installed agent holds: a role whose obligations no agent covers is unbound (review debt). */
 export function unboundRoles({ roles, agents }) {
   const debt = [];
   for (const role of roles) {
     const r = resolveRole(role, agents);
     if (r.holder === null) debt.push({ role: role.name, status: 'unbound', holder: null, obligations: role.obligations.map((o) => o.id) });
-    else if (r.rank === 0) debt.push({ role: role.name, status: 'no-declared-coverage', holder: r.holder, obligations: role.obligations.map((o) => o.id) });
   }
   return debt;
 }

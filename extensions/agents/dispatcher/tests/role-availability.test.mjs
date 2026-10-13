@@ -144,11 +144,10 @@ test(AC(2, 'the dispatcher telemetry row names the bound agent with covered ids,
   assert.match(d, /`role=<role>:unbound` with the debt owner and expiry, or the block/);
 });
 
-test('595965cc T47 AC1 rank0-3: the telemetry flag in dispatcher.md is exactly the constant the code emits', () => {
-  assert.equal(BOUND_NO_COVERAGE, 'bound-no-coverage', 'the shipped code constant');
+test('595965cc T47 AC1 rank0-3 (owner ruling): dispatcher.md states that zero coverage never holds a role, and names no closeness-0 flag', () => {
   const d = prose('dispatcher');
-  assert.ok(d.includes(`the flag \`${BOUND_NO_COVERAGE}\``), 'dispatcher.md names the flag the code emits');
-  assert.match(d, /closeness-0 binding records covered ids `none` and the flag/);
+  assert.ok(d.includes('never holds it'), 'an eligible agent with no declared coverage never holds the role');
+  assert.ok(!d.includes(BOUND_NO_COVERAGE), 'no closeness-0 binding exists, so no flag is named');
   assert.ok(!d.includes('no-declared-coverage'), 'the retired spelling is gone from dispatcher.md');
 });
 
@@ -175,7 +174,8 @@ test('595965cc T47 AC1: the final tie-break is hints order, then agent name, and
   const hinted = 'hh-hinted';
   const sr = { ...role('static-reviewer'), hints: [hinted] }; // fixture hint list: the real role declares none
   const tools = ['read', 'grep'];
-  const mk = (ids) => Object.fromEntries(ids.map((id) => [id, { id, agent: { tools }, capabilities: [] }]));
+  const covers = sr.obligations.map((o) => `roles-covered:${o.id}`); // closeness > 0 for every candidate: zero coverage is not a holder
+  const mk = (ids) => Object.fromEntries(ids.map((id) => [id, { id, agent: { tools }, capabilities: covers }]));
   // equal closeness (0), equal held: a hinted agent beats an unhinted one regardless of name
   assert.equal(resolveRole(sr, writeRoster(mk(['aaa-unhinted', hinted]))).holder, hinted);
   // equal closeness, no hints involved: the lower name wins, independent of roster order
@@ -232,9 +232,8 @@ test(AC(4, 'Deep, no eligible agent: the change is blocked and reported; a deep-
   assert.equal(bind({ roleName: 'triager', agents: [], rigor: 'deep' }).outcome, 'debt');
 });
 
-test(AC(4, 'Light, review removed, full roster, authoring qa: a zero-coverage agent with the tools is eligible at closeness 0 (595965cc T47 AC1 fix-1)'), () => {
+test(AC(4, 'Light, review removed, full roster, authoring qa: no other agent covers SR.*, so the role is unbound and records review debt (595965cc T47 AC1, owner ruling)'), () => {
   const got = bind({ roleName: 'static-reviewer', agents: seededRosterWithoutReview(), rigor: 'light', session: AUTHORED_QA });
-  assert.equal(got.outcome, 'bound');
-  assert.notEqual(got.holder, 'qa', 'the authoring qa session is excluded by resolveRole');
-  assert.deepEqual(got.covered, [], 'no installed agent besides qa covers SR.*, so the holder is at closeness 0');
+  assert.equal(got.outcome, 'debt');
+  assert.ok(!got.holder, 'a zero-coverage agent, including the authoring qa session, is not a holder');
 });
