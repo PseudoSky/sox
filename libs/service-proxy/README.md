@@ -6,9 +6,10 @@ front-shim over stdio; the shim serves `initialize`/`tools/list` from a cached
 schema and relays everything else to a long-lived backend process over a Unix
 domain socket. Roll the backend, and the same stdio pipe the client is already
 holding keeps working: in-flight and new requests re-dial automatically and
-resume the moment the new backend is live. A dependency-free leaf — Node
-builtins only (`net`, `crypto`, `fs`, `path`), plus one workspace dependency for
-guarded HTTP binding.
+resume the moment the new backend is live. A leaf library with no third-party
+dependencies: it uses Node builtins (`net`, `crypto`, `fs`, `path`,
+`child_process` for the process start token) plus one workspace dependency,
+`@adhd/sox-listen-guard`, for guarded HTTP binding.
 
 ```bash
 pnpm add @adhd/sox-service-proxy
@@ -108,12 +109,17 @@ function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle>;
 
 interface ServeBackendOptions {
   socketPath: string;
-  handler: BackendHandler;       // (req) => JsonRpcResponse | undefined
+  handler: BackendHandler;       // (req, ctx) => JsonRpcResponse | undefined
   onDiagnostic?: (line: string) => void;
   inheritFd?: number;            // listen on a pre-bound fd from an OS supervisor (launchd socket activation)
+  onClientCountChange?: (count: number) => void;
+  onClientConnect?: (connectionId: string) => void;                              // 0.6.0
+  onClientDisconnect?: (connectionId: string, reason: ClientDisconnectReason) => void; // 0.6.0
 }
 
-type BackendHandler = (request: JsonRpcRequest) => Promise<JsonRpcResponse | undefined> | JsonRpcResponse | undefined;
+type BackendHandler = (request: JsonRpcRequest, ctx: ConnectionContext) => Promise<JsonRpcResponse | undefined> | JsonRpcResponse | undefined;
+interface ConnectionContext { readonly connectionId: string }          // 0.6.0
+type ClientDisconnectReason = 'end' | 'error' | 'closed-by-backend';   // 0.6.0
 
 interface BackendHandle {
   socketPath: string;
@@ -354,6 +360,160 @@ function isNotification(req: JsonRpcRequest): boolean; // true iff req.id is abs
 function errorResponse(id: JsonRpcId, code: number, message: string, data?: unknown): JsonRpcResponse;
 ```
 
+## Lifecycle primitives (0.6.0)
+
+Four additive building blocks for a long-lived backend host that must know who is
+connected, avoid stale locks, retire itself when idle, and stop relaunching a
+broken child. Every one is optional: one-argument handlers, the 0.5.0 lock file
+and all existing options behave exactly as before.
+
+> **The ADR-0022 rule: presence never pins.** Connections, presence and health
+> probes never keep a host alive. Only work does. Presence may *release* a host
+> (a client going away can make it eligible to retire sooner); it can never
+> *pin* one. This is enforced in the types: `createIdleRetirer` has no
+> connection or presence parameter, and a host with five permanently idle
+> connected clients still retires after its idle window.
+
+### Connection identity and client hooks
+
+The handler receives `ctx.connectionId`: opaque, unique per accepted connection
+within one `serveBackend` (`"c1"`, `"c2"`, ...), not a secret. `onClientConnect`
+and `onClientDisconnect` fire exactly once per connection, including for a peer
+that was `kill -9`ed (the kernel closes its socket). A killed peer normally
+reports `'end'`; do not rely on telling `'end'` from `'error'`. A hook that
+throws is isolated (reported through `onDiagnostic`) and never breaks a
+connection. `onClientCountChange` keeps its 0.5.0 call sequence.
+
+```typescript
+import { serveBackend } from '@adhd/sox-service-proxy';
+
+const clients = new Map<string, { connectedAt: number; lastActivityAt: number | null }>();
+
+const backend = await serveBackend({
+  socketPath: '/tmp/demo.sock',
+  onClientConnect: (id) => clients.set(id, { connectedAt: Date.now(), lastActivityAt: null }),
+  onClientDisconnect: (id, reason) => {
+    clients.delete(id); // a dead client vanishes at once; no pid polling needed
+    console.error(`client ${id} gone (${reason})`);
+  },
+  handler: (req, ctx) => {
+    if (req.method === 'activity') {
+      const rec = clients.get(ctx.connectionId);
+      if (rec) rec.lastActivityAt = Date.now();
+      return undefined; // notification
+    }
+    return { jsonrpc: '2.0', id: req.id ?? null, result: { you: ctx.connectionId } };
+  },
+});
+```
+
+Consumers that need to attribute requests to a connection (a registry of
+clients, per-client accounting) must read `ctx.connectionId` in the handler; the
+id is not carried on the JSON-RPC request.
+
+### Pid-reuse-safe spawn lock
+
+`ensureBackend`'s spawn lock file gains an optional `startToken`: the text
+`ps -o lstart= -p <pid>` prints for the lock holder, read with `LC_ALL=C` and
+`TZ=UTC` so two callers with different locales or timezones produce the same
+text for the same process. A lock whose pid is alive but whose token differs
+belongs to a recycled pid and is reclaimed immediately instead of after the TTL.
+A lock without a token (written by 0.5.0) and any `ps` failure degrade to the
+0.5.0 rule (alive means held). `ps` is never run on the `already-live` path.
+Verified on macOS; Linux is unverified.
+
+```typescript
+import { readProcessStartToken, isSameProcess } from '@adhd/sox-service-proxy';
+
+const token = readProcessStartToken(process.pid); // e.g. 'Mon Oct 12 09:30:00 2026', or null
+// Later, possibly after a restart: is the pid I recorded still the same process?
+if (!isSameProcess(recordedPid, recordedToken)) {
+  // dead, or the pid number now belongs to someone else: safe to treat as gone
+}
+```
+
+`isSameProcess` returns `false` for a dead pid or a different token, and `true`
+when the token is missing or `ps` fails (fail toward keeping the record).
+
+### Work-driven idle retirer
+
+`createIdleRetirer` retires a host `idleWindowMs` after its last completed work.
+It is **explicit-arm**: the host must call `arm()` once, or it never retires.
+Report work with `touch()` (including when the resource the host supervises goes
+away, to start the window then) or wrap it in `work(fn)`, which counts as busy
+while pending and as activity when it settles, on success or failure. The timer
+is unref'd and re-evaluates without ever writing the last-work time, so while the
+host is busy (`work` pending, or `isBusy()` true) retirement can be up to one
+window late. A throwing `isBusy` is treated as busy: it never retires on a guess.
+`retire(reason)` is idempotent, runs every step in order even if one throws, and
+holds the event loop open until the last step ends.
+
+```typescript
+import { createIdleRetirer } from '@adhd/sox-service-proxy';
+
+let browserUp = true;
+const retirer = createIdleRetirer({
+  idleWindowMs: 30_000, // required, no default
+  isBusy: () => browserUp, // a predicate over WORK, never over who is connected
+  steps: [
+    { name: 'stop-ticker', run: () => clearInterval(ticker) },
+    { name: 'close-listener', run: () => backend.close() },
+  ],
+  onEvent: (e) => console.error('retirer', e.type),
+});
+const ticker = setInterval(() => retirer.touch(), 5_000).unref();
+retirer.arm(); // once; nothing retires before this
+
+await retirer.work(() => handleRequest()); // busy while pending, bumps on settle
+browserUp = false;
+retirer.touch(); // the resource went away: the idle window starts now
+// 30 s later the steps run once, then retirer.state === 'retired'
+```
+
+`idleDueInMs({ busy, retiring, lastWorkAt, now, idleWindowMs })` is the pure
+deadline arithmetic: `null` when busy or retiring, else the non-negative ms
+remaining. Events: `armed`, `fired`, `retire-begin`, `retire-step-failed`,
+`retired`. The retirer installs no signal handlers, never calls `process.exit`
+and reads no environment variables.
+
+### Circuit breaker
+
+`createCircuitBreaker` is a small state machine for "stop relaunching something
+that keeps failing". It defaults to 3 consecutive failures and a 30 s cooldown;
+set `windowMs` to count failures within a window instead. After the cooldown
+exactly **one** caller receives `{ open: false, probe: true }`; every other
+caller keeps seeing the breaker open until that probe records a result (a probe
+that never reports expires after `cooldownMs`, so a dead prober cannot wedge a
+shared store). That single half-open probe is the one intended divergence from
+the embedding funnel's breaker (it gates concurrent callers differently); to
+reproduce the funnel's thresholds use
+`{ failureThreshold: 3, cooldownMs: 10_000 }`. The default store is in-memory;
+supply a `BreakerStore` (`load()`/`save()`, synchronous) to share state across
+processes. A throwing store degrades to in-memory and emits `store-failed`.
+
+```typescript
+import { createCircuitBreaker, type BreakerStore } from '@adhd/sox-service-proxy';
+
+const breaker = createCircuitBreaker({
+  failureThreshold: 3,
+  cooldownMs: 30_000,
+  windowMs: 60_000, // omit to count consecutive failures only
+  onEvent: (e) => console.error('breaker', e.type),
+});
+
+async function launchGuarded() {
+  const gate = breaker.check();
+  if (gate.open) throw new Error(`launch circuit open, retry in ${gate.retryAfterMs} ms`);
+  try {
+    await launch(); // gate.probe === true means this call is the single half-open probe
+    breaker.recordSuccess();
+  } catch (e) {
+    breaker.recordFailure();
+    throw e;
+  }
+}
+```
+
 ## Invariants / gotchas
 
 - **No stdout diagnostics.** The front-shim's stdout carries *only*
@@ -375,6 +535,9 @@ function errorResponse(id: JsonRpcId, code: number, message: string, data?: unkn
   caller always gets a response object to inspect, and the re-dial loop
   keeps trying in the background so a returning backend recovers
   automatically.
+- **`ctx.connectionId` is the only per-connection handle.** It identifies a
+  connection for the lifetime of one `serveBackend`; it is not persisted, not a
+  credential, and must never feed a retire or keep-alive decision (ADR-0022).
 - **This package has no CLI and no MCP SDK dependency.** It is a
   transport-agnostic JSON-RPC relay; the actual MCP tool dispatcher lives
   behind the `handler` you pass to `serveBackend`.

@@ -34,6 +34,23 @@ export surface may change on a minor while `0.x`.
 | `@adhd/sox-registry` | registry index types + helpers |
 | `@adhd/sox-host-runtime` | supervisor / runtime entry points (`index.ts` exports) |
 | `@adhd/sox-mcp-runtime` | MCP serve/tool-dispatch helpers |
+| `@adhd/sox-service-proxy` | `serveBackend` / `dialBackend` / `ensureBackend` / `runFrontShim`, plus the 0.6.0 lifecycle primitives below |
+
+### `@adhd/sox-service-proxy` 0.6.0 additions (experimental until 1.0)
+
+Promoted from Tier 3 to Tier 2 because external code now builds on it
+(`@adhd/stealth-browser` is listed in `sox.externalConsumers`). All additions are
+backward compatible with 0.5.0; the whole 0.5.0 export surface is unchanged and
+pinned by `index-surface.spec.ts`. The four lifecycle primitives are
+**experimental until 1.0**: their option and event shapes may change on a minor
+bump. Pin with `~0.6`.
+
+| Addition | Exports |
+|---|---|
+| Connection identity | `BackendHandler` 2nd argument `ctx: ConnectionContext`; `ServeBackendOptions.onClientConnect` / `onClientDisconnect`; types `ConnectionContext`, `ClientDisconnectReason` |
+| Process identity | `readProcessStartToken`, `isSameProcess`, type `ProcessIdentityDeps`; `ensureBackend` lock file gains optional `startToken`, `EnsureBackendOptions.processIdentity` (tests only) |
+| Idle retirer | `createIdleRetirer`, `idleDueInMs`, types `RetireStep`, `IdleRetirerEvent`, `IdleRetirerOptions`, `IdleRetirer`, `IdleDueInput`, `IdleRetirerTimer` |
+| Circuit breaker | `createCircuitBreaker`, types `BreakerState`, `BreakerStore`, `BreakerEvent`, `CircuitBreakerOptions`, `CircuitBreaker`, `BreakerCheck` |
 
 ## Tier 3 — Internal, published for completeness (`0.x`, NO stability promise)
 
@@ -44,7 +61,6 @@ are **implementation details**. Do not pin third-party code to them; they will c
 |---|---|
 | `@adhd/sox-memory-core` | sox-memory store internals (db/schema/embed/recall); volatile |
 | `@adhd/sox-memory-enrich` | deterministic enrichment internals; volatile |
-| `@adhd/sox-service-proxy` | front-shim/backend lifecycle internals |
 | `@adhd/sox-tokenguard-core` | token mapping internals |
 | `@adhd/sox-host-registry` | host path/target resolution internals |
 

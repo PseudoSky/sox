@@ -24,6 +24,16 @@
   "dependencies": {
     "@adhd/sox-listen-guard": "workspace:^"
   },
+  "sox": {
+    "externalConsumers": [
+      {
+        "name": "@adhd/stealth-browser",
+        "repo": "/Users/nix/dev/node/adhd",
+        "path": "entrypoint/stealth-browser",
+        "note": "chrome-lifecycle reaper host: serveBackend hooks, createIdleRetirer, createCircuitBreaker, isSameProcess (declares ~0.6.0)"
+      }
+    ]
+  },
   "keywords": [
     "mcp",
     "proxy",

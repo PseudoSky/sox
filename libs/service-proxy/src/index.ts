@@ -19,6 +19,9 @@ export type { FrontShimOptions, FrontShimHandle, ClientContext } from './shim.js
 export { serveBackend } from './backend.js';
 export type { ServeBackendOptions, BackendHandle, BackendHandler } from './backend.js';
 
+// ── Connection identity + client hooks (0.6.0) ────────────────────────────────
+export type { ConnectionContext, ClientDisconnectReason } from './connection-tracker.js';
+
 // ── Re-dialing backend connection (the zero-downtime mechanism) ───────────────
 export { dialBackend } from './dial.js';
 export type { DialOptions, BackendConnection, BackoffOptions } from './dial.js';
@@ -30,6 +33,32 @@ export type {
   EnsureBackendResult,
   EnsureBackendDisposition,
 } from './ensure-backend.js';
+
+// ── Pid-reuse-safe process identity (0.6.0) ───────────────────────────────────
+export { readProcessStartToken, isSameProcess } from './process-identity.js';
+export type { ProcessIdentityDeps } from './process-identity.js';
+
+// ── Work-driven idle retirer (0.6.0, ADR-0022) ────────────────────────────────
+export { createIdleRetirer, idleDueInMs } from './idle-retirer.js';
+export type {
+  RetireStep,
+  IdleRetirerEvent,
+  IdleRetirerOptions,
+  IdleRetirer,
+  IdleDueInput,
+  IdleRetirerTimer,
+} from './idle-retirer.js';
+
+// ── Circuit-breaker state machine with a BreakerStore seam (0.6.0) ────────────
+export { createCircuitBreaker } from './circuit-breaker.js';
+export type {
+  BreakerState,
+  BreakerStore,
+  BreakerEvent,
+  CircuitBreakerOptions,
+  CircuitBreaker,
+  BreakerCheck,
+} from './circuit-breaker.js';
 
 // ── [contract:schema-hash] (§9.5.3) ───────────────────────────────────────────
 export { computeSchemaHash, canonicalize } from './schema-hash.js';
