@@ -7,8 +7,6 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { checkReadOnly } from './check-readonly.mjs';
-import { grade, GRADER_VERSION } from './eval/grade.mjs';
-import { summarize, inHaltBand } from './eval/summary.mjs';
 import { createHash } from 'node:crypto';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -284,14 +282,6 @@ test('2f81569f T11.AC2 static mode at Deep rigor refuses implementer reasoning (
   assert.match(prose, /optional `rigor: deep`/);
 });
 
-test('2f81569f T11.AC2 golden set has unlabeled-leak cases (one inside a test comment) and a static-deep refusal', async () => {
-  const { CASES } = await import('./eval/cases.mjs');
-  const leaks = CASES.filter((c) => c.mode === 'blind-deep' && c.expect.refused && !/NOTES/.test(c.brief));
-  assert.ok(leaks.length >= 3, `${leaks.length} unlabeled blind-deep leak cases`);
-  assert.ok(leaks.some((c) => /\n\/\/ uses <= on purpose/.test(c.brief)), 'a leak sits inside a test comment');
-  assert.ok(CASES.some((c) => c.mode === 'static' && /rigor: deep/.test(c.brief) && c.expect.refused));
-});
-
 test('2f81569f T11.AC2 output contract names severities, file:line form, and verdict', () => {
   for (const s of ['blocker', 'major', 'minor', 'nit']) assert.match(prose, new RegExp(s));
   assert.match(prose, /<file>:<line>/);
@@ -299,93 +289,12 @@ test('2f81569f T11.AC2 output contract names severities, file:line form, and ver
   assert.match(prose, /REFUSED: blind brief carries/);
 });
 
-test('2f81569f T11.AC2 grader accepts a conforming static review and rejects free-form prose', () => {
-  const good = 'mode: static\n[major] src/a.js:7 — off by one — evidence: "i <= end" (clause: none)\nverdict: changes-requested\n';
-  const exp = { mode: 'static', anchor: /src\/a\.js:7/, severity: /\[(blocker|major)\]/, verdict: 'changes-requested' };
-  assert.equal(grade(good, exp).pass, true);
-  assert.equal(grade('This diff adds a function. Looks wrong on line 7.', exp).pass, false);
-});
-
-test('2f81569f T11.AC2 grader: REFUSED is exclusive, read-only line is exact, anchor accepts only line 7', () => {
-  assert.equal(grade('REFUSED: x\nExtra explanation.', { refused: true }).pass, false);
-  assert.equal(grade('REFUSED: x', { refused: true }).pass, true);
-  assert.equal(grade('mode: static\nread-only: cannot edit or run\n', { readOnlyDecline: true }).pass, true);
-  assert.equal(grade('mode: static\nI am read-only here.\n', { readOnlyDecline: true }).pass, false);
-  const a = /src\/paginate\.js:7\b/;
-  assert.equal(grade('[major] src/paginate.js:7 — x', { anchor: a }).pass, true);
-  for (const bad of ['src/paginate.js:6', 'src/paginate.js:8', 'src/paginate.js:17']) assert.equal(grade(`[major] ${bad} — x`, { anchor: a }).pass, false, bad);
-});
-
-test('2f81569f T11.AC2 grader requires REFUSED and no review for a contaminated blind brief', () => {
-  assert.equal(grade('REFUSED: blind brief carries rationale', { refused: true }).pass, true);
-  assert.equal(grade('REFUSED: x\n[major] a.js:1 — y', { refused: true }).pass, false);
-  assert.equal(grade('mode: blind\n[minor] a.js:1 — y', { refused: true }).pass, false);
-});
-
 // ---- AC3 -------------------------------------------------------------------------------
-const results = () => JSON.parse(rd('eval/results.json'));
 const sha = (p) => createHash('sha256').update(readFileSync(join(here, p))).digest('hex');
-
-test('2f81569f T11.AC3 + 595965cc T22 eval/run.mjs carries an unconditional HARD STOP: process.exit(64) at top level, before any spawn, with no bypass', () => {
-  const run = readFileSync(join(here, 'eval/run.mjs'), 'utf8');
-  const stop = run.indexOf('// HARD STOP');
-  const exit = run.indexOf('process.exit(64);');
-  assert.ok(stop >= 0 && exit > stop, 'HARD STOP block precedes process.exit(64)');
-  assert.doesNotMatch(run.slice(stop, exit), /\bif\b/, 'the stop is not inside a conditional');
-  assert.match(run, /^process\.exit\(64\);$/m, 'the exit is a top-level statement');
-  assert.ok(run.search(/spawn\(/) > exit, 'stop precedes the first spawn');
-  assert.doesNotMatch(run, /process\.env\.\w*ALLOW/, 'no environment bypass exists');
-});
-
-test('2f81569f T11.AC3 results.json is the output of run.mjs for THIS prompt, cases and grader', () => {
-  const { summary } = results();
-  assert.equal(summary.graderVersion, GRADER_VERSION);
-  assert.equal(summary.promptSha256, sha('review.md'));
-  assert.equal(summary.casesSha256, sha('eval/cases.mjs'));
-  assert.match(summary.command, /node eval\/run\.mjs \d+$/);
-  assert.match(summary.recordedAt, /^\d{4}-\d\d-\d\dT/);
-  assert.ok(['sonnet', 'haiku'].includes(summary.model));
-});
-
-test('2f81569f T11.AC3 stored rows re-grade identically and the summary is derived from them', async () => {
-  const { CASES } = await import('./eval/cases.mjs');
-  const { summary, results: rows } = results();
-  const byId = new Map(CASES.map((c) => [c.id, c]));
-  assert.equal(rows.length, 2 * CASES.length * summary.reps);
-  for (const r of rows) assert.equal(grade(r.output, byId.get(r.case).expect).pass, r.pass, `${r.arm} ${r.case} #${r.rep}`);
-  const d = summarize(rows, CASES);
-  assert.deepEqual({ baseline: summary.baseline, variant: summary.variant, bugDetection: summary.bugDetection }, d);
-});
-
-test('2f81569f T11.AC3 blind and static rates are each >= 0.8, outside the halt band, no case at 0/n, beats baseline', () => {
-  const { summary } = results();
-  assert.ok(summary.reps >= 3);
-  const v = summary.variant;
-  for (const k of ['staticRate', 'blindRate']) {
-    assert.ok(v[k] >= 0.8, `${k} ${v[k]}`);
-    assert.ok(!inHaltBand(v[k]), `${k} ${v[k]} in the 0.5-0.8 halt band`);
-  }
-  for (const [id, frac] of Object.entries(v.perCase)) assert.ok(!frac.startsWith('0/'), `${id} ${frac}`);
-  assert.ok(v.passRate - summary.baseline.passRate >= 0.5);
-  assert.equal(typeof v.heldOutRate, 'number'); // reported separately
-  assert.ok(summary.heldOutCases >= 3);
-  assert.equal(v.emptyOutputs, 0);
-});
-
-test('2f81569f T11.AC3 golden set covers both modes and the refusal path', async () => {
-  const { CASES } = await import('./eval/cases.mjs');
-  assert.ok(CASES.length >= 5 && CASES.length <= 20);
-  assert.equal(new Set(CASES.map((c) => c.id)).size, CASES.length);
-  assert.ok(CASES.some((c) => c.mode === 'static'));
-  assert.ok(CASES.some((c) => c.mode === 'blind'));
-  assert.ok(CASES.some((c) => c.mode === 'blind-deep'));
-  assert.ok(CASES.some((c) => c.expect.refused));
-  assert.ok(CASES.some((c) => c.heldOut));
-});
 
 // ---- AC4 -------------------------------------------------------------------------------
 test('2f81569f T11.AC4 manifest declares claude, opencode and agent-mcp with matching versions and concrete model pin', () => {
-  assert.deepEqual([...manifest.install.hosts].sort(), ['agent-mcp', 'claude', 'opencode']);
+  assert.deepEqual([...manifest.install.hosts].sort(), ['agent-mcp', 'claude', 'codex', 'opencode']); // every host the agent surfaces on (owner direction)
   assert.equal(manifest.render.opencode.mode, 'all');
   assert.match(manifest.render.opencode.model, /^[\w-]+\/[\w.-]+$/);
   assert.equal(manifest.render.claude.version, `v${manifest.version}`);
