@@ -2860,8 +2860,6 @@ function recordOwnership(
   }
 }
 
-// Internal hash helper for declarative install (does not write ledger).
-
 // ─── Cross-platform agent rendering (docs/spec/cross-platform-install-rendering.md) ───
 // [def:agent-renderer] support: when an `agent` extension declares an `agent` IR
 // and/or `render.<host>` overrides, the install engine renders the host-specific
@@ -2946,13 +2944,13 @@ export function readAgentRenderInputs(
 }
 
 /**
- * The exact bytes a file-drop placement of `extType` writes for `hostName`, rendered from
- * the repo source at `srcPath` by the same renderers the installer uses. Returns null when
- * the type has no file renderer on this host (config-merge, run-service, ...): callers must
- * report that as unverifiable, not as in sync. Read-only apart from the content-addressed
- * scratch staging both renderers already perform.
+ * The artifact a file-drop placement of `extType` writes for `hostName`, rendered from the repo
+ * source at `srcPath` by the same renderers the installer uses: a file for an agent, the staged
+ * directory for a skill. Returns null when the type has no file renderer on this host
+ * (config-merge, run-service, ...): callers must report that as unverifiable, not as in sync.
+ * Read-only apart from the content-addressed scratch staging both renderers already perform.
  */
-export function desiredPlacedContent(
+export function desiredPlacedArtifact(
   srcPath: string,
   ext: string,
   extType: string,
@@ -2961,14 +2959,23 @@ export function desiredPlacedContent(
   if (extType === 'agent') {
     const hostMod = loadHostRegistry().getHost(hostName) as HostModuleLocal;
     if (hostMod.render === undefined) return null;
-    const rendered = renderAgentForHost(srcPath, ext, hostName, hostMod.render);
-    return rendered === null ? null : fs.readFileSync(rendered, 'utf8');
+    return renderAgentForHost(srcPath, ext, hostName, hostMod.render);
   }
-  if (extType === 'skill') {
-    const stagedDir = renderSkillForHost(srcPath, ext);
-    return stagedDir === null ? null : fs.readFileSync(path.join(stagedDir, 'SKILL.md'), 'utf8');
-  }
+  if (extType === 'skill') return renderSkillForHost(srcPath, ext);
   return null;
+}
+
+/** The bytes of the placed markdown entrypoint (the agent file, or a skill's SKILL.md), or null. */
+export function desiredPlacedContent(
+  srcPath: string,
+  ext: string,
+  extType: string,
+  hostName: string,
+): string | null {
+  const artifact = desiredPlacedArtifact(srcPath, ext, extType, hostName);
+  if (artifact === null) return null;
+  const entry = fs.statSync(artifact).isDirectory() ? path.join(artifact, 'SKILL.md') : artifact;
+  return fs.readFileSync(entry, 'utf8');
 }
 
 /** Read the agent prose body (the entrypoint .md). The renderer strips frontmatter. */

@@ -63,8 +63,6 @@ function sha256(value: unknown): string {
   return 'sha256:' + crypto.createHash('sha256').update(s).digest('hex');
 }
 
-
-
 /** Read a config file — format-aware (TOML for .toml; JSON otherwise). */
 function readConfigForDiff(filePath: string): Record<string, unknown> {
   if (!fs.existsSync(filePath)) return {};

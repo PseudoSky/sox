@@ -67,7 +67,8 @@ export {
   mergeLockEntry,
 } from './install.js';
 export type { DesiredPin } from './install.js';
-export { desiredPlacedContent } from './install.js';
+export { desiredPlacedContent, desiredPlacedArtifact } from './install.js';
+export { hashPathForInstall } from './hash.js';
 export type { InstallDescriptor, DeclarativeInstallResult, ConfigSchemaProperty, RequiredConfigSeed, AgentRenderInputs, AgentRenderReportLocal } from './install.js';
 
 // ─── Re-export verify-integrity (ADR-0003 is-this-current primitive) ──────────

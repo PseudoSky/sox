@@ -88,4 +88,14 @@ describe('soxe diff / status placement sync', () => {
     expect(d.stdout).toMatch(/^\s+-SKILL EDIT$/m);
     expect(d.stdout).not.toMatch(/EISDIR/);
   });
+
+  it('a stray file added inside a placed skill directory is OUT OF SYNC and named by diff, even though SKILL.md is unchanged', () => {
+    expect(run(['install', 'research', '--host=claude', '--scope=project', `--root=${root}`, '--no-restart']).status).toBe(0);
+    fs.writeFileSync(path.join(root, '.claude', 'skills', 'research', 'STRAY.md'), 'stray\n');
+    const st = run(['status', `--root=${root}`]);
+    expect(st.stdout).toMatch(/OUT OF SYNC\s+research \(claude\/project\)/);
+    const d = run(['diff', 'research', '--scope=project', `--root=${root}`]);
+    expect(d.stdout).toMatch(/STRAY\.md/);
+    expect(d.stdout).not.toMatch(/only the ledger hash is stale/);
+  });
 });

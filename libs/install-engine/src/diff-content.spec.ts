@@ -82,13 +82,25 @@ describe('diff: project-scope placement resolution (backlog 5d94f88d)', () => {
 });
 
 describe('desiredPlacedContent', () => {
-  it('renders a claude agent to the same bytes the installer places', async () => {
+  it('renders a claude agent entrypoint with frontmatter and its name', async () => {
     const { desiredPlacedContent } = await import('./install.js');
     const src = path.resolve(__dirname, '../../../extensions/agents/dispatcher');
     const content = desiredPlacedContent(src, 'dispatcher', 'agent', 'claude');
     expect(typeof content).toBe('string');
     expect(content!.startsWith('---\n')).toBe(true);
     expect(content!).toMatch(/name: dispatcher/);
+  });
+  it('desiredPlacedArtifact: an agent renders to a file and a skill to a directory whose SKILL.md is the content', async () => {
+    const { desiredPlacedArtifact, desiredPlacedContent } = await import('./install.js');
+    const agentSrc = path.resolve(__dirname, '../../../extensions/agents/dispatcher');
+    const agent = desiredPlacedArtifact(agentSrc, 'dispatcher', 'agent', 'claude');
+    expect(fs.statSync(agent!).isFile()).toBe(true);
+    const skillSrc = path.resolve(__dirname, '../../../extensions/skills/research');
+    const skill = desiredPlacedArtifact(skillSrc, 'research', 'skill', 'claude');
+    expect(fs.statSync(skill!).isDirectory()).toBe(true);
+    expect(desiredPlacedContent(skillSrc, 'research', 'skill', 'claude')).toBe(
+      fs.readFileSync(path.join(skill!, 'SKILL.md'), 'utf8'),
+    );
   });
   it('returns null for a type with no file renderer', async () => {
     const { desiredPlacedContent } = await import('./install.js');

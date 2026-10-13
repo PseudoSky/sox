@@ -138,7 +138,8 @@ import {
   diffAll,
   diff as diffExtension,
   unifiedLineDiff,
-  desiredPlacedContent,
+  desiredPlacedArtifact,
+  hashPathForInstall,
   findLocalExtension,
   getScopePath,
   install,
@@ -2429,61 +2430,85 @@ async function cmdGc(flags: Record<string, string>): Promise<void> {
 }
 
 /**
- * The markdown file a file-drop placement is content-checked against: a file placement is itself
- * (agents); a directory placement (skills) is its SKILL.md. Null when neither applies.
- */
-function placedMarkdownFile(file: string): string | null {
-  const fsMod = require('node:fs') as typeof import('node:fs');
-  const pathMod = require('node:path') as typeof import('node:path');
-  if (fsMod.existsSync(file) && fsMod.statSync(file).isDirectory()) {
-    const skillMd = pathMod.join(file, 'SKILL.md');
-    return fsMod.existsSync(skillMd) ? skillMd : null;
-  }
-  return file.endsWith('.md') ? file : null;
-}
-
-/**
  * Content view for `soxe diff`: for each drifted, missing, or changed file-drop placement, print
  * a unified diff of the bytes on disk against the bytes the repo source renders for that host.
- * A surface with no file renderer (config-merge, run-service) cannot be rendered, so it is
- * reported as unavailable rather than guessed at.
+ * A directory placement (a skill) also lists every file in it that differs from the rendered
+ * directory. A surface with no file renderer (config-merge, run-service) cannot be rendered, so
+ * it is reported as unavailable rather than guessed at.
  */
 function printContentDiffs(
   d: { ext: string; host: string; actions: Array<{ kind: string; cap: string; file: string }> },
 ): void {
-  const fsMod = require('node:fs') as typeof import('node:fs');
-  const actionable = d.actions.filter(
-    (a) => a.cap === 'file-drop' && a.kind !== 'up-to-date' && placedMarkdownFile(a.file) !== null,
-  );
+  const actionable = d.actions.filter((a) => a.cap === 'file-drop' && a.kind !== 'up-to-date');
   if (actionable.length === 0) return;
   const srcPath = findLocalExtension(process.cwd(), d.ext);
   const manifest = srcPath === null ? null : loadExtensionManifest(process.cwd(), d.ext);
   const extType = manifest?.type;
   for (const a of actionable) {
+    if (a.kind === 'missing') {
+      process.stdout.write(`    (content diff unavailable: ${a.file} is missing; run \`${CLI} update\` to re-place it)\n`);
+      continue;
+    }
     if (srcPath === null || typeof extType !== 'string') {
       process.stdout.write(`    (content diff unavailable: '${d.ext}' is not in this repo's extensions/)\n`);
       continue;
     }
-    const desired = desiredPlacedContent(srcPath, d.ext, extType, d.host);
-    if (desired === null) {
+    let artifact: string | null;
+    try {
+      artifact = desiredPlacedArtifact(srcPath, d.ext, extType, d.host);
+    } catch (e) {
+      process.stdout.write(`    (content diff unavailable: ${String(e)})\n`);
+      continue;
+    }
+    if (artifact === null) {
       process.stdout.write(`    (content diff unavailable: no file renderer for ${extType} on ${d.host})\n`);
       continue;
     }
-    const target = placedMarkdownFile(a.file);
-    if (target === null) {
-      process.stdout.write(`    (content diff unavailable: ${a.file} has no markdown entrypoint)\n`);
-      continue;
-    }
-    const current = fsMod.existsSync(target) ? fsMod.readFileSync(target, 'utf8') : '';
-    const lines = unifiedLineDiff(current, desired);
-    process.stdout.write(`    --- ${target} (on disk)\n    +++ ${d.ext} (rendered from repo source for ${d.host})\n`);
-    if (lines.length === 0) {
-      process.stdout.write(`    (rendered source matches disk; only the ledger hash is stale)\n`);
-    }
-    for (const line of lines) {
+    for (const line of placementDiffLines(a.file, artifact)) {
       process.stdout.write(`    ${line}\n`);
     }
   }
+}
+
+/** Diff lines for one placement (a file, or a directory) against its rendered artifact. */
+function placementDiffLines(placed: string, artifact: string): string[] {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const out: string[] = [];
+  const isDir = fsMod.statSync(artifact).isDirectory();
+  const entries: Array<{ label: string; current: string; desired: string }> = [];
+  if (!isDir) {
+    entries.push({ label: placed, current: placed, desired: artifact });
+  } else {
+    const walk = (rel: string): void => {
+      const names = new Set<string>();
+      for (const root of [pathMod.join(placed, rel), pathMod.join(artifact, rel)]) {
+        if (!fsMod.existsSync(root)) continue;
+        for (const n of fsMod.readdirSync(root)) names.add(n);
+      }
+      for (const n of [...names].sort()) {
+        const r = pathMod.join(rel, n);
+        const cur = pathMod.join(placed, r);
+        const des = pathMod.join(artifact, r);
+        const isD = (f: string): boolean => fsMod.existsSync(f) && fsMod.statSync(f).isDirectory();
+        if (isD(cur) || isD(des)) walk(r);
+        else entries.push({ label: pathMod.join(placed, r), current: cur, desired: des });
+      }
+    };
+    walk('');
+  }
+  for (const e of entries) {
+    const cur = fsMod.existsSync(e.current) ? fsMod.readFileSync(e.current, 'utf8') : null;
+    const des = fsMod.existsSync(e.desired) ? fsMod.readFileSync(e.desired, 'utf8') : null;
+    if (cur === des) continue;
+    out.push(`--- ${e.label} (on disk${cur === null ? ': absent' : ''})`);
+    out.push(`+++ ${pathMod.basename(artifact)} (rendered from repo source${des === null ? ': absent' : ''})`);
+    const lines = unifiedLineDiff(cur ?? '', des ?? '');
+    if (lines.length === 0) out.push('(differs only in the trailing newline)');
+    out.push(...lines);
+  }
+  if (out.length === 0) out.push(`(rendered source matches ${placed}; only the ledger hash is stale)`);
+  return out;
 }
 
 async function cmdDiff(flags: Record<string, string>): Promise<void> {
@@ -2505,7 +2530,7 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
   if (id !== undefined && id !== '') {
     // Single-extension diff.
     // [inv:diff-exits-zero]: diff is a query command — always exits 0; drift reported on stdout.
-    const result = diffExtension(id, host, scope, scopeRoot, { isProject: scope === 'project', placementRoot: workspaceRoot });
+    const result = diffExtension(id, host, scope, scopeRoot, { isProject: scope === 'project', placementRoot: scope === 'project' ? workspaceRoot : scopeRoot });
     if (result.clean) {
       process.stdout.write(`${CLI} diff: ${id} — up to date (no drift)\n`);
     } else {
@@ -2521,7 +2546,7 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
   } else {
     // No id → diff all installed extensions at this scope root.
     // diffAll is statically imported at the top of this file.
-    const results = diffAll(scopeRoot, { isProject: scope === 'project', placementRoot: workspaceRoot });
+    const results = diffAll(scopeRoot, { isProject: scope === 'project', placementRoot: scope === 'project' ? workspaceRoot : scopeRoot });
     const dirty = results.filter((r) => !r.clean);
     if (dirty.length === 0) {
       process.stdout.write(`${CLI} diff: all extensions up to date (scope=${scope})\n`);
@@ -8479,29 +8504,6 @@ function findMostRecentLogFile(logDir: string, extId: string): string | null {
 }
 
 /**
- * cmdStatus — R7 health surface.
- *
- * Usage:
- *   soxe status [--id=<extId>] [--project=<path>] [--scope=user|project|local]
- *              [--json] [--lines=<n>]
- *
- * Default (no flags): read ~/.sox/supervisors.json, GC stale entries, probe
- * every extension across all live supervisors and render a health table.
- *
- * Filtering (ANDed):
- *   --id=<extId>       filter by extension id (matches across projects)
- *   --project=<path>   filter by supervisor root (absolute or basename)
- *   --scope=<scope>    filter by scope
- *
- * When --id matches exactly one extension, switches to the detail view with
- * a log tail (last --lines lines, default 20).
- *
- * Exit codes:
- *   0 — all healthy
- *   1 — any degraded (pid alive, socket unreachable)
- *   2 — any dead (pid not found)
- */
-/**
  * Placement sync for `soxe status`: compares every ledger-recorded placement in the user and
  * project scopes against the bytes the repo source renders for it. A file-drop agent or skill is
  * verified by content; anything else is reported as unverified rather than assumed in sync.
@@ -8524,7 +8526,7 @@ function printPlacementSync(workspaceRoot: string): void {
   for (const s of scopes) {
     const scopeRoot = dataRoot(s.scope, workspaceRoot);
     if (!fsMod.existsSync(pathMod.join(scopeRoot, 'ledger.json'))) continue;
-    for (const d of diffAll(scopeRoot, { isProject: s.isProject, placementRoot: workspaceRoot })) {
+    for (const d of diffAll(scopeRoot, { isProject: s.isProject, placementRoot: s.isProject ? workspaceRoot : scopeRoot })) {
       checked++;
       const label = `${d.ext} (${d.host}/${d.scope})`;
       const srcPath = findLocalExtension(cwd, d.ext);
@@ -8539,24 +8541,31 @@ function printPlacementSync(workspaceRoot: string): void {
         outOfSync.push(`${label}: missing ${missing.map((a) => a.file).join(', ')}`);
         continue;
       }
-      // The repo source is the reference. A file-drop placement whose bytes equal the rendered
-      // source is in sync even when the ledger's recorded hash is stale. A placement that cannot
-      // be rendered is never assumed in sync: an on-disk edit to it is reported as unverified.
+      // The repo source is the reference. A file-drop placement (a file, or a whole skill
+      // directory) whose hash equals the hash of the rendered source is in sync even when the
+      // ledger's recorded hash is stale. A placement that cannot be rendered is never assumed in
+      // sync: an on-disk edit to it is reported as unverified.
       let stale: string | null = null;
       let uncheckable: string | null = null;
       let editedUncheckable: string | null = null;
+      let artifact: string | null | undefined;
       for (const a of d.actions) {
-        const target = a.cap === 'file-drop' ? placedMarkdownFile(a.file) : null;
-        const desired = target === null ? null : desiredPlacedContent(srcPath, d.ext, extType, d.host);
-        if (target === null || desired === null) {
-          uncheckable ??= target === null
-            ? `${a.cap} placement not content-checked`
-            : `no file renderer for ${extType} on ${d.host}`;
+        if (a.cap === 'file-drop' && artifact === undefined) {
+          try {
+            artifact = desiredPlacedArtifact(srcPath, d.ext, extType, d.host);
+          } catch (e) {
+            artifact = null;
+            uncheckable ??= `render failed: ${String(e)}`;
+          }
+        }
+        if (a.cap !== 'file-drop' || artifact === null || artifact === undefined) {
+          uncheckable ??= a.cap === 'file-drop'
+            ? `no file renderer for ${extType} on ${d.host}`
+            : `${a.cap} placement not content-checked`;
           if (a.kind === 'drifted') editedUncheckable ??= `${a.cap} placement edited on disk`;
           continue;
         }
-        const current = fsMod.readFileSync(target, 'utf8');
-        if (current !== desired) stale ??= target;
+        if (hashPathForInstall(a.file) !== hashPathForInstall(artifact)) stale ??= a.file;
       }
       if (stale !== null) {
         outOfSync.push(`${label}: ${stale} differs from repo source`);
@@ -8581,6 +8590,29 @@ function printPlacementSync(workspaceRoot: string): void {
   process.stdout.write('\n');
 }
 
+/**
+ * cmdStatus — R7 health surface.
+ *
+ * Usage:
+ *   soxe status [--id=<extId>] [--project=<path>] [--scope=user|project|local]
+ *              [--json] [--lines=<n>]
+ *
+ * Default (no flags): read ~/.sox/supervisors.json, GC stale entries, probe
+ * every extension across all live supervisors and render a health table.
+ *
+ * Filtering (ANDed):
+ *   --id=<extId>       filter by extension id (matches across projects)
+ *   --project=<path>   filter by supervisor root (absolute or basename)
+ *   --scope=<scope>    filter by scope
+ *
+ * When --id matches exactly one extension, switches to the detail view with
+ * a log tail (last --lines lines, default 20).
+ *
+ * Exit codes:
+ *   0 — all healthy
+ *   1 — any degraded (pid alive, socket unreachable)
+ *   2 — any dead (pid not found)
+ */
 async function cmdStatus(flags: Record<string, string>): Promise<void> {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
