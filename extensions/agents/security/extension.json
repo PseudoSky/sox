@@ -180,7 +180,11 @@
     "hosts": [
       "claude",
       "opencode",
-      "agent-mcp"
+      "agent-mcp",
+      "codex"
     ]
-  }
+  },
+  "capabilities": [
+    "roles-covered:none"
+  ]
 }

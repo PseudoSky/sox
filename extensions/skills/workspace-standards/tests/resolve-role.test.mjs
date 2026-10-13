@@ -21,9 +21,9 @@ const agent = (name, { tools = ['read', 'grep'], covers = [], description } = {}
 });
 const T = (n, s) => `595965cc T47 AC1 fix-${n}: ${s}`;
 
-test(T(1, 'a zero-coverage agent with the tools is eligible at closeness 0'), () => {
+test(T(1, 'a zero-coverage agent with the tools is not a holder: the role is unbound (owner ruling)'), () => {
   const got = resolveRole(ROLE, [agent('bare')]);
-  assert.equal(got.holder, 'bare');
+  assert.equal(got.holder, null);
   assert.equal(got.rank, 0);
   assert.deepEqual(got.covered, []);
 });
@@ -34,11 +34,11 @@ test(T(1, 'a covered agent beats a zero-coverage agent; a zero-coverage agent la
   assert.equal(resolveRole(ROLE, [agents[2]]).holder, null);
 });
 
-test(T(1, 'the zero-coverage agent is chosen only when no covered agent is eligible'), () => {
+test(T(1, 'a covered agent is chosen; when the only covered agent is excluded, the role is unbound, not given to a zero-coverage agent'), () => {
   const agents = [agent('bare'), agent('covers', { covers: ['SR.2'] })];
   const session = { agent: 'covers', holds: ['test-author'] };
   assert.equal(resolveRole(ROLE, agents).holder, 'covers');
-  assert.equal(resolveRole(ROLE, agents, { session }).holder, 'bare');
+  assert.equal(resolveRole(ROLE, agents, { session }).holder, null);
 });
 
 test(T(2, 'among equal coverage the agent holding fewer other roles wins (Map and object forms)'), () => {
@@ -62,7 +62,7 @@ test(T(2, 'hints break only the remaining ties, after closeness and fewest-roles
   assert.equal(resolveRole(hinted, tie, { held: { 'z-hinted': 1, 'y-hinted': 1 } }).holder, 'a-plain', 'fewest roles beats a hint');
   const closer = [agent('z-hinted', { covers: ['SR.1'] }), agent('a-plain', { covers: ['SR.1', 'SR.2'] })];
   assert.equal(resolveRole(hinted, closer).holder, 'a-plain', 'closeness beats a hint');
-  assert.equal(resolveRole(hinted, [agent('z-hinted', { tools: ['read'], covers: ['SR.1'] }), agent('a-plain')]).holder, 'a-plain', 'a hinted agent without the tools stays ineligible');
+  assert.equal(resolveRole(hinted, [agent('z-hinted', { tools: ['read'], covers: ['SR.1'] }), agent('a-plain', { covers: ['SR.1'] })]).holder, 'a-plain', 'a hinted agent without the tools stays ineligible');
 });
 
 test(T(3, 'resolveRole excludes the authoring session by distinct-from; a fresh dispatch of the same agent stays eligible'), () => {

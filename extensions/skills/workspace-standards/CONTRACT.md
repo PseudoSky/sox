@@ -27,6 +27,7 @@ T14.AC2, T14.AC10. A standard registers in `registry.json` only when it provides
 An agent states which role obligations it covers so role resolution never scores free text. Obligation ids are drawn from the standard's `roles.md` (`<ROLE>.<n>`, for example `AU.2`).
 
 - On disk, in the agent's `extension.json`, one `capabilities` entry per obligation: `"roles-covered:AU.2"`. `capabilities` is the schema-valid open string list of the manifest; the agent IR (`agent`) rejects unknown keys.
+- An agent with no testing role declares `"roles-covered:none"` on its own, as the only entry. That is a declaration with zero coverage: it resolves no role and is never a fallback holder. Combining `none` with an obligation id is a `none-with-obligations` finding.
 - Normalized form: `schemas/roles-covered.schema.json`.
 - `scripts/review-routing.mjs --agents-dir <dir> --roles <roles.md>` reports every agent with no declaration (`no-roles-covered-declaration`) and every id that `roles.md` does not define (`unknown-obligation-id`), and every `roles.md` hint naming no installed agent (`unresolved-hint`); exit 1 on any finding. An `agent["roles-covered"]` list is not the declaration and is reported as a missing one.
 - Closeness (rank by count of covered obligations, then fewest other roles held) is computed by the routing foundation's `run` playbook from these entries and `roles.md`.

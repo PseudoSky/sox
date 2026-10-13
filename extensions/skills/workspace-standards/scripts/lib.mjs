@@ -11,6 +11,8 @@ export const VERBS = ['review', 'run', 'apply'];
 export const TOOL_VOCAB = ['read', 'search', 'shell', 'edit', 'backlog'];
 export const OBLIGATION_ID = /^[A-Z]{2}\.[0-9]+$/;
 export const ROLES_COVERED_PREFIX = 'roles-covered:';
+/** A declaration that the agent performs no testing role. Explicit, so a missing list is never read as "none". */
+export const NO_ROLE_ID = 'none';
 
 /** True for a plain JSON object (not null, not an array). */
 export const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -318,8 +320,10 @@ export function reviewRouting({ agents, obligations, roles = null }) {
       continue;
     }
     const covered = coveredIds(manifest);
-    report.push({ agent, covered });
-    if (covered.length === 0) {
+    const declaresNone = covered.includes(NO_ROLE_ID);
+    report.push({ agent, covered: covered.filter((id) => id !== NO_ROLE_ID) });
+    if (declaresNone && covered.length > 1) findings.push({ agent, id: 'none-with-obligations', detail: `roles-covered:${NO_ROLE_ID} declares no testing role and cannot be combined with obligation ids` });
+    if (!declaresNone && covered.length === 0) {
       const misplaced = manifest.agent?.['roles-covered'];
       findings.push({
         agent,
@@ -331,6 +335,7 @@ export function reviewRouting({ agents, obligations, roles = null }) {
       continue;
     }
     for (const id of covered) {
+      if (id === NO_ROLE_ID) continue;
       if (!OBLIGATION_ID.test(id)) findings.push({ agent, id: 'malformed-obligation-id', detail: id });
       else if (!obligations.has(id)) findings.push({ agent, id: 'unknown-obligation-id', detail: id });
     }
@@ -567,6 +572,8 @@ export function resolveRole(role, agents, options = {}) {
   const candidates = [];
   for (const a of agents) {
     if (a.loadError || a.shapeError) continue;
+    // An explicit roles-covered:none agent never holds a role, not even at closeness 0 (CONTRACT.md).
+    if (coveredIds(a.manifest).includes(NO_ROLE_ID)) continue;
     if (session && a.agent === session.agent && role.distinctFrom.some((d) => (session.holds ?? []).includes(d))) continue;
     const have = agentToolSet(a.manifest);
     const toolsMatched = role.tools.filter((t) => have.has(t));
@@ -577,7 +584,9 @@ export function resolveRole(role, agents, options = {}) {
   }
   candidates.sort((x, y) => y.rank - x.rank || x.held - y.held || x.hint - y.hint || x.agent.localeCompare(y.agent));
   const won = candidates[0];
-  if (!won) return { role: role.name, holder: null, covered: [], toolsMatched: [], rank: 0, held: 0 };
+  // A holder must cover at least one of the role's obligations. A tool-eligible agent with no declared coverage is
+  // not a holder: the role is unbound and follows its roles.md no-holder entry (595965cc, owner ruling).
+  if (!won || won.rank === 0) return { role: role.name, holder: null, covered: [], toolsMatched: [], rank: 0, held: 0 };
   return { role: role.name, holder: won.agent, covered: won.covered, toolsMatched: won.toolsMatched, rank: won.rank, held: won.held };
 }
 

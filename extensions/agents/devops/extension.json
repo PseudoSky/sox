@@ -48,6 +48,14 @@
       {
         "logical": "memory",
         "server": "memory-server"
+      },
+      {
+        "logical": "backlog",
+        "server": "backlog"
+      },
+      {
+        "logical": "code-intel",
+        "server": "gitnexus"
       }
     ],
     "permission": {
@@ -177,7 +185,15 @@
     "hosts": [
       "claude",
       "opencode",
-      "agent-mcp"
+      "agent-mcp",
+      "codex"
     ]
-  }
+  },
+  "capabilities": [
+    "roles-covered:VR.1",
+    "roles-covered:VR.3",
+    "roles-covered:MO.1",
+    "roles-covered:MO.2",
+    "roles-covered:MO.3"
+  ]
 }

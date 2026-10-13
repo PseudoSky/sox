@@ -339,25 +339,11 @@ Per segment — instructions optimized for a weaker model executor. These are su
 3. Modify `calculate(val)` on line 142 to `calculate(val, { mode: ctx.mode })`.
 4. NEVER modify: context construction, error handling, response serialization, or any code outside lines 130-150.
 
-## Test cases
+## Interfaces, contracts and stubs
 
-### Unit tests (test/foo.spec.ts)
+The spec names every interface and contract at each boundary it crosses, stated for both sides, and every escalation trigger it sees (cite the testing standard's clause ids, never an agent name). It does not list tests: test planning belongs to the `test-author` (`dispatch-contract` §1a) and the acceptance criteria belong to the item (dispatcher rule 20).
 
-- `calculate(5, { mode: 'fast' })` → skips corrections, returns fast result
-- `calculate(5, { mode: 'accurate' })` → applies corrections, returns corrected value
-- `calculate(5)` → no opts (backward compatible), behaves like fast mode
-- `calculate(5, { timeout: 0 })` → zero timeout edge case, does not hang
-- `calculate(5, { timeout: -1 })` → negative timeout edge case, handled gracefully
-
-### Integration tests
-
-- Wire real handler → calculate chain. Call with `mode: 'accurate'`. Assert corrections are visible in the response payload.
-
-### UX acceptance tests
-
-- End user passes `mode: 'accurate'` via the API → response includes corrected data.
-- End user passes no mode → response is fast-mode (no regression).
-- End user passes `mode: 'nonexistent'` → fails gracefully (validation error, not crash).
+For a bucket with separated authorship (`test-authorship: separated`), the spec also gives the stub files: each compiles, declares the interfaces only, and every body throws an error whose text starts with `NOT_IMPLEMENTED` (the marker `test-author/support/red-record.mjs` recognises). You give the paths and contents; you do not commit them. The bucket branch does not exist when you write the spec, and you hold no commit permission (595965cc T19a.AC2).
 
 ```
 

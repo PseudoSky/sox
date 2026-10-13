@@ -311,13 +311,13 @@ test('ff15d348 AC1: one fixture roster proves all three outcomes (resolved, unbo
   assert.match(ok.out, /role alpha: resolved -> one/);
 });
 
-test('ff15d348 AC1: an agent that covers the role but lacks a required tool is ineligible; a tool-capable agent covering nothing is eligible only at closeness 0 (resolveRole parity)', () => {
+test('ff15d348 AC1: an agent that covers the role but lacks a required tool is ineligible; a tool-capable agent covering nothing is not a holder (owner ruling; resolveRole parity)', () => {
   const roles = rolesMd(roleBlock({ name: 'shelly', prefix: 'SH', tools: 'read, shell, edit, backlog', noHolder: 'escalate; deep-blocks: no' }));
   const bl = { logical: 'backlog', server: 'backlog' };
   const onlyWeak = rolesRepo(roles, { weak: [['read', 'bash', 'edit'], ['SH.1']] });
   assert.deepEqual(outcomes(rolesOf(onlyWeak)), { shelly: 'unresolved' });
   const idleOnly = rolesRepo(roles, { weak: [['read', 'bash', 'edit'], ['SH.1']], idle: [['read', 'bash', 'edit', bl], []] });
-  assert.deepEqual(rolesOf(idleOnly).results.map((x) => [x.outcome, x.holder, x.covered]), [['resolved', 'idle', []]]);
+  assert.deepEqual(rolesOf(idleOnly).results.map((x) => [x.outcome, x.holder, x.covered]), [['unresolved', null, []]]);
   const full = rolesRepo(roles, { weak: [['read', 'bash', 'edit'], ['SH.1']], idle: [['read', 'bash', 'edit', bl], []], strong: [['read', 'bash', 'write', bl], ['SH.2']] });
   const r = rolesOf(full);
   assert.deepEqual(r.results.map((x) => [x.holder, x.covered]), [['strong', ['SH.2']]]);

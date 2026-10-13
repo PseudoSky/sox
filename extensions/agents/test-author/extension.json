@@ -98,5 +98,5 @@
       }
     }
   },
-  "install": { "type": "agent", "hosts": ["claude", "opencode", "agent-mcp"] }
+  "install": { "type": "agent", "hosts": ["claude", "opencode", "agent-mcp", "codex"] }
 }

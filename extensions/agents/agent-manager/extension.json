@@ -279,7 +279,8 @@
     "hosts": [
       "claude",
       "opencode",
-      "agent-mcp"
+      "agent-mcp",
+      "codex"
     ]
   },
   "dependencies": [
@@ -287,5 +288,8 @@
   ],
   "requires": {
     "tool_calling": true
-  }
+  },
+  "capabilities": [
+    "roles-covered:none"
+  ]
 }

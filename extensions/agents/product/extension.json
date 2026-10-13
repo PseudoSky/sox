@@ -27,7 +27,8 @@
     "hosts": [
       "claude",
       "opencode",
-      "agent-mcp"
+      "agent-mcp",
+      "codex"
     ]
   },
   "requires": {
@@ -61,6 +62,10 @@
       {
         "logical": "search",
         "server": "search"
+      },
+      {
+        "logical": "backlog",
+        "server": "backlog"
       }
     ],
     "permission": {
@@ -209,5 +214,9 @@
         }
       }
     }
-  }
+  },
+  "capabilities": [
+    "roles-covered:CL.1",
+    "roles-covered:RO.1"
+  ]
 }

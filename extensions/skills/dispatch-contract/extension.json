@@ -36,7 +36,8 @@
     "type": "skill",
     "hosts": [
       "claude",
-      "opencode"
+      "opencode",
+      "codex"
     ]
   }
 }

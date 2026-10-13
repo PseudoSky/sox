@@ -36,7 +36,11 @@
       "bash",
       "task",
       "question",
-      "skill"
+      "skill",
+      {
+        "logical": "code-intel",
+        "server": "gitnexus"
+      }
     ],
     "permission": {
       "read": "allow",
@@ -143,10 +147,16 @@
     "hosts": [
       "claude",
       "opencode",
-      "agent-mcp"
+      "agent-mcp",
+      "codex"
     ]
   },
   "requires": {
     "tool_calling": true
-  }
+  },
+  "capabilities": [
+    "roles-covered:PL.1",
+    "roles-covered:PL.2",
+    "roles-covered:PL.3"
+  ]
 }
