@@ -253,13 +253,15 @@ export function diff(
   host: string,
   scope: string,
   scopeRoot: string,
-  opts?: { ledger?: Ledger; isProject?: boolean },
+  opts?: { ledger?: Ledger; isProject?: boolean; placementRoot?: string },
 ): ExtensionDiff {
   const ledger =
     opts?.ledger ?? Ledger.load(scopeRoot, { isProject: opts?.isProject ?? false });
   const actions = ledger.actionsFor(ext, host, scope);
 
-  const actionDiffs = actions.map((a) => diffAction(a, scopeRoot));
+  // Relative ledger paths are workspace-relative (project scope), not data-root-relative.
+  const placementRoot = opts?.placementRoot ?? scopeRoot;
+  const actionDiffs = actions.map((a) => diffAction(a, placementRoot));
   const clean = actionDiffs.every((a) => a.kind === 'up-to-date');
 
   return { ext, host, scope, actions: actionDiffs, clean };
@@ -271,11 +273,44 @@ export function diff(
  */
 export function diffAll(
   scopeRoot: string,
-  opts?: { ledger?: Ledger; isProject?: boolean },
+  opts?: { ledger?: Ledger; isProject?: boolean; placementRoot?: string },
 ): ExtensionDiff[] {
   const ledger =
     opts?.ledger ?? Ledger.load(scopeRoot, { isProject: opts?.isProject ?? false });
   return ledger.entries().map((entry) =>
-    diff(entry.ext, entry.host, entry.scope, scopeRoot, opts?.isProject !== undefined ? { ledger, isProject: opts.isProject } : { ledger }),
+    diff(entry.ext, entry.host, entry.scope, scopeRoot, {
+      ledger,
+      ...(opts?.isProject !== undefined ? { isProject: opts.isProject } : {}),
+      ...(opts?.placementRoot !== undefined ? { placementRoot: opts.placementRoot } : {}),
+    }),
   );
+}
+
+/**
+ * Line-based unified diff of `current` (on disk) against `desired` (rendered from source).
+ * Returns the body lines only, each prefixed `-`, `+` or ` ` (context lines are dropped).
+ * LCS over lines: placed agent and skill files are a few hundred lines, so O(n·m) is fine.
+ */
+export function unifiedLineDiff(current: string, desired: string): string[] {
+  const a = current === '' ? [] : current.replace(/\n$/, '').split('\n');
+  const b = desired === '' ? [] : desired.replace(/\n$/, '').split('\n');
+  const n = a.length;
+  const m = b.length;
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
+    }
+  }
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { i++; j++; }
+    else if (lcs[i + 1]![j]! >= lcs[i]![j + 1]!) { out.push(`-${a[i]}`); i++; }
+    else { out.push(`+${b[j]}`); j++; }
+  }
+  while (i < n) out.push(`-${a[i++]}`);
+  while (j < m) out.push(`+${b[j++]}`);
+  return out;
 }

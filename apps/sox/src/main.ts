@@ -137,6 +137,8 @@ import {
   declarativeInstall,
   diffAll,
   diff as diffExtension,
+  unifiedLineDiff,
+  desiredPlacedContent,
   findLocalExtension,
   getScopePath,
   install,
@@ -2426,6 +2428,45 @@ async function cmdGc(flags: Record<string, string>): Promise<void> {
   process.stdout.write(`gc: trashed ${plan.reclaim.length}, swept ${swept.length} past grace.\n`);
 }
 
+/**
+ * Content view for `soxe diff`: for each drifted, missing, or changed file-drop placement, print
+ * a unified diff of the bytes on disk against the bytes the repo source renders for that host.
+ * A surface with no file renderer (config-merge, run-service) cannot be rendered, so it is
+ * reported as unavailable rather than guessed at.
+ */
+function printContentDiffs(
+  d: { ext: string; host: string; actions: Array<{ kind: string; cap: string; file: string }> },
+): void {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const actionable = d.actions.filter(
+    (a) => a.cap === 'file-drop' && a.file.endsWith('.md') && a.kind !== 'up-to-date',
+  );
+  if (actionable.length === 0) return;
+  const srcPath = findLocalExtension(process.cwd(), d.ext);
+  const manifest = srcPath === null ? null : loadExtensionManifest(process.cwd(), d.ext);
+  const extType = manifest?.type;
+  for (const a of actionable) {
+    if (srcPath === null || typeof extType !== 'string') {
+      process.stdout.write(`    (content diff unavailable: '${d.ext}' is not in this repo's extensions/)\n`);
+      continue;
+    }
+    const desired = desiredPlacedContent(srcPath, d.ext, extType, d.host);
+    if (desired === null) {
+      process.stdout.write(`    (content diff unavailable: no file renderer for ${extType} on ${d.host})\n`);
+      continue;
+    }
+    const current = fsMod.existsSync(a.file) ? fsMod.readFileSync(a.file, 'utf8') : '';
+    const lines = unifiedLineDiff(current, desired);
+    process.stdout.write(`    --- ${a.file} (on disk)\n    +++ ${d.ext} (rendered from repo source for ${d.host})\n`);
+    if (lines.length === 0) {
+      process.stdout.write(`    (rendered source matches disk; only the ledger hash is stale)\n`);
+    }
+    for (const line of lines) {
+      process.stdout.write(`    ${line}\n`);
+    }
+  }
+}
+
 async function cmdDiff(flags: Record<string, string>): Promise<void> {
   const pathMod = require('node:path') as typeof import('node:path');
 
@@ -2445,7 +2486,7 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
   if (id !== undefined && id !== '') {
     // Single-extension diff.
     // [inv:diff-exits-zero]: diff is a query command — always exits 0; drift reported on stdout.
-    const result = diffExtension(id, host, scope, scopeRoot, { isProject: scope === 'project' });
+    const result = diffExtension(id, host, scope, scopeRoot, { isProject: scope === 'project', placementRoot: workspaceRoot });
     if (result.clean) {
       process.stdout.write(`${CLI} diff: ${id} — up to date (no drift)\n`);
     } else {
@@ -2455,12 +2496,13 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
           process.stdout.write(`  ${action.kind}  ${action.file}\n`);
         }
       }
+      printContentDiffs(result);
     }
     process.exit(0);
   } else {
     // No id → diff all installed extensions at this scope root.
     // diffAll is statically imported at the top of this file.
-    const results = diffAll(scopeRoot, { isProject: scope === 'project' });
+    const results = diffAll(scopeRoot, { isProject: scope === 'project', placementRoot: workspaceRoot });
     const dirty = results.filter((r) => !r.clean);
     if (dirty.length === 0) {
       process.stdout.write(`${CLI} diff: all extensions up to date (scope=${scope})\n`);
@@ -2473,6 +2515,7 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
             process.stdout.write(`    ${action.kind}  ${action.file}\n`);
           }
         }
+        printContentDiffs(r);
       }
     }
     // Always exit 0 — drift is informational, not an error.
@@ -8439,6 +8482,82 @@ function findMostRecentLogFile(logDir: string, extId: string): string | null {
  *   1 — any degraded (pid alive, socket unreachable)
  *   2 — any dead (pid not found)
  */
+/**
+ * Placement sync for `soxe status`: compares every ledger-recorded placement in the user and
+ * project scopes against the bytes the repo source renders for it. A file-drop agent or skill is
+ * verified by content; anything else is reported as unverified rather than assumed in sync.
+ * Human-readable output only; the JSON shape of `status` is unchanged.
+ */
+function printPlacementSync(workspaceRoot: string): void {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  // Source of truth is the repo the CLI runs from (install resolves it from cwd); the project
+  // placements live under the workspace root (--root, default cwd).
+  const cwd = process.cwd();
+  const scopes: Array<{ scope: DataScope; isProject: boolean }> = [
+    { scope: 'user', isProject: false },
+    { scope: 'project', isProject: true },
+  ];
+  const outOfSync: string[] = [];
+  const unverified: string[] = [];
+  let checked = 0;
+  let inSync = 0;
+  for (const s of scopes) {
+    const scopeRoot = dataRoot(s.scope, workspaceRoot);
+    if (!fsMod.existsSync(pathMod.join(scopeRoot, 'ledger.json'))) continue;
+    for (const d of diffAll(scopeRoot, { isProject: s.isProject, placementRoot: workspaceRoot })) {
+      checked++;
+      const label = `${d.ext} (${d.host}/${d.scope})`;
+      const srcPath = findLocalExtension(cwd, d.ext);
+      const manifest = srcPath === null ? null : loadExtensionManifest(cwd, d.ext);
+      const extType = manifest?.type;
+      if (srcPath === null || typeof extType !== 'string') {
+        unverified.push(`${label}: not in this repo's extensions/`);
+        continue;
+      }
+      const missing = d.actions.filter((a) => a.kind === 'missing');
+      if (missing.length > 0) {
+        outOfSync.push(`${label}: missing ${missing.map((a) => a.file).join(', ')}`);
+        continue;
+      }
+      let stale: string | null = null;
+      let uncheckable: string | null = null;
+      for (const a of d.actions) {
+        if (a.cap !== 'file-drop' || !a.file.endsWith('.md')) {
+          uncheckable ??= `${a.cap} placement not content-checked`;
+          continue;
+        }
+        const desired = desiredPlacedContent(srcPath, d.ext, extType, d.host);
+        if (desired === null) {
+          uncheckable ??= `no file renderer for ${extType} on ${d.host}`;
+          continue;
+        }
+        const current = fsMod.readFileSync(a.file, 'utf8');
+        if (current !== desired) stale ??= a.file;
+      }
+      if (stale !== null) {
+        outOfSync.push(`${label}: ${stale} differs from repo source`);
+      } else if (d.actions.some((a) => a.kind === 'drifted')) {
+        outOfSync.push(`${label}: edited on disk since install`);
+      } else if (uncheckable !== null) {
+        unverified.push(`${label}: ${uncheckable}`);
+      } else {
+        inSync++;
+      }
+    }
+  }
+  if (checked === 0) return;
+  process.stdout.write(
+    `${CLI} placements: ${inSync} in sync, ${outOfSync.length} out of sync, ${unverified.length} unverified (of ${checked})\n`,
+  );
+  for (const line of outOfSync) process.stdout.write(`  OUT OF SYNC  ${line}\n`);
+  for (const line of unverified) process.stdout.write(`  unverified   ${line}\n`);
+  if (outOfSync.length > 0) {
+    process.stdout.write(`  run \`${CLI} update\` to re-place from repo source (or \`${CLI} diff\` for the content)\n`);
+  }
+  process.stdout.write('\n');
+}
+
 async function cmdStatus(flags: Record<string, string>): Promise<void> {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
@@ -9092,6 +9211,8 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
     if (r.status === 'dead' && exitCode < 2) exitCode = 2;
     else if (r.status === 'degraded' && exitCode < 1) exitCode = 1;
   }
+
+  if (!jsonMode) printPlacementSync(pathMod.resolve(flags['root'] ?? process.cwd()));
 
   // ── JSON output ─────────────────────────────────────────────────────────────
   if (jsonMode) {

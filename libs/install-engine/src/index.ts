@@ -67,6 +67,7 @@ export {
   mergeLockEntry,
 } from './install.js';
 export type { DesiredPin } from './install.js';
+export { desiredPlacedContent } from './install.js';
 export type { InstallDescriptor, DeclarativeInstallResult, ConfigSchemaProperty, RequiredConfigSeed, AgentRenderInputs, AgentRenderReportLocal } from './install.js';
 
 // ─── Re-export verify-integrity (ADR-0003 is-this-current primitive) ──────────
@@ -199,7 +200,7 @@ export type { DataScope } from './data-paths.js';
 // ─── Re-export diff ──────────────────────────────────────────────────────────
 
 export type { ActionDiff, ExtensionDiff, DiffKind } from './diff.js';
-export { diff, diffAll } from './diff.js';
+export { diff, diffAll, unifiedLineDiff } from './diff.js';
 
 // ─── Re-export install-registry (P9) ─────────────────────────────────────────
 
