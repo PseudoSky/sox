@@ -1,5 +1,5 @@
 /**
- * backend-count-golden.spec.ts — 8468f7b1 SP4 (GOLDEN, recorded from the
+ * connection-identity.backend-count-golden.spec.ts — 8468f7b1 SP4 (QUARANTINED real-UDS lane, GOLDEN, recorded from the
  * UNMODIFIED 0.5.0 backend.ts BEFORE connection identity was added).
  *
  * Pins the exact `onClientCountChange` sequence `serveBackend` emits, on BOTH the
@@ -9,7 +9,8 @@
  *     `handle.close()` already cleared the set,
  *   - the own-bind close rejecting when the hook throws (unguarded call).
  * Real UDS in a mkdtemp dir, no spawn, no third-party network (quarantined wiring
- * proof, same lane as connection-identity.loopback.spec.ts).
+ * proof). Lane: the `connection-identity.*.spec.ts` family (loopback, kill9, this one) are the
+ * real-socket specs; the shared prefix is the lane selector (`vitest run connection-identity`).
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import * as net from 'node:net';

@@ -274,7 +274,31 @@ describe('8468f7b1 SP12 any token-read failure leaves dispositions identical to 
     holderTokenNow = 'Tue Oct 13 03:03:03 2026';
     const results = await Promise.all([1, 2, 3, 4, 5].map(() => ensureBackend(opts())));
     expect(results).toHaveLength(5);
-    expect(spawnMock.mock.calls.length).toBeGreaterThanOrEqual(1);
+    // Exactly one spawn: the recycled-pid lock is reclaimed by one O_EXCL winner; the other four
+    // either see the winner's fresh lock (and wait/adopt) or probe the socket. A double spawn means
+    // two callers both believed they held the lock.
+    expect(spawnMock).toHaveBeenCalledTimes(1);
     for (const r of results) expect(['failed', 'adopted-after-wait', 'spawned']).toContain(r.disposition);
+  });
+});
+
+describe('8468f7b1 SP9 F7 the lock is never observable empty', () => {
+  it('SP9 the self start token is read BEFORE the lock file is created (no empty-lock window)', async () => {
+    const order: string[] = [];
+    // A fresh-token read for our own pid must precede the O_EXCL create of the lock file.
+    ps.mockImplementation((_c: string, args: string[]) => {
+      if (Number(args[args.length - 1]) === process.pid) {
+        order.push(fs.existsSync(lockPath) ? 'ps-after-create' : 'ps-before-create');
+        return SELF_TOKEN + '\n';
+      }
+      throw new Error('unexpected pid');
+    });
+    spawnMock.mockImplementation(() => {
+      order.push('spawn');
+      return fakeChild();
+    });
+    await ensureBackend(opts());
+    expect(order[0]).toBe('ps-before-create');
+    expect(order).not.toContain('ps-after-create');
   });
 });

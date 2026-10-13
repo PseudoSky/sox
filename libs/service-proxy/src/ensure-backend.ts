@@ -295,13 +295,20 @@ function lockPayloadJson(key: string, deps?: ProcessIdentityDeps): string {
  * socket) is reclaimed.
  */
 function tryAcquireLock(lockPath: string, key: string, ttlMs: number, deps?: ProcessIdentityDeps): boolean {
-  try {
-    const fd = fs.openSync(lockPath, 'wx'); // atomic create-or-fail
-    fs.writeSync(fd, lockPayloadJson(key, deps));
-    fs.closeSync(fd);
-    return true;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+  // F7: build the payload (which may run a synchronous `ps`) BEFORE the O_EXCL create, so a
+  // concurrent reader never sees an empty lock file and mistakes it for corrupt/stale. The
+  // existsSync pre-check keeps `ps` off the contention path (a loser never pays for a token);
+  // losing the narrow race after it still falls through to EEXIST below.
+  if (!fs.existsSync(lockPath)) {
+    const payloadJson = lockPayloadJson(key, deps);
+    try {
+      const fd = fs.openSync(lockPath, 'wx'); // atomic create-or-fail
+      fs.writeSync(fd, payloadJson);
+      fs.closeSync(fd);
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
   }
   // Lock exists — is the holder still alive and the lock fresh?
   let payload: LockPayload | null = null;
@@ -326,8 +333,9 @@ function tryAcquireLock(lockPath: string, key: string, ttlMs: number, deps?: Pro
       /* another reclaimer won */
     }
     try {
+      const reclaimJson = lockPayloadJson(key, deps); // token read before the create (F7)
       const fd = fs.openSync(lockPath, 'wx');
-      fs.writeSync(fd, lockPayloadJson(key, deps));
+      fs.writeSync(fd, reclaimJson);
       fs.closeSync(fd);
       return true;
     } catch {

@@ -485,7 +485,9 @@ exactly **one** caller receives `{ open: false, probe: true }`; every other
 caller keeps seeing the breaker open until that probe records a result (a probe
 that never reports expires after `cooldownMs`, so a dead prober cannot wedge a
 shared store). That single half-open probe is the one intended divergence from
-the embedding funnel's breaker (it gates concurrent callers differently); to
+the embedding funnel's breaker (`funnelClient.ts` has no half-open state: once the cooldown
+elapses every caller is admitted, with concurrent ensures coalesced on one shared promise, and the
+next failure re-opens it immediately); to
 reproduce the funnel's thresholds use
 `{ failureThreshold: 3, cooldownMs: 10_000 }`. The default store is in-memory;
 supply a `BreakerStore` (`load()`/`save()`, synchronous) to share state across
