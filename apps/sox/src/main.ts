@@ -8539,17 +8539,20 @@ function printPlacementSync(workspaceRoot: string): void {
         outOfSync.push(`${label}: missing ${missing.map((a) => a.file).join(', ')}`);
         continue;
       }
+      // The repo source is the reference. A file-drop placement whose bytes equal the rendered
+      // source is in sync even when the ledger's recorded hash is stale. A placement that cannot
+      // be rendered is never assumed in sync: an on-disk edit to it is reported as unverified.
       let stale: string | null = null;
       let uncheckable: string | null = null;
+      let editedUncheckable: string | null = null;
       for (const a of d.actions) {
         const target = a.cap === 'file-drop' ? placedMarkdownFile(a.file) : null;
-        if (target === null) {
-          uncheckable ??= `${a.cap} placement not content-checked`;
-          continue;
-        }
-        const desired = desiredPlacedContent(srcPath, d.ext, extType, d.host);
-        if (desired === null) {
-          uncheckable ??= `no file renderer for ${extType} on ${d.host}`;
+        const desired = target === null ? null : desiredPlacedContent(srcPath, d.ext, extType, d.host);
+        if (target === null || desired === null) {
+          uncheckable ??= target === null
+            ? `${a.cap} placement not content-checked`
+            : `no file renderer for ${extType} on ${d.host}`;
+          if (a.kind === 'drifted') editedUncheckable ??= `${a.cap} placement edited on disk`;
           continue;
         }
         const current = fsMod.readFileSync(target, 'utf8');
@@ -8557,8 +8560,8 @@ function printPlacementSync(workspaceRoot: string): void {
       }
       if (stale !== null) {
         outOfSync.push(`${label}: ${stale} differs from repo source`);
-      } else if (d.actions.some((a) => a.kind === 'drifted')) {
-        outOfSync.push(`${label}: edited on disk since install`);
+      } else if (editedUncheckable !== null) {
+        unverified.push(`${label}: ${editedUncheckable}`);
       } else if (uncheckable !== null) {
         unverified.push(`${label}: ${uncheckable}`);
       } else {
