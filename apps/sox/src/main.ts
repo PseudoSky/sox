@@ -2093,6 +2093,8 @@ async function hostPlaceExtension(
 async function resyncDeclarativeHosts(
   scope: DataScope,
   workspaceRoot: string,
+  surfaces: 'agent-catalog' | 'all' = 'agent-catalog',
+  sourceRoot: string = workspaceRoot,
 ): Promise<{ attempted: number; resynced: number }> {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
@@ -2116,20 +2118,26 @@ async function resyncDeclarativeHosts(
   let attempted = 0;
   let resynced = 0;
   for (const entry of entries) {
-    const srcPath = findLocalExtension(workspaceRoot, entry.ext);
+    // Source is the repo the CLI runs from (install resolves it from cwd); the placement target is
+    // the workspace root. A temp or project root holds no extensions/ tree.
+    const srcPath = findLocalExtension(sourceRoot, entry.ext);
     if (srcPath === null) continue;
-    const manifest = loadExtensionManifest(workspaceRoot, entry.ext);
+    const manifest = loadExtensionManifest(sourceRoot, entry.ext);
     const extType = manifest?.type;
     if (typeof extType !== 'string' || extType === '') continue;
 
-    // Only re-sync agent-catalog surfaces — see the doc comment above.
+    // `agent-catalog` mode (upgrade) re-syncs only agent-catalog surfaces — see the doc comment
+    // above. `all` mode (update, ADR-0004 D6) re-places every ledger-recorded surface.
     let capability: string | undefined;
     try {
-      capability = getHost(entry.host).surfaces[extType]?.capability;
-    } catch {
+      const surface = getHost(entry.host).surfaces[extType];
+      if (surface === undefined) continue; // host has no surface for this type
+      capability = surface.capability;
+    } catch (e) {
+      process.stderr.write(`${CLI} re-sync: skipped ${entry.ext}@${entry.host} — ${String(e)}\n`);
       continue; // unknown host in the ledger — skip
     }
-    if (capability !== 'agent-catalog') continue;
+    if (surfaces === 'agent-catalog' && capability !== 'agent-catalog') continue;
 
     attempted++;
     try {
@@ -2486,6 +2494,22 @@ async function cmdDiff(flags: Record<string, string>): Promise<void> {
  * [cli-wiring.5]: verb is wired and exits 0.
  */
 async function cmdUpdate(flags: Record<string, string>): Promise<void> {
+  // --help / -h — exit 0 before any update work (BL 90358254: help used to run a real update).
+  if (flags['help'] !== undefined || flags['h'] !== undefined) {
+    process.stdout.write(`${CLI} update — re-resolve installed extensions and re-place their host files
+
+Usage:
+  ${CLI} update [--scope=<s>] [--root=<dir>]
+  ${CLI} update <id> --host=<h1,h2,...> [--scope=project] [--root=<dir>]
+
+Options:
+  --scope=<scope>   user | project | local | org (no-host form default: user)
+  --root=<dir>      Workspace root override (default: cwd)
+  --host=<hosts>    Declarative single-extension update on the listed hosts
+  --help            Show this message
+`);
+    process.exit(0);
+  }
   const hostRaw = flags['host'];
 
   // ── Declarative path: --host present ───────────────────────────────────────
@@ -2556,6 +2580,13 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
   // BL-39 / ADR-0004 §D6: re-materialize service stores so an updated artifact is
   // re-copied into the store (a running daemon must not keep stale copied code).
   rematerializeServiceStores(scope, updateRoot, getScopePaths(scope, updateRoot).lockfile);
+  // ADR-0004 §D6: declarative host placements (agents, skills, config merges) live in the scope
+  // ledger, not the lockfile, so the lockfile pass above never reaches them. Re-place every
+  // ledger-recorded surface from the current repo source. Idempotent (read→update-or-create).
+  const replaced = await resyncDeclarativeHosts(scope, updateRoot, 'all', process.cwd());
+  process.stdout.write(
+    `${CLI} update: re-placed ${replaced.resynced} of ${replaced.attempted} declarative host placement(s) for scope=${scope}\n`,
+  );
   process.stdout.write(`${CLI} update: done (scope=${scope})\n`);
   process.exit(0);
 }
@@ -3482,6 +3513,21 @@ async function cmdReconcileAgentMcp(flags: Record<string, string>): Promise<void
  *      stdio servers → reconnect-needed; declarative → placement refreshed.
  */
 async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
+  // --help / -h — exit 0 before the --all requirement (BL 90358254).
+  if (flags['help'] !== undefined || flags['h'] !== undefined) {
+    process.stdout.write(`${CLI} upgrade — re-install stale consumers across all scopes and projects
+
+Usage:
+  ${CLI} upgrade [<ext-id>] --all [--force] [--host=<host>]
+
+Options:
+  --all             Required: sweep every install record (or only <ext-id>)
+  --force           Also reconcile user-scope MCP servers into every known project .mcp.json
+  --host=<host>     Host for the --force reconcile (default: claude)
+  --help            Show this message
+`);
+    process.exit(0);
+  }
   // Accept positional id as well as --id flag.
   const rawAfterVerbUpg = argv.slice(1);
   let positionalUpg: string | undefined;
