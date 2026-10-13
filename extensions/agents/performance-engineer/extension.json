@@ -185,7 +185,8 @@
     "hosts": [
       "claude",
       "opencode",
-      "agent-mcp"
+      "agent-mcp",
+      "codex"
     ]
   },
   "capabilities": [

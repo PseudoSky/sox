@@ -42,6 +42,6 @@
       "required": ["playbook"]
     }
   },
-  "install": { "type": "skill", "hosts": ["claude", "opencode"] },
+  "install": { "type": "skill", "hosts": ["claude", "opencode", "codex"] },
   "requires": { "tool_calling": true }
 }

@@ -38,6 +38,8 @@
   },
   "install": {
     "type": "skill",
-    "hosts": ["claude", "opencode"]
+    "hosts": ["claude", "opencode",
+    "codex"
+]
   }
 }

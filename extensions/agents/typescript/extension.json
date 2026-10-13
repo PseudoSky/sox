@@ -27,7 +27,8 @@
     "hosts": [
       "claude",
       "opencode",
-      "agent-mcp"
+      "agent-mcp",
+      "codex"
     ],
     "source": "file:///Users/nix/.config/opencode/agents/typescript.md"
   },

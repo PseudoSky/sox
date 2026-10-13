@@ -192,7 +192,7 @@ test('9024e9ac T14.AC8 the real registry reports its five planned standards and 
 test('9024e9ac T14.AC9 the manifest installs on claude and opencode with matching versions', () => {
   const m = readJson(path.join(SKILL_ROOT, 'extension.json'));
   const p = readJson(path.join(SKILL_ROOT, 'package.json'));
-  assert.deepEqual(m.install.hosts.sort(), ['claude', 'opencode']);
+  assert.deepEqual(m.install.hosts.sort(), ['claude', 'codex', 'opencode']); // owner direction: install to every host the skill surfaces on (codex included)
   assert.equal(m.type, 'skill');
   assert.equal(m.entrypoint, 'SKILL.md');
   assert.equal(m.version, p.version);
