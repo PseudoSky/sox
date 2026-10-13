@@ -17,6 +17,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Ledger, LedgerAction } from './ledger.js';
+import { hashPathForInstall } from './hash.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,10 +63,7 @@ function sha256(value: unknown): string {
   return 'sha256:' + crypto.createHash('sha256').update(s).digest('hex');
 }
 
-function hashFile(filePath: string): string {
-  const data = fs.readFileSync(filePath);
-  return 'sha256:' + crypto.createHash('sha256').update(data).digest('hex');
-}
+
 
 /** Read a config file — format-aware (TOML for .toml; JSON otherwise). */
 function readConfigForDiff(filePath: string): Record<string, unknown> {
@@ -171,7 +169,7 @@ function diffAction(action: LedgerAction, scopeRoot?: string): ActionDiff {
         // No hash recorded — treat as up-to-date (older install).
         return { ...base, kind: 'up-to-date' };
       }
-      const currentHash = hashFile(action.file);
+      const currentHash = hashPathForInstall(action.file);
       if (currentHash === action.appliedHash) {
         return { ...base, kind: 'up-to-date', currentHash };
       }

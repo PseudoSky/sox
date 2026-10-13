@@ -1614,6 +1614,7 @@ import { atomicWriteFileSync } from './atomic-write.js';
 // MCP-over-stdio implementation. A caller (e.g. reconcile-agent-mcp) may inject one.
 import type { AgentCatalogClient, AgentCatalogPayload } from './capabilities/agent-catalog.js';
 import type { CatalogUpsertOutcome } from './agent-mcp-client.js';
+import { hashPathForInstall } from './hash.js';
 
 // ─── Host-registry: loaded at runtime from dist to avoid cross-lib rootDir ──
 // [ref:host-keyed-target]: all literal host paths live in libs/host-registry.
@@ -2860,31 +2861,6 @@ function recordOwnership(
 }
 
 // Internal hash helper for declarative install (does not write ledger).
-function hashPathForInstall(p: string): string {
-  if (!fs.existsSync(p)) return '';
-  const stat = fs.statSync(p);
-  if (stat.isDirectory()) return hashDirForInstall(p);
-  const data = fs.readFileSync(p);
-  return 'sha256:' + crypto.createHash('sha256').update(data).digest('hex');
-}
-
-function hashDirForInstall(dirPath: string): string {
-  const h = crypto.createHash('sha256');
-  const entries = fs
-    .readdirSync(dirPath, { withFileTypes: true })
-    .sort((a, b) => a.name.localeCompare(b.name));
-  for (const entry of entries) {
-    const child = path.join(dirPath, entry.name);
-    h.update(entry.name + ':');
-    if (entry.isDirectory()) {
-      h.update('dir:' + hashDirForInstall(child));
-    } else {
-      const data = fs.readFileSync(child);
-      h.update('file:sha256:' + crypto.createHash('sha256').update(data).digest('hex'));
-    }
-  }
-  return 'sha256:' + h.digest('hex');
-}
 
 // ─── Cross-platform agent rendering (docs/spec/cross-platform-install-rendering.md) ───
 // [def:agent-renderer] support: when an `agent` extension declares an `agent` IR

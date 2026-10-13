@@ -74,4 +74,18 @@ describe('soxe diff / status placement sync', () => {
     expect(run(['status', `--root=${root}`]).stdout).toMatch(/placements: 1 in sync, 0 out of sync/);
     expect(run(['diff', 'dispatcher', '--scope=project', `--root=${root}`]).stdout).toMatch(/up to date/);
   });
+
+  it('a skill (directory placement) is reported in sync, then OUT OF SYNC when its SKILL.md is edited, without crashing', () => {
+    const inst = run(['install', 'research', '--host=claude', '--scope=project', `--root=${root}`, '--no-restart']);
+    expect(inst.status).toBe(0);
+    expect(run(['status', `--root=${root}`]).stdout).toMatch(/placements: 2 in sync, 0 out of sync/);
+    fs.appendFileSync(path.join(root, '.claude', 'skills', 'research', 'SKILL.md'), 'SKILL EDIT\n');
+    const st = run(['status', `--root=${root}`]);
+    expect(st.status).toBe(0);
+    expect(st.stdout).toMatch(/OUT OF SYNC\s+research \(claude\/project\)/);
+    const d = run(['diff', 'research', '--scope=project', `--root=${root}`]);
+    expect(d.status).toBe(0);
+    expect(d.stdout).toMatch(/^\s+-SKILL EDIT$/m);
+    expect(d.stdout).not.toMatch(/EISDIR/);
+  });
 });

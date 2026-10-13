@@ -2429,6 +2429,20 @@ async function cmdGc(flags: Record<string, string>): Promise<void> {
 }
 
 /**
+ * The markdown file a file-drop placement is content-checked against: a file placement is itself
+ * (agents); a directory placement (skills) is its SKILL.md. Null when neither applies.
+ */
+function placedMarkdownFile(file: string): string | null {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  if (fsMod.existsSync(file) && fsMod.statSync(file).isDirectory()) {
+    const skillMd = pathMod.join(file, 'SKILL.md');
+    return fsMod.existsSync(skillMd) ? skillMd : null;
+  }
+  return file.endsWith('.md') ? file : null;
+}
+
+/**
  * Content view for `soxe diff`: for each drifted, missing, or changed file-drop placement, print
  * a unified diff of the bytes on disk against the bytes the repo source renders for that host.
  * A surface with no file renderer (config-merge, run-service) cannot be rendered, so it is
@@ -2439,7 +2453,7 @@ function printContentDiffs(
 ): void {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const actionable = d.actions.filter(
-    (a) => a.cap === 'file-drop' && a.file.endsWith('.md') && a.kind !== 'up-to-date',
+    (a) => a.cap === 'file-drop' && a.kind !== 'up-to-date' && placedMarkdownFile(a.file) !== null,
   );
   if (actionable.length === 0) return;
   const srcPath = findLocalExtension(process.cwd(), d.ext);
@@ -2455,9 +2469,14 @@ function printContentDiffs(
       process.stdout.write(`    (content diff unavailable: no file renderer for ${extType} on ${d.host})\n`);
       continue;
     }
-    const current = fsMod.existsSync(a.file) ? fsMod.readFileSync(a.file, 'utf8') : '';
+    const target = placedMarkdownFile(a.file);
+    if (target === null) {
+      process.stdout.write(`    (content diff unavailable: ${a.file} has no markdown entrypoint)\n`);
+      continue;
+    }
+    const current = fsMod.existsSync(target) ? fsMod.readFileSync(target, 'utf8') : '';
     const lines = unifiedLineDiff(current, desired);
-    process.stdout.write(`    --- ${a.file} (on disk)\n    +++ ${d.ext} (rendered from repo source for ${d.host})\n`);
+    process.stdout.write(`    --- ${target} (on disk)\n    +++ ${d.ext} (rendered from repo source for ${d.host})\n`);
     if (lines.length === 0) {
       process.stdout.write(`    (rendered source matches disk; only the ledger hash is stale)\n`);
     }
@@ -8523,7 +8542,8 @@ function printPlacementSync(workspaceRoot: string): void {
       let stale: string | null = null;
       let uncheckable: string | null = null;
       for (const a of d.actions) {
-        if (a.cap !== 'file-drop' || !a.file.endsWith('.md')) {
+        const target = a.cap === 'file-drop' ? placedMarkdownFile(a.file) : null;
+        if (target === null) {
           uncheckable ??= `${a.cap} placement not content-checked`;
           continue;
         }
@@ -8532,8 +8552,8 @@ function printPlacementSync(workspaceRoot: string): void {
           uncheckable ??= `no file renderer for ${extType} on ${d.host}`;
           continue;
         }
-        const current = fsMod.readFileSync(a.file, 'utf8');
-        if (current !== desired) stale ??= a.file;
+        const current = fsMod.readFileSync(target, 'utf8');
+        if (current !== desired) stale ??= target;
       }
       if (stale !== null) {
         outOfSync.push(`${label}: ${stale} differs from repo source`);
