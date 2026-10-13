@@ -1,5 +1,12 @@
 # @adhd/sox-embedding-provider
 
+## 0.6.4
+
+### Patch Changes
+
+- Updated dependencies [bcd8be4]
+  - @adhd/sox-service-proxy@0.6.0
+
 ## 0.6.3
 
 ### Patch Changes
