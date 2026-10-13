@@ -347,3 +347,29 @@ describe('8468f7b1 SP25 default path is pure and a throwing store degrades', () 
     expect(store.state?.openedAt).not.toBeNull();
   });
 });
+
+describe('8468f7b1 SP22b backwards-clock handling is consistent between check() and recordFailure()', () => {
+  it('SP22b a failure recorded while check() reports open (clock went backwards) does not re-open with a fresh openedAt', () => {
+    const c = clock(1_000_000);
+    const store = memStore();
+    const b = createCircuitBreaker({ failureThreshold: 1, cooldownMs: 10_000, now: c.now, store });
+    b.recordFailure();
+    const opened = store.state!.openedAt;
+    const savesBefore = store.saves;
+    c.advance(-3_000); // clock steps back: check() treats the breaker as freshly opened
+    expect(b.check()).toEqual({ open: true, retryAfterMs: 10_000 });
+    b.recordFailure();
+    expect(store.state!.openedAt).toBe(opened); // not rewritten to the earlier clock reading
+    expect(store.state!.consecutive).toBe(1);
+    expect(store.saves).toBe(savesBefore);
+    expect(b.check()).toEqual({ open: true, retryAfterMs: 10_000 });
+  });
+
+  it('SP22b the re-open branch drops future-dated window entries just like the closed branch', () => {
+    const store = memStore({ consecutive: 2, recent: [30_000, 15_000], openedAt: 1_000, probeStartedAt: null });
+    const b = createCircuitBreaker({ failureThreshold: 2, cooldownMs: 10_000, windowMs: 100_000, now: () => 20_000, store });
+    b.recordFailure(); // cooldown elapsed, no probe out: re-opens
+    expect(store.state!.recent).toEqual([15_000, 20_000]); // 30_000 is in the future of 20_000: dropped
+    expect(store.state!.openedAt).toBe(20_000);
+  });
+});

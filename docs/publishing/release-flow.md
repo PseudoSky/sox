@@ -14,11 +14,12 @@ repos and cannot be derived — each package declares its own:
 
 ```json
 "sox": { "externalConsumers": [
-  { "name": "@adhd/other-pkg", "repo": "/abs/path/to/repo", "path": "sub/dir", "note": "direct dep" }
+  { "name": "@adhd/other-pkg", "repo": "owner/repo", "path": "sub/dir", "note": "direct dep" }
 ] }
 ```
 
-Keep that list current. An undeclared external consumer is invisible to every check
+`repo` is a display identifier (owner/name), never a machine-local path: the manifest
+ships in the published tarball. Keep that list current. An undeclared external consumer is invisible to every check
 below, and will keep running the old code indefinitely.
 
 ## 2. Watch for edges that do not float

@@ -6,8 +6,11 @@
  * other repos and cannot be derived, so each package declares them itself:
  *
  *   "sox": { "externalConsumers": [
- *     { "name": "@adhd/backlog", "repo": "/Users/nix/dev/node/adhd", "via": "@adhd/sox-graph-store" }
+ *     { "name": "@adhd/backlog", "repo": "PseudoSky/adhd", "via": "@adhd/sox-graph-store" }
  *   ]}
+ *
+ * `repo` is a display identifier only (the tool never opens it). Use the repo's
+ * owner/name, NOT a machine-local absolute path: the manifest ships in the tarball.
  *
  * `via` names the intermediate package when the dependency is indirect. An
  * intermediate that pins an EXACT version is a hard stop: a new release is

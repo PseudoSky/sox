@@ -123,9 +123,23 @@ describe.each<Mode>(['own-bind', 'inherited-fd'])('onClientCountChange golden â€
 
 describe('onClientCountChange throwing hook on close (8468f7b1 SP4, SP5)', () => {
   it('own-bind: the close-time call is UNGUARDED so close() rejects with the hook error', async () => {
-    const h = await start('own-bind', () => { throw new Error('boom-own'); });
+    // KNOWN DEFECT, pinned as the 0.5.0 golden (see README "Known limitations"): because the
+    // close-time notify throws inside close()'s executor, server.close() is never reached and the
+    // listener stays open. The hook is switchable so the cleanup below can close that leaked
+    // listener with a second, non-throwing close() instead of leaving it open for the process.
+    let boom = true;
+    const h = await start('own-bind', () => {
+      if (boom) throw new Error('boom-own');
+    });
+    cleanups.push(async () => {
+      boom = false;
+      await h.close();
+    });
     // connect-time notify is guarded (diag), so connecting is fine
     await expect(h.close()).rejects.toThrow('boom-own');
+    // the leak: the listener is still accepting after the rejected close()
+    const probe = await connect(h.socketPath);
+    expect(probe.destroyed).toBe(false);
   });
 
   it('inherited-fd: the close-time call is GUARDED so close() resolves', async () => {

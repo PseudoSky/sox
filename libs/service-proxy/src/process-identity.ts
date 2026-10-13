@@ -28,8 +28,14 @@ export interface ProcessIdentityDeps {
 /** ms to allow `ps` before giving up (a hung ps must not wedge ensureBackend). */
 const PS_TIMEOUT_MS = 1000;
 
-/** Default liveness check: kill(pid,0); EPERM means alive (another user's process). */
-function defaultPidAlive(pid: number): boolean {
+/**
+ * Default liveness check: kill(pid,0); EPERM means alive (another user's process).
+ * The one shared implementation (ensure-backend imports it); exported from this module only,
+ * not from the package entry.
+ *
+ * @internal
+ */
+export function pidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -73,7 +79,7 @@ export function readProcessStartToken(pid: number, deps?: ProcessIdentityDeps): 
  *  - ps failure at check time      -> true (fail toward keeping the lock = 0.5.0)
  */
 export function isSameProcess(pid: number, startToken: string | null | undefined, deps?: ProcessIdentityDeps): boolean {
-  const alive = deps?.pidAlive ?? defaultPidAlive;
+  const alive = deps?.pidAlive ?? pidAlive;
   if (!alive(pid)) return false;
   if (startToken === null || startToken === undefined) return true;
   const current = readProcessStartToken(pid, deps);

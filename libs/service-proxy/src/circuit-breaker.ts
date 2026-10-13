@@ -28,6 +28,12 @@
  * timers or process listeners. The default store is in-memory; persistence is
  * the consumer's (`BreakerStore`), and store I/O is best-effort: a throwing
  * store degrades to in-memory state and reports `store-failed`.
+ *
+ * Cross-process note: each operation is load, decide, save. That sequence is NOT atomic, so the
+ * single-probe guarantee holds across processes only if the supplied `BreakerStore` provides its
+ * own atomicity (for example an O_EXCL lock or a transactional row around the whole operation).
+ * With a plain load/save store, two processes can both observe "cooldown elapsed" and both be
+ * handed `probe: true`.
  */
 
 export interface BreakerState {
@@ -189,13 +195,16 @@ export function createCircuitBreaker(o: CircuitBreakerOptions = {}): CircuitBrea
 
       if (s.openedAt !== null) {
         const sinceOpen = t - s.openedAt;
-        const coolingDown = sinceOpen >= 0 && sinceOpen < cooldownMs;
+        // Clock moved backwards: check() reports this breaker open, so a failure here must not
+        // re-open it with a fresh openedAt (that would silently rewrite the cooldown check() sees).
+        if (sinceOpen < 0) return;
+        const coolingDown = sinceOpen < cooldownMs;
         // A stray failure during an active cooldown (no probe out) changes nothing:
         // the cooldown is not extended by callers that ignored the open breaker.
         if (coolingDown && s.probeStartedAt === null) return;
         // Failed probe (or failure after the cooldown): re-open with a fresh cooldown.
         s.consecutive += 1;
-        if (windowMs !== undefined) s.recent = s.recent.filter((f) => t - f < windowMs).concat(t);
+        if (windowMs !== undefined) s.recent = s.recent.filter((f) => t - f < windowMs && t - f >= 0).concat(t);
         open(s, t);
         save(s);
         return;

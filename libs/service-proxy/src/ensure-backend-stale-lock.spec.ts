@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { spawnMock, execFileSyncMock } = vi.hoisted(() => ({ spawnMock: vi.fn(), execFileSyncMock: vi.fn() }));
 vi.mock('node:child_process', () => ({ spawn: spawnMock, execFileSync: execFileSyncMock }));
 
-import { ensureBackend, type EnsureBackendOptions } from './ensure-backend.js';
+import { ensureBackend, tryAcquireLock, type EnsureBackendOptions } from './ensure-backend.js';
 
 const NOW = new Date('2026-10-12T12:00:00Z').getTime();
 const HOLDER_PID = 4242;
@@ -269,14 +269,13 @@ describe('8468f7b1 SP12 any token-read failure leaves dispositions identical to 
     expect(parsed.key).toBe(KEY);
   });
 
-  it('SP12 thundering herd of 5 against a recycled-pid lock: all concurrent callers terminate with only the O_EXCL winner spawning', async () => {
+  it('SP12 five callers started together against a recycled-pid lock all terminate with a single spawn (smoke only: tryAcquireLock is synchronous, so this does NOT interleave reclaimers; see SP12b)', async () => {
     seedLock({ pid: HOLDER_PID, t: NOW, key: KEY, startToken: HOLDER_TOKEN });
     holderTokenNow = 'Tue Oct 13 03:03:03 2026';
     const results = await Promise.all([1, 2, 3, 4, 5].map(() => ensureBackend(opts())));
     expect(results).toHaveLength(5);
-    // Exactly one spawn: the recycled-pid lock is reclaimed by one O_EXCL winner; the other four
-    // either see the winner's fresh lock (and wait/adopt) or probe the socket. A double spawn means
-    // two callers both believed they held the lock.
+    // The calls reach the lock one after another (the acquire is synchronous), so this checks
+    // termination and a single spawn in the serialized order only.
     expect(spawnMock).toHaveBeenCalledTimes(1);
     for (const r of results) expect(['failed', 'adopted-after-wait', 'spawned']).toContain(r.disposition);
   });
@@ -300,5 +299,116 @@ describe('8468f7b1 SP9 F7 the lock is never observable empty', () => {
     await ensureBackend(opts());
     expect(order[0]).toBe('ps-before-create');
     expect(order).not.toContain('ps-after-create');
+  });
+});
+
+describe('8468f7b1 SP12b two reclaimers racing on one stale lock never both hold it', () => {
+  const TTL = 30_000;
+
+  function leftovers(): string[] {
+    return fs.readdirSync(dir).filter((f) => f.includes('.reclaim-'));
+  }
+
+  it('SP12b B reclaims and creates a fresh lock between A reading the stale lock and A removing it: A must not delete B\'s fresh lock', () => {
+    holderAlive = false; // the seeded lock is stale for both reclaimers
+    seedLock({ pid: HOLDER_PID, t: NOW, key: KEY, startToken: HOLDER_TOKEN });
+    const deps = opts().processIdentity!;
+
+    let bResult: boolean | undefined;
+    let bLock = '';
+    // A has read the stale payload and decided to reclaim; the hook runs B's whole acquire at
+    // exactly that point (the interleaving a synchronous Promise.all can never produce).
+    const aResult = tryAcquireLock(lockPath, KEY, TTL, deps, {
+      afterStaleRead: () => {
+        bResult = tryAcquireLock(lockPath, KEY, TTL, deps);
+        bLock = fs.readFileSync(lockPath, 'utf8');
+      },
+    });
+
+    expect(bResult).toBe(true); // B took the stale lock first
+    expect(aResult).toBe(false); // A must see B's fresh lock as contended, not delete it
+    expect(fs.readFileSync(lockPath, 'utf8')).toBe(bLock); // B's lock is intact, byte for byte
+    expect(JSON.parse(bLock)).toMatchObject({ pid: process.pid, key: KEY });
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('SP12b with no interleaving the single reclaimer still wins and leaves nothing behind', () => {
+    holderAlive = false;
+    seedLock({ pid: HOLDER_PID, t: NOW, key: KEY, startToken: HOLDER_TOKEN });
+    expect(tryAcquireLock(lockPath, KEY, TTL, opts().processIdentity)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf8'))).toMatchObject({ pid: process.pid });
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('SP12b a corrupt lock replaced by a fresh one mid-reclaim is likewise restored, not deleted', () => {
+    fs.writeFileSync(lockPath, '{not json');
+    const deps = opts().processIdentity!;
+    let bLock = '';
+    const aResult = tryAcquireLock(lockPath, KEY, TTL, deps, {
+      afterStaleRead: () => {
+        expect(tryAcquireLock(lockPath, KEY, TTL, deps)).toBe(true);
+        bLock = fs.readFileSync(lockPath, 'utf8');
+      },
+    });
+    expect(aResult).toBe(false);
+    expect(fs.readFileSync(lockPath, 'utf8')).toBe(bLock);
+  });
+
+  it('SP12b a lock that vanishes before it can be taken aside leaves the create to O_EXCL', () => {
+    holderAlive = false;
+    seedLock({ pid: HOLDER_PID, t: NOW, key: KEY, startToken: HOLDER_TOKEN });
+    const aResult = tryAcquireLock(lockPath, KEY, TTL, opts().processIdentity, {
+      afterStaleRead: () => fs.unlinkSync(lockPath), // another reclaimer already removed it
+    });
+    expect(aResult).toBe(true);
+    expect(leftovers()).toEqual([]);
+  });
+});
+
+describe('8468f7b1 SP11b a failed self start-token read is retried, bounded', () => {
+  async function freshEnsure(): Promise<typeof import('./ensure-backend.js')> {
+    vi.resetModules();
+    execFileSyncMock.mockReset();
+    return import('./ensure-backend.js');
+  }
+  const noInject = (): EnsureBackendOptions => {
+    const { processIdentity: _p, ...base } = opts();
+    return base;
+  };
+
+  it('SP11b a failing ps is not cached forever: the next attempt after the retry interval reads again, then caches the success', async () => {
+    const fresh = await freshEnsure();
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error('ps down');
+    });
+    await fresh.ensureBackend(noInject());
+    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(lockSeenAtSpawn!)).not.toHaveProperty('startToken');
+
+    await fresh.ensureBackend(noInject()); // inside the retry interval: no new ps
+    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(NOW + 6_000);
+    execFileSyncMock.mockReturnValue(SELF_TOKEN + '\n');
+    await fresh.ensureBackend(noInject());
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(lockSeenAtSpawn!).startToken).toBe(SELF_TOKEN);
+
+    vi.setSystemTime(NOW + 12_000);
+    await fresh.ensureBackend(noInject()); // success is cached for good
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('SP11b a persistently failing ps is read at most 3 times in total', async () => {
+    const fresh = await freshEnsure();
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error('ps down');
+    });
+    for (let i = 0; i < 6; i += 1) {
+      vi.setSystemTime(NOW + i * 6_000);
+      await fresh.ensureBackend(noInject());
+    }
+    expect(execFileSyncMock).toHaveBeenCalledTimes(3);
+    expect(spawnMock).toHaveBeenCalledTimes(6); // every attempt still proceeds (0.5.0 shape)
   });
 });

@@ -2,14 +2,17 @@
  * Work-driven idle retirer (plan 8468f7b1, Feature C; ADR-0022).
  *
  * A long-lived host retires itself `idleWindowMs` after its last completed
- * real work. The rule from ADR-0022 is encoded in the TYPES, not just in prose:
+ * real work. The rule from ADR-0022 is reflected in the API SHAPE:
  *
  *   Connections, presence and health probes never keep a host alive. Only
  *   activity does. Presence may RELEASE a host; it can never PIN one.
  *
  * Consequently no option, method or input in this module accepts a connection,
- * client, session, socket or presence value. The only inputs that can defer
- * retirement are:
+ * client, session, socket or presence value, and unknown option keys are rejected
+ * by the type checker. This is a guard-rail, not a proof: `isBusy` is a caller
+ * supplied predicate and the module cannot see what it reads, so a host that
+ * derives `isBusy` from presence can still pin itself (documented in the README).
+ * The only inputs that can defer retirement are:
  *   - `touch()`          a caller reports real work happened;
  *   - `work(fn)`         wraps real work; the host is busy while `fn` is pending
  *                        and the work counts as done when `fn` settles;
@@ -56,6 +59,13 @@ export interface IdleRetirerOptions {
   now?: () => number;
   /** Injectable timer. Default wraps `setTimeout`. */
   setTimer?: (fn: () => void, ms: number) => IdleRetirerTimer;
+  /**
+   * Per-step timeout for the retire sequence, ms. Default: none (a step runs until it settles,
+   * exactly as before). When set, a step that has not settled after this long is reported as a
+   * `retire-step-failed` event (with a timeout Error) and the sequence moves on to the next step;
+   * the abandoned step keeps running in the background. Must be a positive finite number.
+   */
+  retireStepTimeoutMs?: number;
 }
 
 export interface IdleRetirer {
@@ -89,7 +99,11 @@ export function idleDueInMs(i: IdleDueInput): number | null {
   return Math.max(0, i.lastWorkAt + i.idleWindowMs - i.now);
 }
 
-/** Longest delay a Node timer accepts; used for the hold-open timer. */
+/**
+ * Longest delay a Node timer accepts (larger values are clamped to 1 ms and would spin).
+ * Used for the hold-open timer, and as the ceiling of every scheduled idle delay: a longer
+ * remainder is armed in MAX_TIMER_MS slices and re-evaluated on each fire.
+ */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
 function defaultSetTimer(fn: () => void, ms: number): IdleRetirerTimer {
@@ -109,6 +123,10 @@ export function createIdleRetirer(o: IdleRetirerOptions): IdleRetirer {
   const now = o.now ?? Date.now;
   const setTimer = o.setTimer ?? defaultSetTimer;
   const window = o.idleWindowMs;
+  const stepTimeoutMs = o.retireStepTimeoutMs;
+  if (stepTimeoutMs !== undefined && (!Number.isFinite(stepTimeoutMs) || stepTimeoutMs <= 0)) {
+    throw new RangeError(`retireStepTimeoutMs must be a positive finite number, got ${String(stepTimeoutMs)}`);
+  }
 
   let state: 'running' | 'retiring' | 'retired' = 'running';
   let lastWorkAt = now();
@@ -141,7 +159,8 @@ export function createIdleRetirer(o: IdleRetirerOptions): IdleRetirer {
     if (state !== 'running') return;
     // Busy => nothing is due; poll again after one window. Not busy => the exact remainder.
     const delay = due() ?? window;
-    const t = setTimer(onTimer, delay);
+    // Windows beyond the timer ceiling are armed in slices; onTimer re-evaluates on each fire.
+    const t = setTimer(onTimer, Math.min(delay, MAX_TIMER_MS));
     t.unref();
     timer = t;
     emit({ type: 'armed', dueInMs: delay });
@@ -160,6 +179,25 @@ export function createIdleRetirer(o: IdleRetirerOptions): IdleRetirer {
     schedule();
   }
 
+  const runStep = async (step: RetireStep): Promise<void> => {
+    if (stepTimeoutMs === undefined) {
+      await step.run();
+      return;
+    }
+    let guard: IdleRetirerTimer | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      guard = setTimer(
+        () => reject(new Error(`retire step "${step.name}" timed out after ${String(stepTimeoutMs)}ms`)),
+        Math.min(stepTimeoutMs, MAX_TIMER_MS),
+      );
+    });
+    try {
+      await Promise.race([Promise.resolve().then(() => step.run()), timeout]);
+    } finally {
+      guard?.clear();
+    }
+  };
+
   function retire(reason: string): Promise<void> {
     if (retirement) return retirement;
     state = 'retiring';
@@ -173,7 +211,7 @@ export function createIdleRetirer(o: IdleRetirerOptions): IdleRetirer {
       try {
         for (const step of o.steps) {
           try {
-            await step.run();
+            await runStep(step);
           } catch (error) {
             emit({ type: 'retire-step-failed', step: step.name, error });
           }

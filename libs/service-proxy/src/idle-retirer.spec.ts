@@ -10,7 +10,7 @@ import {
   type IdleRetirerOptions,
   type IdleRetirerTimer,
   type RetireStep,
-} from './idle-retirer';
+} from './idle-retirer.js';
 
 // Plan 8468f7b1 (single-pass lifecycle), Feature C, acceptance SP13-SP20.
 // Pure module: fake clock and fake timers only. No sockets, no processes.
@@ -525,5 +525,102 @@ describe('8468f7b1 SP20 static scan: no process listeners, no exit, no env', () 
   it('imports nothing (pure leaf)', () => {
     expect(source).not.toMatch(/^\s*import\s/m);
     expect(source).not.toMatch(/\brequire\s*\(/);
+  });
+});
+
+describe('8468f7b1 SP14b windows beyond the timer ceiling are armed in slices, never as a >2^31-1 ms timer', () => {
+  const MAX = 2 ** 31 - 1;
+
+  it('SP14b a 100-day window is armed with a delay <= 2^31-1 and re-arms (without retiring) on each fire', async () => {
+    const window = 100 * 24 * 3_600_000; // 8.64e9 ms
+    const { env, events, r } = build({}, window);
+    r.arm();
+    expect(env.timers.every((x) => x.at - 1_000 <= MAX)).toBe(true);
+    // A clamped-to-1ms timer would spin; here each slice is long and nothing retires early.
+    await env.advance(MAX);
+    expect(r.state).toBe('running');
+    await env.advance(MAX);
+    expect(r.state).toBe('running');
+    expect(env.timers.length).toBeLessThan(10);
+    for (const x of env.timers) expect(x.at).toBeGreaterThanOrEqual(1_000);
+    await env.advance(window); // past the deadline
+    expect(r.state).toBe('retired');
+    expect(events.filter((e) => e.type === 'fired')).toHaveLength(1);
+  });
+
+  it('SP14b the requested delay is capped at the ceiling for every scheduled timer', () => {
+    const delays: number[] = [];
+    const env = fakeEnv();
+    const r = createIdleRetirer({
+      idleWindowMs: 2 ** 40,
+      steps: [],
+      now: env.now,
+      setTimer: (fn, ms) => {
+        delays.push(ms);
+        return env.setTimer(fn, ms);
+      },
+    });
+    r.arm();
+    expect(delays).toEqual([MAX]);
+  });
+});
+
+describe('8468f7b1 SP17b optional per-step retire timeout', () => {
+  it('SP17b default (no retireStepTimeoutMs): a step is awaited indefinitely, behavior unchanged', async () => {
+    const { env, order, r } = build({
+      steps: [
+        { name: 'slow', run: () => new Promise<void>(() => {}) },
+        { name: 'after', run: () => void order.push('after') },
+      ],
+    });
+    void r.retire('x');
+    await env.advance(1_000_000);
+    expect(r.state).toBe('retiring');
+  });
+
+  it('SP17b a hung step times out, is reported as failed, and later steps still run', async () => {
+    const order: string[] = [];
+    const { env, events, r } = build({
+      retireStepTimeoutMs: 500,
+      steps: [
+        { name: 'hung', run: () => new Promise<void>(() => {}) },
+        { name: 'after', run: () => void order.push('after') },
+      ],
+    });
+    void r.retire('x');
+    await env.advance(499);
+    expect(r.state).toBe('retiring');
+    await env.advance(1);
+    await new Promise<void>((resolve) => setImmediate(resolve)); // drain the retire chain
+    expect(r.state).toBe('retired');
+    expect(order).toEqual(['after']);
+    const failed = events.find((e) => e.type === 'retire-step-failed');
+    expect(failed).toMatchObject({ type: 'retire-step-failed', step: 'hung' });
+    expect(String((failed as { error: Error }).error.message)).toMatch(/timed out after 500ms/);
+  });
+
+  it('SP17b a step that settles in time clears its guard and reports no failure', async () => {
+    const { env, events, order, r } = build({ retireStepTimeoutMs: 500 });
+    await r.retire('x');
+    expect(order).toEqual(['a', 'b']);
+    expect(events.some((e) => e.type === 'retire-step-failed')).toBe(false);
+    await env.advance(10_000); // a leaked guard would fire here and must not matter
+    expect(r.state).toBe('retired');
+    expect(env.pending()).toHaveLength(0);
+  });
+
+  it('SP17b a synchronously throwing step is still reported, with or without a timeout', async () => {
+    const { events, r } = build({
+      retireStepTimeoutMs: 500,
+      steps: [{ name: 'boom', run: () => { throw new Error('sync'); } }],
+    });
+    await r.retire('x');
+    expect(events.find((e) => e.type === 'retire-step-failed')).toMatchObject({ step: 'boom' });
+  });
+
+  it('SP17b rejects a non-positive or non-finite retireStepTimeoutMs', () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => createIdleRetirer({ idleWindowMs: 1, steps: [], retireStepTimeoutMs: bad })).toThrow(RangeError);
+    }
   });
 });

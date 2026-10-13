@@ -17,6 +17,9 @@ import { describe, expect, it } from 'vitest';
 
 const PKG_ROOT = path.resolve(__dirname, '..');
 
+/** A home-directory or absolute filesystem path embedded in a JSON string value. */
+const MACHINE_LOCAL_PATH = /"(?:\/Users\/|\/home\/|~\/|[A-Za-z]:\\)/;
+
 /** Every runtime export of the published 0.5.0 package (54871159 index.ts). */
 const SURFACE_0_5_0 = [
   'ERR_BACKEND_UNAVAILABLE', 'FrameDecoder', 'HEADER_BYTES', 'MAX_FRAME_BYTES', 'assertPrivateSocketDir',
@@ -29,6 +32,20 @@ const SURFACE_0_5_0 = [
 describe('8468f7b1 SP35 SP28 packed manifest and built surface', () => {
   const hasDist = fs.existsSync(path.join(PKG_ROOT, 'dist', 'index.js'));
 
+  // The dist-dependent tests below skip locally when dist is absent (a bare `vitest run`), but the
+  // `test` target dependsOn `build`, so under CI a missing dist is a broken pipeline, not a skip.
+  it('SP35 dist is present when CI is set (the test target dependsOn build)', () => {
+    if (process.env.CI) expect(hasDist, 'dist/index.js missing: run `nx run service-proxy:build` first').toBe(true);
+  });
+
+  it('SP26 the source manifest carries no machine-local absolute path (it ships in the tarball)', () => {
+    const text = fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8');
+    expect(text).not.toMatch(MACHINE_LOCAL_PATH);
+    const manifest = JSON.parse(text) as { sox?: { externalConsumers?: Array<{ repo?: string }> } };
+    expect(manifest.sox?.externalConsumers?.length).toBeGreaterThan(0);
+    for (const c of manifest.sox?.externalConsumers ?? []) expect(c.repo ?? '').not.toMatch(/^[/~]/);
+  });
+
   it.skipIf(!hasDist)('SP35 `pnpm pack` output has no workspace: specifier and ships only dist', () => {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-pack-'));
     try {
@@ -39,6 +56,8 @@ describe('8468f7b1 SP35 SP28 packed manifest and built surface', () => {
       expect(files.every((f) => f === 'package/package.json' || f === 'package/README.md' || f === 'package/CHANGELOG.md' || f === 'package/LICENSE' || f.startsWith('package/dist/'))).toBe(true);
       const manifestText = spawnSync('tar', ['-xzOf', path.join(out, tgz), 'package/package.json'], { encoding: 'utf8' }).stdout;
       expect(manifestText).not.toMatch(/workspace:/);
+      expect(manifestText).not.toMatch(MACHINE_LOCAL_PATH);
+      expect(manifestText).not.toContain(os.homedir());
       const manifest = JSON.parse(manifestText) as { dependencies?: Record<string, string> };
       expect(manifest.dependencies?.['@adhd/sox-listen-guard']).toMatch(/^\^\d+\.\d+\.\d+/);
     } finally {

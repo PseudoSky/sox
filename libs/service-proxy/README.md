@@ -370,9 +370,12 @@ and all existing options behave exactly as before.
 > **The ADR-0022 rule: presence never pins.** Connections, presence and health
 > probes never keep a host alive. Only work does. Presence may *release* a host
 > (a client going away can make it eligible to retire sooner); it can never
-> *pin* one. This is enforced in the types: `createIdleRetirer` has no
-> connection or presence parameter, and a host with five permanently idle
-> connected clients still retires after its idle window.
+> *pin* one. `createIdleRetirer` has no connection or presence parameter (the
+> type checker rejects unknown option keys), and a host with five permanently
+> idle connected clients still retires after its idle window. This is a
+> guard-rail in the API shape, not a proof: `isBusy` is a caller-supplied
+> predicate the library cannot inspect, so a host that derives it from presence
+> can still pin itself. Keep `isBusy` over work state only.
 
 ### Connection identity and client hooks
 
@@ -420,7 +423,10 @@ text for the same process. A lock whose pid is alive but whose token differs
 belongs to a recycled pid and is reclaimed immediately instead of after the TTL.
 A lock without a token (written by 0.5.0) and any `ps` failure degrade to the
 0.5.0 rule (alive means held). `ps` is never run on the `already-live` path.
-Verified on macOS; Linux is unverified.
+Verified on macOS; Linux is unverified. A failed `ps` read of the process's own
+token is not cached forever: it is retried, at most 3 times in total and no more
+than once every 5 s, so a persistently broken `ps` is not spawned on every attempt
+(a successful read is cached for the process lifetime).
 
 ```typescript
 import { readProcessStartToken, isSameProcess } from '@adhd/sox-service-proxy';
@@ -446,7 +452,13 @@ is unref'd and re-evaluates without ever writing the last-work time, so while th
 host is busy (`work` pending, or `isBusy()` true) retirement can be up to one
 window late. A throwing `isBusy` is treated as busy: it never retires on a guess.
 `retire(reason)` is idempotent, runs every step in order even if one throws, and
-holds the event loop open until the last step ends.
+holds the event loop open until the last step ends. A step that never settles
+would hold it open forever; set `retireStepTimeoutMs` (default: none) to give each
+step a deadline: a step still pending after that long is reported as
+`retire-step-failed` (with a timeout error), the sequence moves on, and the
+abandoned step keeps running in the background. `idleWindowMs` may be any positive
+finite number; windows beyond the 2^31-1 ms timer ceiling (about 24.8 days) are
+armed in slices and re-evaluated on each fire.
 
 ```typescript
 import { createIdleRetirer } from '@adhd/sox-service-proxy';
@@ -492,6 +504,12 @@ reproduce the funnel's thresholds use
 `{ failureThreshold: 3, cooldownMs: 10_000 }`. The default store is in-memory;
 supply a `BreakerStore` (`load()`/`save()`, synchronous) to share state across
 processes. A throwing store degrades to in-memory and emits `store-failed`.
+The single-probe guarantee holds within one process. Across processes it holds
+only if the `BreakerStore` makes the whole check (load, decide, save) atomic
+itself (for example with a lock around it): `load()` then `save()` is not
+atomic, so a plain file store can hand `probe: true` to two processes at once.
+If the clock moves backwards the breaker stays open (as `check()` reports) and a
+failure recorded meanwhile does not rewrite its open time.
 
 ```typescript
 import { createCircuitBreaker, type BreakerStore } from '@adhd/sox-service-proxy';
@@ -515,6 +533,23 @@ async function launchGuarded() {
   }
 }
 ```
+
+## Known limitations
+
+- **A throwing `onClientCountChange` leaks the listener on an own-bind backend.**
+  On the own-bind path the close-time `onClientCountChange(0)` call is unguarded
+  (the 0.5.0 behavior, pinned by a golden test), so a hook that throws makes
+  `close()` reject *before* `server.close()` runs and the listener stays open.
+  Calling `close()` again after fixing the hook closes it. The inherited-fd path
+  guards the call and is unaffected. Keep `onClientCountChange` non-throwing.
+  (Tracked for the backlog; kept as is in 0.6.0 to preserve the 0.5.0 sequence.)
+- **Lock reclaim has a residual window.** Reclaiming a stale spawn lock renames it
+  aside, verifies it is still the stale file and restores any fresh lock it
+  displaced, so a fresh lock is never deleted. Between the rename and the restore
+  (microseconds) the lock path is absent, so a third process could create a lock
+  in that gap. The window is far smaller than 0.5.0's unlink-then-create, and the
+  O_EXCL create plus the double-checked handshake under the lock remain the
+  backstop against a double spawn.
 
 ## Invariants / gotchas
 

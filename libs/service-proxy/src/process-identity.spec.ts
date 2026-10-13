@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const { execFileSyncMock } = vi.hoisted(() => ({ execFileSyncMock: vi.fn() }));
 vi.mock('node:child_process', () => ({ execFileSync: execFileSyncMock, spawn: vi.fn() }));
 
-import { isSameProcess, readProcessStartToken, type ProcessIdentityDeps } from './process-identity.js';
+import { isSameProcess, pidAlive, readProcessStartToken, type ProcessIdentityDeps } from './process-identity.js';
 
 const TOKEN = 'Mon Oct 12 09:15:02 2026';
 
@@ -125,5 +125,24 @@ describe('8468f7b1 SP8 isSameProcess', () => {
     expect(isSameProcess(own, null)).toBe(true);
     expect(isSameProcess(0, TOKEN)).toBe(false);
     expect(isSameProcess(-5, null)).toBe(false);
+  });
+});
+
+describe('8468f7b1 SP8b the shared pidAlive (used by isSameProcess and ensureBackend)', () => {
+  it('SP8b true for a live pid, false for invalid pids', () => {
+    expect(pidAlive(process.pid)).toBe(true);
+    for (const bad of [0, -1, 1.5, Number.NaN]) expect(pidAlive(bad)).toBe(false);
+  });
+
+  it('SP8b EPERM means alive (another user\'s process); ESRCH means dead', () => {
+    const kill = vi.spyOn(process, 'kill');
+    kill.mockImplementationOnce(() => {
+      throw Object.assign(new Error('eperm'), { code: 'EPERM' });
+    });
+    expect(pidAlive(12345)).toBe(true);
+    kill.mockImplementationOnce(() => {
+      throw Object.assign(new Error('esrch'), { code: 'ESRCH' });
+    });
+    expect(pidAlive(12345)).toBe(false);
   });
 });

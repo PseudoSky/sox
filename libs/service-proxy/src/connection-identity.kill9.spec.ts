@@ -4,10 +4,14 @@
  *
  * A real client process connects to serveBackend, spawns a long-lived grandchild
  * (the "Chrome" stand-in), and is SIGKILLed. The kernel closes the killed client's
- * fds, so onClientDisconnect must fire within 2 s EVEN THOUGH the grandchild is
- * still alive. If the held socket leaked into the grandchild (no close-on-exec),
- * the grandchild would keep the connection open and the disconnect would never
- * fire: that is the CLOEXEC proof for a Node child spawned with default options.
+ * fds, so onClientDisconnect must fire within 2 s even though the grandchild is
+ * still alive.
+ *
+ * What this proves, exactly: with Node's default `child_process.spawn` (libuv), a
+ * grandchild spawned detached with `stdio: 'ignore'` does not keep the client's
+ * connected socket open, so the disconnect is observed. It does NOT prove CLOEXEC
+ * for every spawn configuration: a grandchild given the socket through `stdio`
+ * inheritance, or spawned by a non-libuv launcher, is a different case.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
@@ -51,7 +55,7 @@ async function until(pred: () => boolean, label: string, ms: number): Promise<vo
 }
 
 describe('SIGKILLed client is detected through the kernel closing its socket', () => {
-  it('8468f7b1 SP-K9 SP3: onClientDisconnect fires within 2s of SIGKILL while a spawned grandchild lives (CLOEXEC proof)', async () => {
+  it('8468f7b1 SP-K9 SP3: onClientDisconnect fires within 2s of SIGKILL while a spawned grandchild lives (default libuv spawn, detached stdio-ignore grandchild)', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-k9-'));
     cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
     const events: string[] = [];

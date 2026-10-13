@@ -110,7 +110,7 @@ describe('index type surface (compile-time)', () => {
     expect(opts.onClientConnect).toBeDefined();
   });
 
-  it('8468f7b1 SP19: IdleRetirerOptions has no connection or presence parameter', () => {
+  it('8468f7b1 SP19: IdleRetirerOptions has no connection or presence parameter (unknown keys are rejected; isBusy remains a caller-supplied predicate the types cannot police)', () => {
     const steps: RetireStep[] = [{ name: 's', run: () => undefined }];
     const ok: IdleRetirerOptions = { idleWindowMs: 1000, steps };
     // @ts-expect-error - ADR-0022: connections never feed retire inputs

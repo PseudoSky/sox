@@ -46,7 +46,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import { encodeFrame, FrameDecoder } from './framing.js';
-import { isSameProcess, readProcessStartToken, type ProcessIdentityDeps } from './process-identity.js';
+import { isSameProcess, pidAlive, readProcessStartToken, type ProcessIdentityDeps } from './process-identity.js';
 import {
   assertPrivateSocketDir,
   ensurePrivateSocketDir,
@@ -235,18 +235,6 @@ export function handshakeBackend(socketPath: string, timeoutMs = 1000): Promise<
   });
 }
 
-/** Is a pid alive? (kill(pid,0) — no signal sent.) */
-function pidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    // EPERM means it exists but is owned by another user — treat as alive.
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 /** sha-free short, fs-safe digest of the singleton key for the lock filename. */
 function lockName(singletonKey: string): string {
   // A small, dependency-free FNV-1a hash keeps this a pure leaf (no crypto import
@@ -272,14 +260,31 @@ interface LockPayload {
   startToken?: string;
 }
 
-/** This process's start token, read at most once per process (spawn path only). */
-let selfTokenCache: { read: true; token: string | null } | { read: false } = { read: false };
+/**
+ * This process's start token (spawn path only). A SUCCESSFUL read is cached for the process
+ * lifetime (the token cannot change). A failed read (`null`) is NOT cached forever: it is retried,
+ * but bounded so a persistently failing `ps` cannot be spawned on every lock attempt — at most
+ * {@link SELF_TOKEN_MAX_ATTEMPTS} reads in total, and no two within {@link SELF_TOKEN_RETRY_MS}.
+ */
+const SELF_TOKEN_MAX_ATTEMPTS = 3;
+const SELF_TOKEN_RETRY_MS = 5_000;
+let selfTokenCache: { token: string | null; attempts: number; lastAttemptAt: number } = {
+  token: null,
+  attempts: 0,
+  lastAttemptAt: 0,
+};
 
 function selfStartToken(deps?: ProcessIdentityDeps): string | null {
   // An injected `ps` bypasses the cache so tests observe every read.
   if (deps?.execFileSync) return readProcessStartToken(process.pid, deps);
-  if (!selfTokenCache.read) selfTokenCache = { read: true, token: readProcessStartToken(process.pid, deps) };
-  return selfTokenCache.token;
+  if (selfTokenCache.token !== null) return selfTokenCache.token;
+  const t = Date.now();
+  const c = selfTokenCache;
+  if (c.attempts >= SELF_TOKEN_MAX_ATTEMPTS) return null;
+  if (c.attempts > 0 && t - c.lastAttemptAt >= 0 && t - c.lastAttemptAt < SELF_TOKEN_RETRY_MS) return null;
+  const token = readProcessStartToken(process.pid, deps);
+  selfTokenCache = { token, attempts: c.attempts + 1, lastAttemptAt: t };
+  return token;
 }
 
 function lockPayloadJson(key: string, deps?: ProcessIdentityDeps): string {
@@ -289,12 +294,33 @@ function lockPayloadJson(key: string, deps?: ProcessIdentityDeps): string {
   return JSON.stringify(payload);
 }
 
+/** Test seams for the reclaim race. Not for production use. */
+export interface LockReclaimHooks {
+  /** Runs after the stale verdict is reached and before the stale lock is taken aside. */
+  afterStaleRead?: () => void;
+}
+
 /**
  * Try to take the spawn lock atomically. Returns true if WE hold it. A stale lock
  * (holder dead, recycled to a different process, or older than TTL with no live
  * socket) is reclaimed.
+ *
+ * Reclaiming never unlinks the lock path blindly. Two reclaimers can both read the same stale
+ * payload; if A removed it and created a fresh lock, B's by-path unlink would delete A's FRESH lock
+ * and both would hold it. Instead the lock is atomically renamed aside, and the renamed file's raw
+ * bytes are compared with the stale bytes we judged: only an identical file is discarded. Anything
+ * else is someone's fresh lock and is put back (`link`, which fails if the path was taken again),
+ * and we report the lock as contended.
+ *
+ * @internal exported for the reclaim-race spec only; not part of the package entry.
  */
-function tryAcquireLock(lockPath: string, key: string, ttlMs: number, deps?: ProcessIdentityDeps): boolean {
+export function tryAcquireLock(
+  lockPath: string,
+  key: string,
+  ttlMs: number,
+  deps?: ProcessIdentityDeps,
+  hooks?: LockReclaimHooks,
+): boolean {
   // F7: build the payload (which may run a synchronous `ps`) BEFORE the O_EXCL create, so a
   // concurrent reader never sees an empty lock file and mistakes it for corrupt/stale. The
   // existsSync pre-check keeps `ps` off the contention path (a loser never pays for a token);
@@ -311,9 +337,15 @@ function tryAcquireLock(lockPath: string, key: string, ttlMs: number, deps?: Pro
     }
   }
   // Lock exists — is the holder still alive and the lock fresh?
+  let raw: string;
+  try {
+    raw = fs.readFileSync(lockPath, 'utf8');
+  } catch {
+    return false; // vanished under us: contended, the caller's wait loop re-evaluates
+  }
   let payload: LockPayload | null = null;
   try {
-    payload = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as LockPayload;
+    payload = JSON.parse(raw) as LockPayload;
   } catch {
     payload = null;
   }
@@ -324,24 +356,50 @@ function tryAcquireLock(lockPath: string, key: string, ttlMs: number, deps?: Pro
     Date.now() - payload.t > ttlMs ||
     // Pid-reuse guard: only for locks that carry a token (0.5.0 locks do not).
     (typeof payload.startToken === 'string' && !isSameProcess(payload.pid, payload.startToken, deps));
-  if (stale) {
-    // Reclaim: unlink and retry once. A race here is benign — the loser of the
-    // unlink/recreate race simply fails to acquire and falls back to waiting.
-    try {
-      fs.unlinkSync(lockPath);
-    } catch {
-      /* another reclaimer won */
-    }
-    try {
-      const reclaimJson = lockPayloadJson(key, deps); // token read before the create (F7)
-      const fd = fs.openSync(lockPath, 'wx');
-      fs.writeSync(fd, reclaimJson);
-      fs.closeSync(fd);
-      return true;
-    } catch {
-      return false;
-    }
+  if (!stale) return false;
+  hooks?.afterStaleRead?.();
+  if (!discardIfStillStale(lockPath, raw)) return false;
+  try {
+    const reclaimJson = lockPayloadJson(key, deps); // token read before the create (F7)
+    const fd = fs.openSync(lockPath, 'wx');
+    fs.writeSync(fd, reclaimJson);
+    fs.closeSync(fd);
+    return true;
+  } catch {
+    return false;
   }
+}
+
+let asideSeq = 0;
+
+/**
+ * Atomically remove the lock at `lockPath` iff it still holds exactly `staleRaw`. Returns true when
+ * the path is now free for us to create (we discarded the stale bytes, or it was already gone),
+ * false when the file was no longer the stale one (a fresh lock, restored to its place).
+ */
+function discardIfStillStale(lockPath: string, staleRaw: string): boolean {
+  const aside = `${lockPath}.reclaim-${process.pid}-${Date.now().toString(36)}-${(asideSeq++).toString(36)}`;
+  try {
+    fs.renameSync(lockPath, aside); // atomic: from here only we can see these bytes
+  } catch {
+    // ENOENT: another reclaimer already took it. The path may be free or freshly retaken; let the
+    // O_EXCL create decide (it fails if retaken), which is the 0.5.0 outcome.
+    return true;
+  }
+  let movedRaw: string | null;
+  try {
+    movedRaw = fs.readFileSync(aside, 'utf8');
+  } catch {
+    movedRaw = null;
+  }
+  if (movedRaw === staleRaw) {
+    try { fs.unlinkSync(aside); } catch { /* best-effort */ }
+    return true;
+  }
+  // Not the lock we judged stale: it is someone's fresh lock. Put it back (never overwrites), and
+  // report contended. If the path was retaken meanwhile, the displaced file is dropped.
+  try { fs.linkSync(aside, lockPath); } catch { /* path retaken by a newer lock */ }
+  try { fs.unlinkSync(aside); } catch { /* best-effort */ }
   return false;
 }
 

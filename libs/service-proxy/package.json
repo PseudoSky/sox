@@ -28,7 +28,7 @@
     "externalConsumers": [
       {
         "name": "@adhd/stealth-browser",
-        "repo": "/Users/nix/dev/node/adhd",
+        "repo": "PseudoSky/adhd",
         "path": "entrypoint/stealth-browser",
         "note": "chrome-lifecycle reaper host: serveBackend hooks, createIdleRetirer, createCircuitBreaker, isSameProcess (declares ~0.6.0)"
       }
