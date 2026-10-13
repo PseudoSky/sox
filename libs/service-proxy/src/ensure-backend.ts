@@ -46,6 +46,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import { encodeFrame, FrameDecoder } from './framing.js';
+import { isSameProcess, readProcessStartToken, type ProcessIdentityDeps } from './process-identity.js';
 import {
   assertPrivateSocketDir,
   ensurePrivateSocketDir,
@@ -95,6 +96,8 @@ export interface EnsureBackendOptions {
    * detached child holds that pipe open forever → the pipeline hangs (BL-67).
    */
   stderrLogPath?: string;
+  /** Test seam for the pid-reuse-safe lock check (`ps` and liveness). Not for production use. */
+  processIdentity?: ProcessIdentityDeps;
 }
 
 /** The disposition of an {@link ensureBackend} call. */
@@ -261,16 +264,40 @@ interface LockPayload {
   pid: number;
   t: number;
   key: string;
+  /**
+   * The holder's process start token (`ps -o lstart=`). Optional and additive:
+   * 0.5.0 readers ignore unknown JSON fields, and a 0.5.0-written lock has none,
+   * in which case staleness is decided exactly as in 0.5.0 (pid liveness + TTL).
+   */
+  startToken?: string;
+}
+
+/** This process's start token, read at most once per process (spawn path only). */
+let selfTokenCache: { read: true; token: string | null } | { read: false } = { read: false };
+
+function selfStartToken(deps?: ProcessIdentityDeps): string | null {
+  // An injected `ps` bypasses the cache so tests observe every read.
+  if (deps?.execFileSync) return readProcessStartToken(process.pid, deps);
+  if (!selfTokenCache.read) selfTokenCache = { read: true, token: readProcessStartToken(process.pid, deps) };
+  return selfTokenCache.token;
+}
+
+function lockPayloadJson(key: string, deps?: ProcessIdentityDeps): string {
+  const startToken = selfStartToken(deps);
+  const payload: LockPayload = { pid: process.pid, t: Date.now(), key };
+  if (startToken !== null) payload.startToken = startToken;
+  return JSON.stringify(payload);
 }
 
 /**
  * Try to take the spawn lock atomically. Returns true if WE hold it. A stale lock
- * (holder dead, or older than TTL with no live socket) is reclaimed.
+ * (holder dead, recycled to a different process, or older than TTL with no live
+ * socket) is reclaimed.
  */
-function tryAcquireLock(lockPath: string, key: string, ttlMs: number): boolean {
+function tryAcquireLock(lockPath: string, key: string, ttlMs: number, deps?: ProcessIdentityDeps): boolean {
   try {
     const fd = fs.openSync(lockPath, 'wx'); // atomic create-or-fail
-    fs.writeSync(fd, JSON.stringify({ pid: process.pid, t: Date.now(), key } satisfies LockPayload));
+    fs.writeSync(fd, lockPayloadJson(key, deps));
     fs.closeSync(fd);
     return true;
   } catch (e) {
@@ -283,10 +310,13 @@ function tryAcquireLock(lockPath: string, key: string, ttlMs: number): boolean {
   } catch {
     payload = null;
   }
+  const alive = deps?.pidAlive ?? pidAlive;
   const stale =
     payload === null ||
-    !pidAlive(payload.pid) ||
-    Date.now() - payload.t > ttlMs;
+    !alive(payload.pid) ||
+    Date.now() - payload.t > ttlMs ||
+    // Pid-reuse guard: only for locks that carry a token (0.5.0 locks do not).
+    (typeof payload.startToken === 'string' && !isSameProcess(payload.pid, payload.startToken, deps));
   if (stale) {
     // Reclaim: unlink and retry once. A race here is benign — the loser of the
     // unlink/recreate race simply fails to acquire and falls back to waiting.
@@ -297,7 +327,7 @@ function tryAcquireLock(lockPath: string, key: string, ttlMs: number): boolean {
     }
     try {
       const fd = fs.openSync(lockPath, 'wx');
-      fs.writeSync(fd, JSON.stringify({ pid: process.pid, t: Date.now(), key } satisfies LockPayload));
+      fs.writeSync(fd, lockPayloadJson(key, deps));
       fs.closeSync(fd);
       return true;
     } catch {
@@ -398,7 +428,7 @@ async function ensureBackendInner(
   const lockPath = path.join(lockDir, lockName(opts.singletonKey));
 
   // Contend for the spawn lock. The winner spawns; losers wait.
-  const haveLock = tryAcquireLock(lockPath, opts.singletonKey, lockTtlMs);
+  const haveLock = tryAcquireLock(lockPath, opts.singletonKey, lockTtlMs, opts.processIdentity);
 
   if (!haveLock) {
     // Another shim is (or just finished) spawning the backend. Wait for its socket.
@@ -411,7 +441,7 @@ async function ensureBackendInner(
       // If the lock vanished AND no socket, the holder may have died mid-spawn —
       // try to grab the lock ourselves so the backend still comes up.
       if (!fs.existsSync(lockPath)) {
-        if (tryAcquireLock(lockPath, opts.singletonKey, lockTtlMs)) {
+        if (tryAcquireLock(lockPath, opts.singletonKey, lockTtlMs, opts.processIdentity)) {
           return spawnUnderLock(opts, lockPath, diag, readyTimeoutMs, probeTimeoutMs);
         }
       }
