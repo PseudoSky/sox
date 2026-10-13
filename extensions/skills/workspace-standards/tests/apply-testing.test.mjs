@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { upsertBlock, inspectBlock, unifiedDiff, MarkerError, beginMarker, endMarker } from '../scripts/marker-engine.mjs';
 import { applyTesting, EXIT, boundGates, backlogFiler } from '../scripts/apply-testing.mjs';
+import { parseBindingTable, computeLevel } from '../scripts/testing-level.mjs';
 import { validateDeclaration, ownership, gatesOf, splitRow, escapeCell, ledgerRows, GATE_ID } from '../scripts/lib.mjs';
 
 const SKILL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -107,6 +108,11 @@ describe('apply testing', () => {
     const skeleton = read(dir, 'docs/standards/testing.md');
     assert.match(skeleton, /## Binding table/);
     assert.match(skeleton, /Testing IMPLEMENTATION — repo-/);
+    // The skeleton's binding table is the one `review testing` reads: a table the level checker cannot parse
+    // would make every freshly applied repository fail its first conformance review with E_TABLE.
+    const rows = parseBindingTable(skeleton);
+    assert.ok(rows !== null, 'the generated binding table has the clause and status columns testing-level reads');
+    assert.equal(computeLevel({ rows }).level, 'none');
     assert.ok(!exists(dir, 'docs/standards/testing-roles.md'));
     assert.equal(inspectBlock(agents, 'testing-routing').found, false);
     assert.equal(inspectBlock(agents, 'testing-gates').found, false);
@@ -182,7 +188,7 @@ describe('apply testing', () => {
       const dir = repo({});
       applyTesting({ root: dir, noFile: true });
       const p = path.join(dir, 'docs/standards/testing.md');
-      fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace('| G1 | <tool or script> |', '| G1 | scripts/check-g1.sh |'));
+      fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace('| G1 | <C0 to C4> | <command or path> |', '| G1 | C0 | scripts/check-g1.sh |'));
       assert.ok(boundGates(read(dir, 'docs/standards/testing.md')).has('G1'));
       const filer = fakeFiler();
       applyTesting({ root: dir, filer });
@@ -261,7 +267,7 @@ describe('apply testing', () => {
     applyTesting({ root: dir, filer: fakeFiler() });
     const p = path.join(dir, 'docs/standards/testing.md');
     const filled = fs.readFileSync(p, 'utf8')
-      .replace('| G1 | <tool or script> | <value> | <stage> | <owner> | gate / obligation, not yet a gate |', '| G1 | scripts/g1.sh | 100% | D | qa | gate |\n| G2 | scripts/g2.sh | 100% | D | qa | gate |')
+      .replace('| G1 | <C0 to C4> | <command or path> | <role> | <enforced / obligation, not yet a gate> |', '| G1 | C0 | scripts/g1.sh | qa | enforced |\n| G2 | C0 | scripts/g2.sh | qa | enforced |')
       .replace('1. Tier mapping: <mechanism per tier S, P, H, X; budgets; source of truth for tier membership>', '1. Tier mapping: S runs in node --test.');
     assert.ok(filled.includes('scripts/g1.sh') && filled.includes('S runs in node'), 'fixture edit applied');
     fs.writeFileSync(p, filled);

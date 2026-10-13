@@ -60,15 +60,29 @@ const renderRoutingBody = (rolesText) =>
 const renderGatesBody = (decl) =>
   `## Testing gates\n${table(['gate', 'mechanism', 'stage', 'threshold'], gateList(decl).map((g) => [g.id, g.mechanism, [].concat(g.stage).join(', '), g.threshold]))}`;
 
-/** Gate ids whose binding-table row names a real mechanism (not a `<placeholder>`). */
+/**
+ * Gate ids whose binding-table row names a real mechanism (not a `<placeholder>`). The mechanism is the
+ * `command or path` column (the table `testing-level.mjs` reads); a table without that column is read by
+ * its second cell, as the first skeleton wrote it.
+ */
 export function boundGates(skeletonText, standardId = 'testing') {
   const bound = new Set();
   const from = skeletonText.indexOf(`workspace-standards:${standardId}:hand-maintained:begin`);
   if (from === -1) return bound;
   const to = skeletonText.indexOf(`workspace-standards:${standardId}:hand-maintained:end`, from);
+  let column = 1;
+  const idRe = new RegExp(`^${GATE_ID_SOURCE}$`, 'i');
   for (const line of skeletonText.slice(from, to === -1 ? undefined : to).split('\n')) {
-    const m = new RegExp(`^\\|\\s*((?!gate\\s*\\|)${GATE_ID_SOURCE})\\s*\\|\\s*([^|]*?)\\s*\\|`, 'i').exec(line); // any gate id; the `Gate` header row is not one
-    if (m && m[2] !== '' && !PLACEHOLDER.test(m[2])) bound.add(m[1]);
+    const cells = splitRow(line);
+    if (!cells) continue;
+    const head = cells.map((c) => c.toLowerCase());
+    if (head[0] === 'gate' || head[0] === 'clause') {
+      const at = head.indexOf('command or path');
+      column = at === -1 ? 1 : at;
+      continue;
+    }
+    const mechanism = cells[column];
+    if (cells.length > column && idRe.test(cells[0]) && mechanism !== undefined && mechanism !== '' && !PLACEHOLDER.test(mechanism)) bound.add(cells[0]);
   }
   return bound;
 }
