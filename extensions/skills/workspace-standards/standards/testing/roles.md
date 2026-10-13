@@ -49,7 +49,7 @@ Resolution (the routing foundation's `run` playbook): candidates are installed a
 - TA.1: Produce the risk map [§6.1.2]
 - TA.2: Choose the tier per failure mode and write the "not testing" list [§6.1.3]
 - TA.3: Write tests with a header: failure mode, tier, gap statement [§6.1.8]
-- TA.4: Record red evidence against the base commit [§6.5]
+- TA.4: Record red evidence against the stub commit when authorship is separated, otherwise against the base commit [§6.5]
 - TA.5: Report the tests the change makes obsolete or lowers [§8.6]
 - tools: read, search, shell, edit
 - distinct-from: static-reviewer, auditor

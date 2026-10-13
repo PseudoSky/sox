@@ -12,7 +12,7 @@ The item's criteria and interface, the plan block from planning, the declared wr
 2. Write one test per ranked failure mode at the planned tier, default S (§6.1.4). Parameterized cases of one failure mode are one test; each equivalence class among them must show red once.
 3. Apply the case-design technique that fits and name it where non-obvious: partitions, boundaries, negative and adversarial input, state transitions, properties, concurrency with barriers and never sleeps (§6.4).
 4. Header on every test: failure mode, tier, fidelity-gap statement for P, H, X, the item and criterion cited (§6.1.8, G9, G12).
-5. Record the failing run against the base commit: command, exit status, the failing assertion (§6.5, §14). The stub returns a typed default so the failure is an assertion on value, not a crash.
+5. Record the failing run against the stub commit (the base commit when authorship is not separated): command, exit status, the failing assertion (§6.5, §14). The stub returns a typed default so the failure is an assertion on value, not a crash.
 6. Commit the tests to the bucket branch. List the tests made obsolete or lowered, or none (§8.6).
 
 ## Output
