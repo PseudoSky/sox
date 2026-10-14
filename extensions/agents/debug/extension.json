@@ -79,6 +79,7 @@
     }
   },
   "render": {
+    "codex": {},
     "claude": {
       "model": "sonnet",
       "version": "v0.1.7"

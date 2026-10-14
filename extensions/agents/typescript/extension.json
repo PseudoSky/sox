@@ -101,6 +101,7 @@
     }
   },
   "render": {
+    "codex": {},
     "claude": {
       "version": "v0.2.0",
       "model": "sonnet",

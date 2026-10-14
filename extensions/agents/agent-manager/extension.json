@@ -181,6 +181,7 @@
     }
   },
   "render": {
+    "codex": {},
     "claude": {
       "model": "haiku",
       "version": "v0.2.4"

@@ -91,6 +91,7 @@
     }
   },
   "render": {
+    "codex": {},
     "claude": {
       "model": "haiku",
       "version": "v0.1.7",
