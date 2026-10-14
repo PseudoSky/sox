@@ -1,18 +1,12 @@
 # ADR 0007 — Memory platform architecture: single writer, reusable subsystems, remote-first (enterprise target)
 
-- **Status:** SUPERSEDED BY [ADR-0012](./0012-turso-multiprocess-write-and-driver-agnostic-error-taxonomy.md)
-  (2026-08-08) for the invariant statement, D2, D5, and D9 only — D1/D3/D4/D6/D7/D8 carry forward
-  unchanged. Was: ACCEPTED (2026-07-04, context-06 closeout) — the architecture is fully
-  implemented and live-verified: single-writer backend behind front-shim proxies (HF-5
-  forensics PASS), two-phase write/update with off-slot embedding, transactional-outbox
-  enrichment heartbeat, time-based write-queue admission control, continuous supervision
-  (crash-loop caps + scheduled doctor reconcile), and hermetic test isolation. Evidence:
-  `docs/plan/runtime-productionization/06-hardening-final/REPORT.md`.
-  (History: PROPOSED v2 — v1 (2026-07-03 morning) carried four provisional ⚖ defaults;
-  the owner answered all four the same day and v2 incorporated those answers. v1 never
-  shipped, so v2 revised in place rather than superseding.)
-- **Drives:** BACKLOG.md BL-118 … BL-149 ("memory-server production hardening: locking &
-  topology"). Every entry maps into a phase in §Roadmap.
+- **Status:** ACCEPTED (2026-07-04, context-06 closeout), then PARTIALLY SUPERSEDED by
+  [ADR-0012](./0012-turso-multiprocess-write-and-driver-agnostic-error-taxonomy.md) (2026-08-08):
+  the invariant statement, D2, D5, and D9 are superseded for the Turso adapter. D1, D3, D4, D6,
+  D7, and D8 remain in force; each section below states its status against the code.
+  Acceptance evidence: `docs/plan/runtime-productionization/06-hardening-final/REPORT.md`.
+- **Drives:** backlog items BL-118 … BL-149 (family `BL`, repo sox-ecosystem; "memory-server
+  production hardening: locking & topology"). Every entry maps into a phase in §Roadmap.
 - **Grounding:** the 2026-07-02/03 lock-contention incident (forensics in BL-118..145)
   plus a source-level seam investigation of libs/memory-core, libs/service-proxy,
   libs/host-runtime, libs/mcp-runtime, libs/data/*, apps/sox, and the sox-memory-bundle
@@ -45,12 +39,16 @@ Owner constraints for the target state (2026-07-03):
 4. This document is the enterprise-grade design that resolves every logged bug and
    feature while retaining existing package boundaries.
 
-## The invariant
+## The invariant (superseded for the Turso adapter)
+
+Statement as accepted 2026-07-04:
 
 > **At most one process may hold a write connection to a given store, and that process is
-> the one activated on the store's socket.** Everything below makes this invariant hold by
-> construction, be observable from any client in one call, and fail loudly — never
-> silently — when violated.
+> the one activated on the store's socket.**
+
+Superseded by ADR-0012 §1. Turso writers are serialized across processes by
+`multiprocess_wal`'s single-writer slot, and this is not MVCC. The SQLite adapter keeps the
+single-process invariant (ADR-0012, "What is explicitly NOT guaranteed").
 
 ## Decisions
 
@@ -87,6 +85,8 @@ delete the parallel private implementations** (BL-147 as reframed, BL-149):
   memory-refactor plan started.
 - **memory-core keeps** what is genuinely memory's: schema/DDL, the 19 tool handlers,
   write/recall/update composition, provenance, curate, and the ping health adapter.
+  As of 2026-10-14 the migration is not complete: `libs/memory-core/src/embed.ts` is still
+  present at 740 lines (584 lines when this was decided).
   `@adhd/sox-ingest` remains `private:true` by its own declaration; the unused declared
   deps (`embedding-provider`, `ingest`) become real or are removed.
 
@@ -96,27 +96,28 @@ server-local copy) are deleted in favor of the analysis-owned orchestrator hoste
 writer (BL-149); any future project gets enrichment by composing provider + backends +
 orchestrator over its own store.
 
-### D2 — Single-writer hosting
+### D2 — Single-writer hosting (superseded by ADR-0012 for the Turso adapter)
 
 The store's writer process hosts the enrichment orchestrator **in-process** (worker
-thread for embedding compute, micro-transactions for index writes). Writes go through one
-connection behind an in-process write queue with group commit. The `memory-daemon`
-extension is deprecated after Phase 2 (bundle major bump); enrichment supervision rides
-the writer's supervision. Read connections open `query_only`; WAL readers never block.
+thread for embedding compute, micro-transactions for index writes). Writes go through an
+in-process write queue with group commit. Enrichment supervision rides the writer's
+supervision. The `memory-daemon` member is not in `sox-memory-bundle`; its members are
+`memory-cli`, `memory-flush`, `memory-server`, and `memory-usage`.
 
 ### D3 — Activation posture is configuration, not architecture
 
-A new `activation_posture: 'always-on' | 'on-demand'` key in memory-server's
-`config_schema`, resolved through the existing `soxe config` cascade
-(org → user → project → local, delivered as `SOX_CONFIG_*` at spawn — the same live
-mechanism tokenguard uses today), read by `deriveOsUnitSpec()` when generating os-units.
-The existing `config set → restartOsUnit` hook makes posture changes take effect without
-manual service surgery.
+The `activation_posture: 'always-on' | 'on-demand'` key is in memory-server's config schema
+(`extensions/bundles/sox-memory-bundle/members/memory-server/extension.json`, `activation_posture`
+at line 1344). It is resolved through the `soxe config` cascade (org → user → project → local,
+delivered as `SOX_CONFIG_*` at spawn), and read by the os-unit generator
+(`libs/host-runtime/src/os-unit.ts`, `activation_posture` at lines 271 and 319–323). The
+`config set → restartOsUnit` hook makes posture changes take effect without manual service surgery.
 
-- **always-on** = `RunAtLoad` + `KeepAlive` (levers that exist today) — ships first.
-- **on-demand** = socket activation: `Sockets` plist rendering (launchd) / paired
-  `.socket` units (systemd) + an inherited-fd variant of `serveBackend()`. Genuinely new
-  work (no scaffolding exists) — built in Phase 3, and it structurally eliminates
+- **always-on** = `RunAtLoad` + `KeepAlive`. Implemented in `os-unit.ts`.
+- **on-demand** = socket activation: `Sockets` plist rendering (launchd) / paired `.socket`
+  units (systemd) + an inherited-fd variant of `serveBackend()`. The os-unit generator accepts
+  `on-demand` and carries socket options (`os-unit.ts:274`). Whether `Sockets` rendering and the
+  inherited-fd path are complete is **not verified**. This is Phase 3 work, and it structurally eliminates
   bind-stealing for the supervised path because the OS owns the socket.
 - The `ensureBackend` spawn path remains the non-supervised fallback (CI, fresh
   installs), hardened per BL-137: probe-connect before spawn AND before bind — **never
@@ -129,10 +130,11 @@ manual service surgery.
 
 Target: **one writer process, N listeners** — stdio (via the per-session shim), the UDS
 proxy backend (0600, local), and streamable HTTP — all bound simultaneously by default,
-configurable per install. Today's code picks exactly one mode per process
-(`resolveTransportMode`, stdio XOR http/sse) — simultaneous binding is new work on top of
-real existing transport code, and the manifest already declares the capability
-(`install.serves: ["stdio","sse","http"]` + profiles, schema-validated).
+configurable per install. Multi-transport resolution is implemented.
+`resolveTransports` returns an explicit `opts.transports` list, falling back to the single
+`resolveTransportMode` (`libs/mcp-runtime/src/transport.ts:147-151`). The manifest declares
+`install.serves: ["stdio","sse","http"]` with profiles. Whether all three are bound by default
+in the shipped memory-server is part of the Phase 1–4 gates and was not re-verified here.
 
 Rationale (owner, recorded as design drivers): remote transports survive server restarts
 — the dev live-reload loop that stdio structurally cannot give (a stdio MCP dies with its
@@ -141,19 +143,18 @@ the system); host configs become URLs instead of npx/hardcoded-path spawn comman
 system serves more hosts than one machine's.
 
 Security policy that makes all-transports-on safe by default:
-- **Bind address defaults to loopback** (`127.0.0.1`), exactly as the transport code does
-  today. Broader binds ("all available interfaces") are a per-install config key —
-  explicit, never implicit.
-- **Non-loopback binds require bearer auth**: a per-install token minted at install time,
-  stored via the config cascade's env-ref pattern, checked by the HTTP transport.
-  Loopback + UDS may run tokenless (filesystem/host trust), configurable stricter. No
-  auth code exists today (verified) — this is Phase 4 work.
-- **Ports are a config key, not an accident**: the current state writes `:3000` URLs into
-  host configs while actually binding a random port (BL-148). Fix: per-install port in
-  `config_schema` (tokenguard precedent), with host-config URL generation reading the
-  same source of truth.
+- **Bind address defaults to loopback** (`127.0.0.1`). `resolveBindHost` returns
+  `opts.bindAddress ?? opts.host ?? '127.0.0.1'` (`libs/mcp-runtime/src/transport.ts:87-89`).
+  Broader binds ("all available interfaces") are a per-install config key — explicit, never implicit.
+- **Non-loopback binds require bearer auth.** Implemented in `libs/mcp-runtime/src/transport.ts`
+  (`validateBindAuth`, `authMiddleware`, exported from `libs/mcp-runtime/src/index.ts:36`). The
+  token is a per-install `auth_token` config key with env-ref support
+  (`memory-server/extension.json`, `auth_token`). Loopback + UDS may run tokenless. Whether every
+  non-loopback path is refused without a token is part of the Phase 4 gate and was not re-verified here.
+- **Ports are a config key, not an accident.** Current status is **not verified**. The
+  BL-148 port-mismatch fix is part of Phase 4.
 
-### D5 — Write path hardening
+### D5 — Write path hardening (superseded by ADR-0012 for the Turso adapter)
 
 `PRAGMA busy_timeout` (2–5s) + WAL + `synchronous=NORMAL` on every connection. Single
 write queue with group commit (BL-118). Structured storage error taxonomy
@@ -179,7 +180,12 @@ compaction, size quotas, `memory_backup` via `VACUUM INTO` (BL-123, BL-133).
 
 ### D7 — Topology enforcement and observability
 
-Per-store writer lease held by the activated backend (BL-128) — belt to D3's suspenders.
+Per-connection lease registry, `<dbPath>.sox-lease.d/`
+(`libs/data/store/store-adapter/src/store-lease.ts`). One entry per connection. The lease is
+acquired at the adapter's real open (`turso-adapter.ts:2589`) and released when the connection
+goes idle (`turso-adapter.ts:792-801`), then reacquired on the next operation. It gates
+destructive sidecar operations (`storeQuiescence()`). It is not a writer exclusion lock; writer
+serialization is `multiprocess_wal` (ADR-0012 §1).
 `memory_ping` returns instance identity (pid, start time, transport, instance id, build
 hash) + per-store health (path fingerprint, WAL size, last checkpoint, watermark, queue
 depth) so any client verifies the invariant in one call (BL-122, BL-131). Recall scores
@@ -199,7 +205,11 @@ proxy locks/sockets + an OS-truth ps/lsof pass flagging UNMANAGED/STALE, build h
 process) and `soxe follow` (merged prefixed live tail — the docker-compose pane)
 (BL-139, BL-140).
 
-### D9 — Storage engine: SQLite, with a recorded exit ramp
+### D9 — Storage engine (superseded by ADR-0012)
+
+The memory store runs on the Turso adapter, not SQLite (`docs/reporting/memory/STATE.md`,
+live-service table: "adapter **turso**"). The SQLite exit-ramp text below is the decision as
+accepted in 2026-07.
 
 SQLite remains correct under a single writer at this scale. Exit triggers (BL-135): a
 true multi-host or multi-writer requirement, store growth past low-GB with p99 breaches,
