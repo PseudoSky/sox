@@ -648,6 +648,30 @@ export function ledgerRows(text, target) {
  */
 export const DEFAULT_GATE_TABLE = 'gates.table.json';
 
+/** Repository config the skill reads beside AGENTS.md, so a plain review/--check/--force agrees with the first apply. */
+export const REPO_CONFIG = '.workspace-standards.json';
+
+/**
+ * `{ gateTable, routingCommand }` for a repository: an explicit value (a flag) wins, then `.workspace-standards.json`
+ * at the root, then the default (`gates.table.json`, no routing command).
+ */
+export function repoOptions(root, { gateTable, routingCommand } = {}) {
+  let cfg = {};
+  const file = path.join(root, REPO_CONFIG);
+  if (fs.existsSync(file)) {
+    try {
+      cfg = JSON.parse(readText(file));
+    } catch (err) {
+      trace(`parse ${REPO_CONFIG}`, err);
+      throw Object.assign(new Error(`${REPO_CONFIG} is not valid JSON: ${err.message}`), { code: 'E_INPUT' });
+    }
+  }
+  return {
+    gateTable: gateTable ?? (typeof cfg.gateTable === 'string' ? cfg.gateTable : DEFAULT_GATE_TABLE),
+    routingCommand: routingCommand ?? (typeof cfg.routingCommand === 'string' ? cfg.routingCommand : null),
+  };
+}
+
 /**
  * The repository's command table parsed, or null when it is absent. `rel` is relative to `root`; a repository
  * that keeps the table beside its runner passes that path (apply gates --gate-table) instead of the default.

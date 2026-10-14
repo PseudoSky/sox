@@ -402,6 +402,18 @@ describe('595965cc T49 correction: gate keys, filing on landed writes, ledger dr
     assert.match(body, /\| C \| test-gates\/G1/);
     assert.doesNotMatch(body, /\| (D|E|G) \|[^\n]*test-gates\/G1(?!\d)/, 'the standard\'s stages for G1 that the table does not run are gone');
   });
+  test('7981547b a repository config (.workspace-standards.json) names the table, so a plain review is clean and a plain re-apply keeps its stages', () => {
+    const dir = scaffold();
+    const rel = 'tools/gates/gates.table.json';
+    fs.mkdirSync(path.join(dir, 'tools/gates'), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), JSON.stringify({ gates: [{ id: 'G1', stage: ['B', 'C'], mechanism: 'mechanical', command: 'true' }] }));
+    fs.writeFileSync(path.join(dir, '.workspace-standards.json'), JSON.stringify({ gateTable: rel }));
+    applyFoundation({ target: 'gates', root: dir, standards: [TESTING], noFile: true });
+    assert.match(managed(read(dir, 'AGENTS.md'), 'gates'), /\| test-gates \| G1 \| mechanical \| B, C \| command \|/);
+    assert.equal(applyFoundation({ target: 'gates', root: dir, standards: [TESTING], check: true }).exit, 0, 'plain review is clean');
+    applyFoundation({ target: 'gates', root: dir, standards: [TESTING], noFile: true, force: true });
+    assert.match(managed(read(dir, 'AGENTS.md'), 'gates'), /\| test-gates \| G1 \| mechanical \| B, C \| command \|/, '--force keeps the table\'s stages');
+  });
   test('7981547b review gates reports drift when the table\'s stages move and the block was not re-applied', () => {
     const dir = scaffold();
     const rel = 'tools/gates/gates.table.json';

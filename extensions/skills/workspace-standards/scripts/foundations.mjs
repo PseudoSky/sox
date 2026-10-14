@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { upsertBlock, inspectBlock, unifiedDiff, MarkerError } from './marker-engine.mjs';
-import { parseRoles, ownership, resolveRole, declaresUnbound, ledgerRows, escapeCell, loadAgents, loadRegistry, trace, commandedGateIds, tableGateStages, stagesFor, DEFAULT_GATE_TABLE, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
+import { parseRoles, ownership, resolveRole, declaresUnbound, ledgerRows, escapeCell, loadAgents, loadRegistry, trace, commandedGateIds, tableGateStages, stagesFor, DEFAULT_GATE_TABLE, repoOptions, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
 import { backlogFiler, boundGates } from './apply-testing.mjs';
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -180,7 +180,8 @@ const renderLedger = (rows) => `## Mechanisms filed by apply\n${table(['gate', '
  * Apply or review one foundation target against `root`. The filer is injected; check and dryRun write
  * and file nothing. Returns the same shape as applyTesting: blocks, skipped, filed, failed, drift, diff, wrote, exit.
  */
-export function applyFoundation({ target, root, standards = loadStandards(), agents = rosterFor(root), check = false, dryRun = false, force = false, noFile = false, filer = null, gateTable = DEFAULT_GATE_TABLE }) {
+export function applyFoundation({ target, root, standards = loadStandards(), agents = rosterFor(root), check = false, dryRun = false, force = false, noFile = false, filer = null, gateTable: gateTableArg }) {
+  const { gateTable } = repoOptions(root, { gateTable: gateTableArg });
   if (!FOUNDATIONS.includes(target)) throw inputError(`unknown foundation "${target}"; expected routing or gates`);
   const readOnly = dryRun || check;
   const commanded = commandedGateIds(root, gateTable);
@@ -337,7 +338,7 @@ function main(argv) {
   let r;
   try {
     r = applyFoundation({
-      target, root, check: verb === 'review', dryRun: !!opt['--dry-run'], force: !!opt['--force'], noFile: !!opt['--no-file'], gateTable: opt['--gate-table'] ?? DEFAULT_GATE_TABLE,
+      target, root, check: verb === 'review', dryRun: !!opt['--dry-run'], force: !!opt['--force'], noFile: !!opt['--no-file'], gateTable: opt['--gate-table'],
       filer: backlogFiler({ project: opt['--backlog-project'] ?? path.basename(root) }),
     });
   } catch (err) {

@@ -28,7 +28,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { upsertBlock, inspectBlock, unifiedDiff, MarkerError } from './marker-engine.mjs';
-import { parseRoles, trace, ownership, ledgerRows, splitRow, escapeCell, GATE_ID, GATE_ID_SOURCE, commandedGateIds, tableGateStages, stagesFor, DEFAULT_GATE_TABLE, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
+import { parseRoles, trace, ownership, ledgerRows, splitRow, escapeCell, GATE_ID, GATE_ID_SOURCE, commandedGateIds, tableGateStages, stagesFor, DEFAULT_GATE_TABLE, repoOptions, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const EXIT = { OK: 0, DRIFT: 3, FILING: 4, NOT_APPLIED: 5, USAGE: 64, INPUT: 65 };
@@ -123,7 +123,8 @@ export function backlogFiler({ project, run = (args) => execFileSync('adhd-backl
  * Run apply testing against `root`. Pure of the process: `filer(item) -> uid` is injected.
  * dryRun and check write nothing and file nothing; they differ only in intent (check = `review testing`).
  */
-export function applyTesting({ root, skillRoot = SKILL_ROOT, declarationPath, dryRun = false, check = false, force = false, noFile = false, filer = null, gateTable = DEFAULT_GATE_TABLE, routingCommand = null }) {
+export function applyTesting({ root, skillRoot = SKILL_ROOT, declarationPath, dryRun = false, check = false, force = false, noFile = false, filer = null, gateTable: gateTableArg, routingCommand: routingCommandArg }) {
+  const { gateTable, routingCommand } = repoOptions(root, { gateTable: gateTableArg, routingCommand: routingCommandArg });
   const readOnly = dryRun || check;
   const registry = JSON.parse(rd(path.join(skillRoot, 'registry.json')));
   const std = registry.standards.find((s) => s.id === 'testing');
@@ -275,7 +276,7 @@ function main(argv) {
   let r;
   try {
     r = applyTesting({
-      root, declarationPath: opt['--declaration'], dryRun: !!opt['--dry-run'], check: !!opt['--check'], force: !!opt['--force'], noFile: !!opt['--no-file'], gateTable: opt['--gate-table'] ?? DEFAULT_GATE_TABLE, routingCommand: opt['--routing-command'] ?? null,
+      root, declarationPath: opt['--declaration'], dryRun: !!opt['--dry-run'], check: !!opt['--check'], force: !!opt['--force'], noFile: !!opt['--no-file'], gateTable: opt['--gate-table'], routingCommand: opt['--routing-command'],
       filer: backlogFiler({ project: opt['--backlog-project'] ?? path.basename(root) }),
     });
   } catch (err) {

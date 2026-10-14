@@ -501,4 +501,26 @@ describe('86ae879d apply testing takes the repository\'s routing command and gat
     const dflt = apply(repo({ 'AGENTS.md': HEAD }), { declarationPath: decl({ own: ['gates'] }) });
     assert.deepEqual(dflt.drift, []);
   });
+
+  test('86ae879d/7981547b a repository config (.workspace-standards.json) supplies both, so a plain apply, re-apply --force and --check agree', () => {
+    const dir = repo({
+      'AGENTS.md': HEAD,
+      '.workspace-standards.json': JSON.stringify({ gateTable: 'tools/gates.table.json', routingCommand: CMD }),
+      'tools/gates.table.json': JSON.stringify({ gates: [{ id: 'G1', stage: ['B'], mechanism: 'mechanical', command: 'true' }] }),
+    });
+    apply(dir, { declarationPath: decl({ own: ['gates'] }) });
+    assert.match(capabilityRow(dir), /^\| test-routing \| `node tools\/test-routing\.mjs` \|/);
+    assert.match(read(dir, 'AGENTS.md').split('\n').find((l) => l.startsWith('| G1 |')) ?? '', /^\| G1 \| mechanical \| B \|/);
+    const reapplied = apply(dir, { declarationPath: decl({ own: ['gates'] }), force: true });
+    assert.match(capabilityRow(dir), /node tools\/test-routing\.mjs/, '--force does not revert to the standard\'s tool');
+    const checked = apply(dir, { declarationPath: decl({ own: ['gates'] }), check: true });
+    assert.deepEqual(checked.drift, [], 'a plain --check is clean');
+    assert.ok(reapplied);
+  });
+
+  test('86ae879d an explicit flag wins over the repository config', () => {
+    const dir = repo({ 'AGENTS.md': HEAD, '.workspace-standards.json': JSON.stringify({ routingCommand: CMD }) });
+    apply(dir, { routingCommand: 'node other.mjs' });
+    assert.match(capabilityRow(dir), /node other\.mjs/);
+  });
 });

@@ -35,6 +35,7 @@ before(() => {
   fs.cpSync(SRC, scaffold, { recursive: true });
 });
 after(() => {
+  if (!scaffold) return; // before() failed (for example the policy input is missing): its message is the failure
   const ms = Date.now() - started;
   fs.rmSync(path.dirname(scaffold), { recursive: true, force: true });
   for (let i = 0; i < n; i++) fs.rmSync(path.join(path.dirname(scaffold), `scaffold-mut-${i}`), { recursive: true, force: true });

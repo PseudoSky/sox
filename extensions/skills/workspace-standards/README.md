@@ -43,6 +43,8 @@ node scripts/foundations.mjs review gates   [--root <repo>]
 
 ```bash
 node scripts/apply-testing.mjs --root <repo> [--dry-run] [--check] [--force] [--no-file] [--declaration <file>] [--backlog-project <name>] [--gate-table <path>] [--routing-command <command>]
+
+A repository that keeps its gate table or routing command off the defaults records them once in `<root>/.workspace-standards.json` — `{"gateTable": "tools/.../gates.table.json", "routingCommand": "node tools/.../test-routing.mjs"}` — so `apply`, `review`, `--check` and `--force` all agree; an explicit flag wins over the file.
 ```
 
 Writes only the testing-specific repository side: between `workspace-standards:testing` markers in `AGENTS.md` the testing block (at most 12 narrative lines), the `test-routing` capability row, and the class table; and the IMPLEMENTATION skeleton at the binding path (`docs/standards/testing.md`), created once. The binding table lives in a `workspace-standards:testing:hand-maintained` region that is never overwritten, even with `--force`.
