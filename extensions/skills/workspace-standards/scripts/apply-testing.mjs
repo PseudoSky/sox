@@ -7,7 +7,7 @@
 // when the declaration owns it. The managed-block mechanics live in marker-engine.mjs.
 //
 // usage: apply-testing.mjs [--root <repo>] [--declaration <file>] [--dry-run] [--check] [--force]
-//                          [--no-file] [--backlog-project <name>]
+//                          [--no-file] [--backlog-project <name>] [--gate-table <path>] [--routing-command <command>]
 // exit:  0 applied/clean, 3 drift reported (a managed block, or the ledger block, differs from its rendering, no --force),
 //        4 a backlog item could not be filed, 5 --check only: the standard was never applied (a managed block,
 //        the roles file or the IMPLEMENTATION skeleton is absent; `review testing` reads this), 64 usage,
@@ -28,7 +28,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { upsertBlock, inspectBlock, unifiedDiff, MarkerError } from './marker-engine.mjs';
-import { parseRoles, trace, ownership, ledgerRows, splitRow, escapeCell, GATE_ID, GATE_ID_SOURCE, commandedGateIds, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
+import { parseRoles, trace, ownership, ledgerRows, splitRow, escapeCell, GATE_ID, GATE_ID_SOURCE, commandedGateIds, tableGateStages, stagesFor, DEFAULT_GATE_TABLE, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const EXIT = { OK: 0, DRIFT: 3, FILING: 4, NOT_APPLIED: 5, USAGE: 64, INPUT: 65 };
@@ -44,10 +44,10 @@ const cell = escapeCell;
 const table = (head, rows) => [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map((r) => `| ${r.map(cell).join(' | ')} |`)].join('\n');
 
 /** Inner body (between the markers) of the agents-block template, with placeholders filled. */
-export function renderTestingBody(template, decl) {
+export function renderTestingBody(template, decl, { routingCommand = null } = {}) {
   const at = inspectBlock(template, 'testing');
   if (!at.found) throw new MarkerError('E_TEMPLATE', 'templates/agents-block.md has no workspace-standards:testing markers');
-  const capability = table(['capability', 'tool', 'usage'], [['test-routing', 'workspace-standards', '`/workspace-standards run testing` returns the class, rigor, and playbook of a change']]);
+  const capability = table(['capability', 'tool', 'usage'], [['test-routing', routingCommand ? `\`${routingCommand}\`` : 'workspace-standards', '`/workspace-standards run testing` returns the class, rigor, and playbook of a change']]);
   const classes = table(
     ['class', 'default rigor', 'author card'],
     (decl.workClasses ?? []).map((c) => [c.id, c.defaultRigor, c.card ? path.basename(c.card, '.md') : 'none']),
@@ -57,8 +57,8 @@ export function renderTestingBody(template, decl) {
 
 const renderRoutingBody = (rolesText) =>
   `## Testing routing\n${table(['role', 'tools', 'preferred agents'], parseRoles(rolesText).roles.map((r) => [r.name, r.tools.join(', '), r.hints.join(', ') || 'none']))}`;
-const renderGatesBody = (decl) =>
-  `## Testing gates\n${table(['gate', 'mechanism', 'stage', 'threshold'], gateList(decl).map((g) => [g.id, g.mechanism, [].concat(g.stage).join(', '), g.threshold]))}`;
+const renderGatesBody = (decl, gateSet, tableStages = new Map(), shared = new Set()) =>
+  `## Testing gates\n${table(['gate', 'mechanism', 'stage', 'threshold'], gateList(decl).map((g) => [g.id, g.mechanism, stagesFor(tableStages, gateSet, g, shared).join(', '), g.threshold]))}`;
 
 /**
  * Gate ids whose binding-table row names a real mechanism (not a `<placeholder>`). The mechanism is the
@@ -123,7 +123,7 @@ export function backlogFiler({ project, run = (args) => execFileSync('adhd-backl
  * Run apply testing against `root`. Pure of the process: `filer(item) -> uid` is injected.
  * dryRun and check write nothing and file nothing; they differ only in intent (check = `review testing`).
  */
-export function applyTesting({ root, skillRoot = SKILL_ROOT, declarationPath, dryRun = false, check = false, force = false, noFile = false, filer = null }) {
+export function applyTesting({ root, skillRoot = SKILL_ROOT, declarationPath, dryRun = false, check = false, force = false, noFile = false, filer = null, gateTable = DEFAULT_GATE_TABLE, routingCommand = null }) {
   const readOnly = dryRun || check;
   const registry = JSON.parse(rd(path.join(skillRoot, 'registry.json')));
   const std = registry.standards.find((s) => s.id === 'testing');
@@ -163,7 +163,7 @@ export function applyTesting({ root, skillRoot = SKILL_ROOT, declarationPath, dr
   const outside = at.found ? agentsBefore.slice(0, at.start) + agentsBefore.slice(at.end) : agentsBefore;
   if (CAPABILITY_TABLE.test(outside)) result.warnings.push('AGENTS.md already has a Capabilities table outside the testing block; the test-routing row is emitted as its own table inside the block and the existing table is left untouched (merge the row by hand if one table is wanted)');
 
-  block('AGENTS.md', 'testing', renderTestingBody(template, decl));
+  block('AGENTS.md', 'testing', renderTestingBody(template, decl, { routingCommand }));
   if (own.routing) {
     block('AGENTS.md', 'testing-routing', renderRoutingBody(rd(path.join(skillRoot, std.roles))));
     const rolesRel = 'docs/standards/testing-roles.md';
@@ -175,7 +175,13 @@ export function applyTesting({ root, skillRoot = SKILL_ROOT, declarationPath, dr
       return text;
     });
   } else result.skipped.push('routing: owned by apply routing (declaration does not say routing: own)');
-  if (own.gates) block('AGENTS.md', 'testing-gates', renderGatesBody(decl));
+  const gateSet = std.gateSet ?? `${std.id}-gates`;
+  const shared = sharedGateIds(registry.standards.filter((x) => x.status === 'active').map((x) => ({
+    gateSet: x.gateSet ?? `${x.id}-gates`,
+    decl: x.id === std.id ? decl : JSON.parse(rd(path.join(skillRoot, x.declaration))),
+  })));
+  const tableStages = tableGateStages(root, gateTable);
+  if (own.gates) block('AGENTS.md', 'testing-gates', renderGatesBody(decl, gateSet, tableStages, shared));
   else result.skipped.push('gates: owned by apply gates (declaration does not say gates: own)');
 
   // IMPLEMENTATION skeleton: created once; an existing file is never rewritten except for the ledger block.
@@ -194,13 +200,8 @@ export function applyTesting({ root, skillRoot = SKILL_ROOT, declarationPath, dr
   const ledger = readLedger(skeletonText);
   // 595965cc T49.AC6: a gate the foundation gates ledger already filed (apply gates ran first) is not filed twice.
   // The command table and that ledger are keyed `<gateSet>/<id>`; a bare id in the table counts only while unshared.
-  const gateSet = std.gateSet ?? `${std.id}-gates`;
   const filedByGates = ledgerRows(agentsBefore, 'foundations-filed');
-  const commanded = commandedGateIds(root);
-  const shared = sharedGateIds(registry.standards.filter((s) => s.status === 'active').map((s) => ({
-    gateSet: s.gateSet ?? `${s.id}-gates`,
-    decl: s.id === std.id ? decl : JSON.parse(rd(path.join(skillRoot, s.declaration))),
-  })));
+  const commanded = commandedGateIds(root, gateTable);
   const todo = gates.filter((g) => !bound.has(g.id) && !ledger.has(g.id) && !isCommanded(commanded, gateSet, g.id, shared) && !filedByGates.has(gateKey(gateSet, g.id)));
 
   // 39a21823 T48.AC4/AC5: the ledger block is managed like every other block. If it was hand-edited, new rows
@@ -259,7 +260,7 @@ export function applyTesting({ root, skillRoot = SKILL_ROOT, declarationPath, dr
 }
 
 function main(argv) {
-  const flags = { value: ['--root', '--declaration', '--backlog-project'], bool: ['--dry-run', '--check', '--force', '--no-file'] };
+  const flags = { value: ['--root', '--declaration', '--backlog-project', '--gate-table', '--routing-command'], bool: ['--dry-run', '--check', '--force', '--no-file'] };
   const opt = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -268,13 +269,13 @@ function main(argv) {
       if (v === undefined || v.startsWith('--')) { process.stderr.write(`${a} requires a value\n`); return EXIT.USAGE; }
       opt[a] = v;
     } else if (flags.bool.includes(a)) opt[a] = true;
-    else { process.stderr.write(`unknown argument ${a}\nusage: apply-testing.mjs [--root <repo>] [--declaration <file>] [--dry-run] [--check] [--force] [--no-file] [--backlog-project <name>]\nexit: 0 ok, 3 drift, 4 filing failed, 5 --check on a repository the standard was never applied to, 64 usage, 65 input\n`); return EXIT.USAGE; }
+    else { process.stderr.write(`unknown argument ${a}\nusage: apply-testing.mjs [--root <repo>] [--declaration <file>] [--dry-run] [--check] [--force] [--no-file] [--backlog-project <name>] [--gate-table <path>] [--routing-command <command>]\nexit: 0 ok, 3 drift, 4 filing failed, 5 --check on a repository the standard was never applied to, 64 usage, 65 input\n`); return EXIT.USAGE; }
   }
   const root = path.resolve(opt['--root'] ?? process.cwd());
   let r;
   try {
     r = applyTesting({
-      root, declarationPath: opt['--declaration'], dryRun: !!opt['--dry-run'], check: !!opt['--check'], force: !!opt['--force'], noFile: !!opt['--no-file'],
+      root, declarationPath: opt['--declaration'], dryRun: !!opt['--dry-run'], check: !!opt['--check'], force: !!opt['--force'], noFile: !!opt['--no-file'], gateTable: opt['--gate-table'] ?? DEFAULT_GATE_TABLE, routingCommand: opt['--routing-command'] ?? null,
       filer: backlogFiler({ project: opt['--backlog-project'] ?? path.basename(root) }),
     });
   } catch (err) {

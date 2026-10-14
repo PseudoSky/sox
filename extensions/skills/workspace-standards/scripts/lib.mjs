@@ -646,15 +646,42 @@ export function ledgerRows(text, target) {
  * names its `gateSet`, the bare id for a row that does not (see isCommanded). A row without a command is an
  * obligation, not a mechanism. An absent table binds nothing.
  */
-export function commandedGateIds(root) {
-  const file = path.join(root, 'gates.table.json');
-  if (!fs.existsSync(file)) return new Set();
-  let raw;
+export const DEFAULT_GATE_TABLE = 'gates.table.json';
+
+/**
+ * The repository's command table parsed, or null when it is absent. `rel` is relative to `root`; a repository
+ * that keeps the table beside its runner passes that path (apply gates --gate-table) instead of the default.
+ */
+export function readGateTable(root, rel = DEFAULT_GATE_TABLE) {
+  const file = path.resolve(root, rel);
+  if (!fs.existsSync(file)) return null;
   try {
-    raw = JSON.parse(readText(file));
+    return JSON.parse(readText(file));
   } catch (err) {
-    trace('parse gates.table.json', err);
-    throw Object.assign(new Error(`gates.table.json is not valid JSON: ${err.message}`), { code: 'E_INPUT' });
+    trace(`parse ${rel}`, err);
+    throw Object.assign(new Error(`${rel} is not valid JSON: ${err.message}`), { code: 'E_INPUT' });
   }
-  return new Set((Array.isArray(raw?.gates) ? raw.gates : []).filter((g) => typeof g?.command === 'string' && g.command !== '').map((g) => (typeof g.gateSet === 'string' && g.gateSet !== '' ? gateKey(g.gateSet, g.id) : g.id)));
 }
+
+const tableRows = (raw) => (Array.isArray(raw?.gates) ? raw.gates : []);
+const rowKey = (g) => (typeof g.gateSet === 'string' && g.gateSet !== '' ? gateKey(g.gateSet, g.id) : g.id);
+
+export function commandedGateIds(root, rel = DEFAULT_GATE_TABLE) {
+  return new Set(tableRows(readGateTable(root, rel)).filter((g) => typeof g?.command === 'string' && g.command !== '').map(rowKey));
+}
+
+/**
+ * Stages the repository's command table runs each gate at, keyed like commandedGateIds. The table is what the
+ * engine runs, so a rendered block that lists a different stage describes a gate that does not run there.
+ */
+export function tableGateStages(root, rel = DEFAULT_GATE_TABLE) {
+  const stages = new Map();
+  for (const g of tableRows(readGateTable(root, rel))) {
+    if (g?.stage !== undefined && g.id) stages.set(rowKey(g), [].concat(g.stage));
+  }
+  return stages;
+}
+
+/** The stage list a block renders for a gate: the repository table's row when it has one, else the standard's. */
+export const stagesFor = (tableStages, gateSet, gate, shared = new Set()) =>
+  tableStages.get(gateKey(gateSet, gate.id)) ?? (shared.has(gate.id) ? undefined : tableStages.get(gate.id)) ?? [].concat(gate.stage);

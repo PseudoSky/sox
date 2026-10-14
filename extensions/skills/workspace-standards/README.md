@@ -28,7 +28,7 @@ When a change needs its test class, rigor, and playbook; when tests are audited 
 
 ```
 node scripts/foundations.mjs apply routing [--root <repo>] [--dry-run] [--force] [--no-file]
-node scripts/foundations.mjs apply gates   [--root <repo>] [--dry-run] [--force] [--no-file]
+node scripts/foundations.mjs apply gates   [--root <repo>] [--dry-run] [--force] [--no-file] [--gate-table <path>]
 node scripts/foundations.mjs review routing [--root <repo>]   # read-only drift check, exit 3 on drift
 node scripts/foundations.mjs review gates   [--root <repo>]
 ```
@@ -42,7 +42,7 @@ node scripts/foundations.mjs review gates   [--root <repo>]
 ## Apply testing
 
 ```bash
-node scripts/apply-testing.mjs --root <repo> [--dry-run] [--check] [--force] [--no-file] [--declaration <file>] [--backlog-project <name>]
+node scripts/apply-testing.mjs --root <repo> [--dry-run] [--check] [--force] [--no-file] [--declaration <file>] [--backlog-project <name>] [--gate-table <path>] [--routing-command <command>]
 ```
 
 Writes only the testing-specific repository side: between `workspace-standards:testing` markers in `AGENTS.md` the testing block (at most 12 narrative lines), the `test-routing` capability row, and the class table; and the IMPLEMENTATION skeleton at the binding path (`docs/standards/testing.md`), created once. The binding table lives in a `workspace-standards:testing:hand-maintained` region that is never overwritten, even with `--force`.

@@ -7,7 +7,7 @@
 // A standard that declares `own` for a foundation is skipped by that foundation and reported as skipped.
 //
 // usage: foundations.mjs <apply|review> <routing|gates> [--root <repo>] [--dry-run] [--force] [--no-file]
-//                        [--backlog-project <name>]
+//                        [--backlog-project <name>] [--gate-table <path>]
 // exit:  0 applied/clean, 3 drift (a managed block, or the ledger block, differs from its rendering, no --force),
 //        4 a backlog item could not be filed, 64 usage, 65 unreadable input or malformed markers
 //
@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { upsertBlock, inspectBlock, unifiedDiff, MarkerError } from './marker-engine.mjs';
-import { parseRoles, ownership, resolveRole, declaresUnbound, ledgerRows, escapeCell, loadAgents, loadRegistry, trace, commandedGateIds, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
+import { parseRoles, ownership, resolveRole, declaresUnbound, ledgerRows, escapeCell, loadAgents, loadRegistry, trace, commandedGateIds, tableGateStages, stagesFor, DEFAULT_GATE_TABLE, gatesOf, gateKey, sharedGateIds, isCommanded } from './lib.mjs';
 import { backlogFiler, boundGates } from './apply-testing.mjs';
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -147,14 +147,14 @@ export function composeRoles({ standards }) {
 }
 
 /** Gates block: the gate registry, the stage bindings, and the one runner. Standards that declare gates: own are skipped. */
-export function composeGates({ standards, bound }) {
+export function composeGates({ standards, bound, tableStages = new Map(), shared = new Set() }) {
   const skipped = [];
   const registry = [];
   const byStage = new Map(STAGES.map((st) => [st, []]));
   for (const s of standards) {
     if (s.own.gates) { skipped.push(`${s.id}: declares gates: own; apply gates skips it`); continue; }
     for (const g of gatesOf(s.decl)) {
-      const stages = [].concat(g.stage);
+      const stages = stagesFor(tableStages, s.gateSet, g, shared);
       const id = gateKey(s.gateSet, g.id);
       registry.push([s.gateSet, g.id, g.mechanism, stages.join(', '), bound(s, g) ? 'command' : 'obligation', g.threshold]);
       for (const st of stages) if (byStage.has(st)) byStage.get(st).push(id);
@@ -180,10 +180,11 @@ const renderLedger = (rows) => `## Mechanisms filed by apply\n${table(['gate', '
  * Apply or review one foundation target against `root`. The filer is injected; check and dryRun write
  * and file nothing. Returns the same shape as applyTesting: blocks, skipped, filed, failed, drift, diff, wrote, exit.
  */
-export function applyFoundation({ target, root, standards = loadStandards(), agents = rosterFor(root), check = false, dryRun = false, force = false, noFile = false, filer = null }) {
+export function applyFoundation({ target, root, standards = loadStandards(), agents = rosterFor(root), check = false, dryRun = false, force = false, noFile = false, filer = null, gateTable = DEFAULT_GATE_TABLE }) {
   if (!FOUNDATIONS.includes(target)) throw inputError(`unknown foundation "${target}"; expected routing or gates`);
   const readOnly = dryRun || check;
-  const commanded = commandedGateIds(root);
+  const commanded = commandedGateIds(root, gateTable);
+  const tableStages = tableGateStages(root, gateTable);
   // Each standard's binding document (registry `binding`) names the gates it already mechanises and the
   // mechanisms it already filed (`<id>-mechanisms` ledger). No standard is special-cased.
   const bindings = new Map(standards.map((s) => {
@@ -255,7 +256,7 @@ export function applyFoundation({ target, root, standards = loadStandards(), age
       todo.push({ key: 'routing/roster-guard', title: 'workspace-standards routing: build the roster guard', body: `${ROSTER_GUARD_REL} is absent, so the task-to-agent routing table in ${AGENTS_REL} is not checked against the installed roster. Threshold: every agent name the table routes to resolves to an installed agent.` });
     }
   } else {
-    const g = composeGates({ standards, bound: hasMechanism });
+    const g = composeGates({ standards, bound: hasMechanism, tableStages, shared });
     result.skipped.push(...g.skipped.map((s) => `gates: ${s}`));
     block('gates', g.body);
     for (const s of standards) {
@@ -318,10 +319,10 @@ function main(argv) {
   const verb = argv[0];
   const target = argv[1];
   if (!['apply', 'review'].includes(verb) || !FOUNDATIONS.includes(target)) {
-    process.stderr.write('usage: foundations.mjs <apply|review> <routing|gates> [--root <repo>] [--dry-run] [--force] [--no-file] [--backlog-project <name>]\n');
+    process.stderr.write('usage: foundations.mjs <apply|review> <routing|gates> [--root <repo>] [--dry-run] [--force] [--no-file] [--backlog-project <name>] [--gate-table <path>]\n');
     return EXIT.USAGE;
   }
-  const flags = { value: ['--root', '--backlog-project'], bool: ['--dry-run', '--force', '--no-file'] };
+  const flags = { value: ['--root', '--backlog-project', '--gate-table'], bool: ['--dry-run', '--force', '--no-file'] };
   const opt = {};
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -336,7 +337,7 @@ function main(argv) {
   let r;
   try {
     r = applyFoundation({
-      target, root, check: verb === 'review', dryRun: !!opt['--dry-run'], force: !!opt['--force'], noFile: !!opt['--no-file'],
+      target, root, check: verb === 'review', dryRun: !!opt['--dry-run'], force: !!opt['--force'], noFile: !!opt['--no-file'], gateTable: opt['--gate-table'] ?? DEFAULT_GATE_TABLE,
       filer: backlogFiler({ project: opt['--backlog-project'] ?? path.basename(root) }),
     });
   } catch (err) {

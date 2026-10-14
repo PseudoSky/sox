@@ -470,3 +470,35 @@ describe('39a21823 correction: ledger round trip (escaped pipes, any gate id) an
     assert.throws(() => none({ title: 't', body: 'b' }), /no uid/);
   });
 });
+
+describe('86ae879d apply testing takes the repository\'s routing command and gate table', () => {
+  const CMD = 'node tools/test-routing.mjs';
+  const apply = (dir, extra = {}) => applyTesting({ root: dir, noFile: true, filer: fakeFiler(), ...extra });
+  const capabilityRow = (dir) => read(dir, 'AGENTS.md').split('\n').find((l) => l.startsWith('| test-routing |'));
+
+  test('86ae879d the test-routing capability row names the repository command, and a second apply changes nothing', () => {
+    const dir = repo({ 'AGENTS.md': HEAD });
+    apply(dir, { routingCommand: CMD });
+    assert.match(capabilityRow(dir), /^\| test-routing \| `node tools\/test-routing\.mjs` \|/);
+    const before = read(dir, 'AGENTS.md');
+    const again = apply(dir, { routingCommand: CMD });
+    assert.equal(read(dir, 'AGENTS.md'), before, 'idempotent');
+    assert.deepEqual(again.drift, []);
+    assert.equal(again.diff, '');
+  });
+
+  test('86ae879d without a routing command the row keeps the standard\'s own tool', () => {
+    const dir = repo({ 'AGENTS.md': HEAD });
+    apply(dir);
+    assert.match(capabilityRow(dir), /^\| test-routing \| workspace-standards \|/);
+  });
+
+  test('7981547b the testing-gates block carries the stages of the repository\'s table at --gate-table, not the standard\'s', () => {
+    const dir = repo({ 'AGENTS.md': HEAD, 'tools/gates.table.json': JSON.stringify({ gates: [{ id: 'G1', stage: ['B'], mechanism: 'mechanical', command: 'true' }] }) });
+    apply(dir, { gateTable: 'tools/gates.table.json', declarationPath: decl({ own: ['gates'] }) });
+    const g1 = read(dir, 'AGENTS.md').split('\n').find((l) => l.startsWith('| G1 |'));
+    assert.match(g1 ?? '', /^\| G1 \| mechanical \| B \|/);
+    const dflt = apply(repo({ 'AGENTS.md': HEAD }), { declarationPath: decl({ own: ['gates'] }) });
+    assert.deepEqual(dflt.drift, []);
+  });
+});

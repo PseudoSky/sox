@@ -385,6 +385,39 @@ describe('595965cc T49 correction: gate keys, filing on landed writes, ledger dr
     assert.equal(mechanismFor({ standard: TESTING, gate: g1, commanded: new Set(['other-gates/G1']) }), false);
   });
 
+  test('7981547b the gates block renders the stages of the repository\'s own table (--gate-table), not the standard\'s defaults', () => {
+    const std = TESTING.decl.gates.find((g) => g.id === 'G1');
+    const dflt = [].concat(std.stage).join(', ');
+    const dir = scaffold();
+    const rel = 'tools/gates/gates.table.json';
+    fs.mkdirSync(path.join(dir, 'tools/gates'), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), JSON.stringify({ gates: [{ id: 'G1', stage: ['B', 'C'], mechanism: 'mechanical', command: 'true' }] }));
+    applyFoundation({ target: 'gates', root: dir, standards: [TESTING], noFile: true });
+    assert.match(managed(read(dir, 'AGENTS.md'), 'gates'), new RegExp(`\\| test-gates \\| G1 \\| mechanical \\| ${dflt} \\|`), 'no table at the default path: the standard\'s stages');
+    const r = applyFoundation({ target: 'gates', root: dir, standards: [TESTING], noFile: true, gateTable: rel, force: true });
+    assert.equal(r.exit, 0);
+    const body = managed(read(dir, 'AGENTS.md'), 'gates');
+    assert.match(body, /\| test-gates \| G1 \| mechanical \| B, C \| command \|/);
+    assert.match(body, /\| B \| test-gates\/G1/);
+    assert.match(body, /\| C \| test-gates\/G1/);
+    assert.doesNotMatch(body, /\| (D|E|G) \|[^\n]*test-gates\/G1(?!\d)/, 'the standard\'s stages for G1 that the table does not run are gone');
+  });
+  test('7981547b review gates reports drift when the table\'s stages move and the block was not re-applied', () => {
+    const dir = scaffold();
+    const rel = 'tools/gates/gates.table.json';
+    const write = (stage) => {
+      fs.mkdirSync(path.join(dir, 'tools/gates'), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), JSON.stringify({ gates: [{ id: 'G1', stage, mechanism: 'mechanical', command: 'true' }] }));
+    };
+    write(['C']);
+    applyFoundation({ target: 'gates', root: dir, standards: [TESTING], noFile: true, gateTable: rel });
+    assert.equal(applyFoundation({ target: 'gates', root: dir, standards: [TESTING], check: true, gateTable: rel }).exit, 0, 'clean right after apply');
+    write(['C', 'F']);
+    const r = applyFoundation({ target: 'gates', root: dir, standards: [TESTING], check: true, gateTable: rel });
+    assert.equal(r.exit, 3, 'the table says F now; the block still says C');
+    assert.ok(r.drift.some((d) => d.target === 'gates'));
+  });
+
   test('595965cc T49 AC3: a second standard\'s binding document and ledger are read exactly like testing\'s (no id is special-cased)', () => {
     const alt = mkStd('alt-std', [G('M1'), G('M2'), G('M3'), G('R1', 'review')], { binding: 'docs/alt.md' });
     const dir = scaffold();
