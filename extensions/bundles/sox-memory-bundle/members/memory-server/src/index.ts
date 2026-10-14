@@ -87,7 +87,7 @@ import {
   readEnrichStallEscalation,
   readStoreGrowthGauge,
   resolveStoreOrDbPath,
-  runEnrichIsolated,
+  runEnrichIsolatedGated,
   runCompactionPass,
   DEFAULT_COMPACTION_INTERVAL_MS,
   schedulePendingEmbeds,
@@ -3723,9 +3723,14 @@ export async function runEnrichPassOnDb(
   // this never throws/rejects, even when the child crashes or times out.
   // BL-413 follow-on: a pending full-enrich trigger (memory_curate recluster)
   // gets the full-pass budget; routine incremental ticks keep the 120s default.
-  const isolated = await runEnrichIsolated(
+  // BL-465121ca / e85abe84: an idle tick (no open trigger, store unchanged since
+  // an idle pass) skips the fork entirely, so the child never opens the store.
+  // The forced-pass cap in enrich-isolation.ts still runs a real pass regularly.
+  const maxNodeRowid = (await adapter.executeGet<{ m: number }>('SELECT COALESCE(MAX(rowid), 0) AS m FROM node'))?.m ?? 0;
+  const isolated = await runEnrichIsolatedGated(
     dbPath,
     { incrementalCluster: !fullPass },
+    { hasOpenTriggers: fullPass || maxSeq > 0, fingerprint: `${maxNodeRowid}|${backlogBefore}` },
     fullPass ? enrichFullTimeoutMs() : enrichIsolationTimeoutMs(),
   );
 
@@ -3807,6 +3812,7 @@ export async function runEnrichPassOnDb(
       full_pass: fullPass,
       embed_healed: heal.healed,
       embed_heal_failed: heal.failed,
+      idle_skip: isolated.idle_skip ?? false,
       backlog_before: backlogBefore,
       backlog_after: backlogAfter,
       backlog_delta: backlogAfter - backlogBefore,

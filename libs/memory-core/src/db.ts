@@ -459,7 +459,13 @@ export async function openDb(dbPath: string): Promise<StoreAdapter> {
     try {
       const mod = await getFtsOpsModule();
       engineIdentity = await mod.readEngineIdentityViaAdapter(adapter);
-    } catch {
+    } catch (err) {
+      // Engine identity is telemetry-only; a failed read must not fail the open,
+      // but it is traced rather than swallowed.
+      log.debug('store.open.engine_identity_read_failed', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
       engineIdentity = null;
     }
     log.info('store.open.finish', {

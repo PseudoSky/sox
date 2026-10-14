@@ -54,6 +54,7 @@
  */
 
 import { openDb } from './db.js';
+import { log } from './telemetry.js';
 import { runBatchEnrich, type BatchEnrichOptions, type BatchEnrichResult } from './enrich-batch.js';
 import { bootstrapChildTelemetry, childTelemetrySnapshot, type ChildTelemetrySnapshot } from '@adhd/sox-telemetry';
 
@@ -67,6 +68,21 @@ type EnrichResponse =
   | { type: 'telemetry.ready'; id: number; telemetry: ChildTelemetrySnapshot }
   | { id: number; result: BatchEnrichResult }
   | { id: number; error: string };
+
+/**
+ * BL-465121ca: exit when the parent's IPC channel disconnects. A backend that
+ * dies (or is SIGKILLed) closes the channel; without this watchdog the forked
+ * child keeps running and holds the store as an orphan.
+ */
+export function armParentDisconnectExit(
+  proc: { on(event: 'disconnect', listener: () => void): unknown },
+  exit: (code: number) => void,
+): void {
+  proc.on('disconnect', () => {
+    log.warn('enrich.child.parent_disconnected', { pid: process.pid });
+    exit(1);
+  });
+}
 
 async function handleRequest(req: EnrichRequest): Promise<void> {
   const send = (msg: EnrichResponse): void => {
@@ -89,8 +105,13 @@ async function handleRequest(req: EnrichRequest): Promise<void> {
       // or hang process exit.
       try {
         await adapter.close();
-      } catch {
-        /* ignore — the process is exiting regardless */
+      } catch (err) {
+        // Best-effort close — the process is exiting regardless, but a failed
+        // close is still a signal worth a durable trace (never an empty catch).
+        log.warn('enrich.child.adapter_close_failed', {
+          db_path: req.dbPath,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
   } catch (err) {
@@ -112,6 +133,7 @@ if (typeof process.send === 'function' && require.main === module) {
   // module is imported in-process by a spec. The parent's SOX_TELEMETRY_INIT env
   // (if any) is merged over these defaults by bootstrapChildTelemetry.
   bootstrapChildTelemetry({ service: 'memory-core', role: 'harness', logSink: 'file' });
+  armParentDisconnectExit(process, (code) => process.exit(code));
   process.on('message', (msg: EnrichRequest) => {
     void handleRequest(msg);
   });

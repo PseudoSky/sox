@@ -323,7 +323,14 @@ export { log, withTimedEvent } from './telemetry.js';
 
 // ── BL-348: committed-stage boundary — clustering/enrichment isolated from
 //    the embed path in its own child process (see enrich-isolation.ts). ──────
-export { runEnrichIsolated, _setEnrichHostForkResolverForTest } from './enrich-isolation.js';
+export {
+  runEnrichIsolated,
+  runEnrichIsolatedGated,
+  _setEnrichHostForkResolverForTest,
+  killLiveEnrichChildren,
+  liveEnrichChildCount,
+  terminateEnrichChild,
+} from './enrich-isolation.js';
 export type { EnrichIsolatedResult, EnrichIsolatedOk, EnrichIsolatedErr } from './enrich-isolation.js';
 
 // ── Internal enrichment helpers (exported for tests) ──────────────────────────
