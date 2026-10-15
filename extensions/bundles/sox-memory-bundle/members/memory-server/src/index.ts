@@ -94,6 +94,12 @@ import {
   schedulePendingEmbeds,
   setLeaseInstanceId,
   settleReclusterJobs,
+  claimGlobalReclusterJobs,
+  releaseGlobalReclusterJobs,
+  hasPendingReclusterRequest,
+  readLatestReclusterJob,
+  readOpenReclusterJob,
+  runPendingSubsetReclusterJob,
   supersedesUidForRowid,
   vectorDialectFor,
   syncEmbedEnabled,
@@ -167,6 +173,7 @@ import {
   type InitTelemetryOptions,
 } from '@adhd/sox-telemetry';
 import * as crypto from 'node:crypto';
+import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: per-operation-class
@@ -213,6 +220,9 @@ const HOST_COMPAT_FALLBACK = '>=1.0.0 <2.0.0';
 const INSTANCE_STARTED_AT = new Date().toISOString();
 const INSTANCE_ID = crypto.randomUUID();
 setLeaseInstanceId(INSTANCE_ID);
+/** 90ba140a AC-B3: the identity a recluster job lease is held under — host + pid
+ *  + instance, so a lease is attributable and never collides across processes. */
+const RECLUSTER_OWNER = `${os.hostname()}:${process.pid}:${INSTANCE_ID}`;
 
 // ── Recall degradation counters (BL-391 follow-through) ──────────────────────
 //
@@ -461,6 +471,14 @@ async function fullPassRetryGate(
     return { deferred: false, fullSeq: hi };
   }
   if (st && nowMs < st.nextAttemptAtMs) {
+    // A new explicit request JOINS the open job row (one job per store) and
+    // resets its attempts/backoff on the row (enqueueReclusterJob): that reset is
+    // the "fresh budget" signal now that no higher-seq row is minted.
+    const open = await readOpenReclusterJob(adapter);
+    if (open && open.scope === 'global' && open.attempts === 0 && open.next_retry_at === null) {
+      fullPassRetryByDb.delete(key);
+      return { deferred: false, fullSeq: hi };
+    }
     return { deferred: true, fullSeq: hi, windowMaxSeq: Math.max(0, lo - 1) };
   }
   return { deferred: false, fullSeq: hi };
@@ -1232,9 +1250,10 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         importance: { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
         uid_keep: { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
         uid_drop: { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
-        filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: a global full re-cluster is ENQUEUED, NOT run inline — the call returns an observable handle {op:"recluster", scope:"global", enqueued:true, seq, job_id, status:"pending"} as soon as the trigger row commits, and the pass executes on a later in-process periodic enrichment tick (typically minutes away), so memory_stats read immediately after WILL still show the old partition. Poll the handle with {op:"recluster_status", job_id} until it is terminal. This deferral is deliberate (BL-186): a synchronous full pass holds the serial WriteQueue slot for its entire duration, fast-failing writes behind it with E_BUSY, and can out-wait the MCP client timeout. With dry_run:true nothing is enqueued and {enqueued:false, dry_run:true} returns.' },
+        filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. NEITHER form runs inside the tool call (90ba140a): both return an observable job handle {op:"recluster", scope, enqueued:true, seq, job_id, status:"pending", state:"queued", joined} within milliseconds, and the pass runs in an isolated child process on a later enrichment tick (seconds, via the request watcher), so memory_stats read immediately after WILL still show the old partition. With filters the job computes the subset communities; dry_run=true computes without writing, dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched; the result is read from recluster_status (`result`). Absent: a global full re-cluster. SINGLE-FLIGHT PER STORE: when any recluster job is already open on the store (from this or ANY other process) no second pass starts and the response is that job\'s handle with joined:true. Poll with {op:"recluster_status", job_id} (or latest:true) until state is terminal. This deferral is deliberate (BL-186): a synchronous pass holds the serial WriteQueue slot for its entire duration and out-waits the MCP client timeout (-32001). With dry_run:true and NO filters nothing is enqueued and {enqueued:false, dry_run:true} returns.' },
         threshold: { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
-        job_id: { type: 'string', description: '(recluster_status, SR-9) The job handle returned by a global `recluster`. Poll it until `status` is terminal: `completed` (carries the resulting `partition`), `failed` (carries `error`), or `skipped` (the pass ran but its cluster step did not — the mixed-model / no-neighbour guard; carries `skip_reason`). `pending` means the full pass has not run yet. "enqueued" is never the final answer, and a skipped pass is never reported `completed`.' },
+        job_id: { type: 'string', description: '(recluster_status) The job handle returned by `recluster`. Poll until `state` is terminal: `completed` (carries `partition`, or for a filtered job `result`), `degraded` (the pass ran but produced no partition — nodeCap refusal, budget abort, or skipped cluster step; carries `skip_reason` and `reason`), or `failed` (carries `error`, `reason` child_failed|owner_lost). `queued` = not claimed yet; `running` = one process holds it. Stored `status` is also returned (pending|running|completed|failed|skipped). Timestamps: created_at, started_at, finished_at. "enqueued" is never the final answer, and a degraded pass is never reported completed.' },
+        latest: { type: 'boolean', description: '(recluster_status) With no job_id, return the store\'s most recent recluster job. memory_ping also carries it as cluster.recluster_job.' },
         provenance_hash: { type: 'string', description: '(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response).' },
         limit: { type: 'number', description: '(reheal_stale) Max rows to re-embed this call. Default 50, capped at 2000 — small enough that a single MCP call does not risk the client-side tool-call timeout. Run again while the response\'s remaining > 0.' },
         report_path: { type: 'string', description: '(restore_neardup) Absolute path to the lexical triage report JSON. Required to APPLY — its sha256 is recorded in meta.restoredFrom on every restored row; optional for dry_run.' },
@@ -1707,6 +1726,9 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
     let storeOpened = false;
     // 0c9c76b4 AC8: raised by a degraded requested full recluster pass.
     let fullPassDegraded: FullPassDegradedAlarm | null = null;
+    // 90ba140a AC-B2: the store's latest recluster job (any process's), so job
+    // state is observable without holding the handle. null = none recorded.
+    let reclusterJobBlock: Record<string, unknown> | null = null;
     // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the honest pipeline verdict
     // state, hoisted out of the try so the top-level `status` can fold it in.
     // null when the store never opened (the verdict is then 'unhealthy' anyway).
@@ -1842,6 +1864,22 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
         // path for background enrichment + verify-and-repair WRITES) does not
         // apply. Failure here must not take out the whole store block, which
         // already reports queue/embed health: degrade to null instead.
+        try {
+          const rj = await readLatestReclusterJob(adapter);
+          if (rj) {
+            reclusterJobBlock = {
+              job_id: rj.job_id, scope: rj.scope, state: rj.state, status: rj.status,
+              reason: rj.reason, skip_reason: rj.skip_reason, error: rj.error,
+              created_at: rj.created_at, started_at: rj.started_at, finished_at: rj.finished_at,
+              owner: rj.owner, attempts: rj.attempts, next_retry_at: rj.next_retry_at,
+            };
+          }
+        } catch (err) {
+          log.warn('ping.recluster_job_read_failed', {
+            db_path: resolvedPath,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
         let clusterPipeline: Awaited<ReturnType<typeof getClusterPipelineMetrics>> | null = null;
         try {
           clusterPipeline = await getClusterPipelineMetrics(adapter, resolvedPath);
@@ -2181,7 +2219,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // most recent REQUESTED full recluster was refused (nodeCap) or
           // aborted (budget); it clears when a later requested full pass runs
           // un-degraded. Pure data — it never moves `status`.
-          cluster: { full_pass_degraded: fullPassDegraded },
+          cluster: { full_pass_degraded: fullPassDegraded, recluster_job: reclusterJobBlock },
           embed: embedBlock,
           // (862129b5 TUR-F) the off-thread Turso driver's lifecycle snapshot,
           // read synchronously before any store query. `state:'stalled'` is the
@@ -3676,6 +3714,11 @@ const enrichFullTimeoutMs = () => envMs('SOX_ENRICH_FULL_TIMEOUT_MS', DEFAULT_EN
  */
 export const fullPassClusterBudgetMs = (): number => Math.floor(enrichFullTimeoutMs() * 0.9);
 
+/** Lease on a claimed recluster job: the child's wall-clock timeout plus the
+ *  SIGTERM→SIGKILL grace and a margin, so a live owner never loses its claim and
+ *  a dead one is reaped promptly (90ba140a AC-B3). */
+export const reclusterLeaseMs = (): number => enrichFullTimeoutMs() + 90_000;
+
 // ── Queue-drain health SLO (BL-172 follow-on) ─────────────────────────────────
 //
 // "HEALTHY" must require workload progress, not just RPC liveness: memory_ping
@@ -3928,6 +3971,30 @@ export async function runEnrichPassOnDb(
       log.info('enrich.full_pass.backoff_deferred', { db_path: dbPath, full_seq: gate.fullSeq });
     }
   }
+  // 90ba140a AC-B3: STORE-level single-flight. Every server on this store runs
+  // this tick, and `liveChildrenByDb` only sees children of THIS process, so the
+  // right to fork the full pass is a compare-and-set on the job row (see
+  // recluster-job.ts). A tick that loses the claim — another process holds the
+  // job, or its retry backoff (recorded on the row) has not elapsed — runs
+  // incremental over a window that stops below the full row, exactly like the
+  // in-process backoff deferral above, so it can never settle that job.
+  if (fullPass) {
+    const claim = await claimGlobalReclusterJobs(adapter, {
+      maxSeq,
+      owner: RECLUSTER_OWNER,
+      leaseMs: reclusterLeaseMs(),
+      nowMs,
+    });
+    if (!claim.proceed) {
+      fullPass = false;
+      maxSeq = Math.max(0, claim.lowestOpenFullSeq - 1);
+      log.info('enrich.full_pass.single_flight_deferred', {
+        db_path: dbPath,
+        blocked: claim.blocked,
+        full_seq: fullSeq,
+      });
+    }
+  }
 
   // BL-348: isolated child process — see runEnrichIsolated's own doc for why
   // this never throws/rejects, even when the child crashes or times out.
@@ -3965,7 +4032,10 @@ export async function runEnrichPassOnDb(
     if (isolated.ok) {
       fullPassRetryByDb.delete(retryKey);
     } else {
-      const attempts = (fullPassRetryByDb.get(retryKey)?.attempts ?? 0) + 1;
+      // 90ba140a AC-B3: attempts live on the job row too, so a failure that
+      // bounces between servers still counts toward give-up.
+      const rowAttempts = (await readOpenReclusterJob(adapter))?.attempts ?? 0;
+      const attempts = Math.max(fullPassRetryByDb.get(retryKey)?.attempts ?? 0, rowAttempts) + 1;
       giveUp = attempts >= FULL_PASS_MAX_ATTEMPTS;
       const nextAttemptAtMs = nowMs + fullPassRetryDelayMs(attempts);
       if (giveUp) fullPassRetryByDb.delete(retryKey);
@@ -4031,13 +4101,26 @@ export async function runEnrichPassOnDb(
           error: giveUp
             ? `full pass child failed ${childFailure?.attempts} times (last: ${isolated.error ?? 'unknown'}); gave up. Request recluster again to retry`
             : (isolated.error ?? 'unknown'),
+          kind: 'child_failed',
         }
       : degraded
-        ? { ok: false, skipped: true, reason: describeClusterDegradation(degraded) }
+        ? { ok: false, skipped: true, reason: describeClusterDegradation(degraded), kind: degraded.reason }
         : isolated.result.cluster_pass_skipped
-          ? { ok: false, skipped: true, reason: isolated.result.cluster_skip_reason ?? 'cluster pass skipped' }
+          ? { ok: false, skipped: true, reason: isolated.result.cluster_skip_reason ?? 'cluster pass skipped', kind: 'cluster_skipped' }
           : { ok: true };
-    if (!retryPending) await settleReclusterJobs(adapter, maxSeq, settleOutcome);
+    if (!retryPending) {
+      await settleReclusterJobs(adapter, maxSeq, settleOutcome);
+    } else {
+      // Hand the job back WITH its attempt count and next-attempt time on the
+      // row, so the backoff binds every server on the store.
+      await releaseGlobalReclusterJobs(adapter, maxSeq, {
+        owner: RECLUSTER_OWNER,
+        attempts: childFailure?.attempts ?? 1,
+        nextRetryAt: childFailure?.nextRetryAt ?? null,
+        error: isolated.ok ? 'unknown' : (isolated.error ?? 'unknown'),
+        nowMs,
+      });
+    }
   } catch (err) {
     log.error('enrich.recluster_job.settle_failed', {
       db_path: dbPath,
@@ -4264,6 +4347,68 @@ async function runAutoHeal(
 }
 
 /**
+ * 90ba140a AC-B1: claim and run at most one pending FILTERED recluster job on
+ * this store, off-process via the isolated enrich child. The claim is a store
+ * CAS (AC-B3), so with N servers on the store exactly one runs it. Never throws.
+ */
+export async function runReclusterSubsetJobOnDb(
+  adapter: StoreAdapter,
+  dbPath: string,
+): Promise<Awaited<ReturnType<typeof runPendingSubsetReclusterJob>>> {
+  try {
+    return await runPendingSubsetReclusterJob(adapter, {
+      runIsolated: (opts) =>
+        runEnrichIsolatedGated(
+          dbPath,
+          { ...opts, storeKey: dbPath },
+          { hasOpenTriggers: true, fingerprint: 'subset-recluster' },
+          enrichFullTimeoutMs(),
+        ),
+      describeDegradation: describeClusterDegradation,
+      owner: RECLUSTER_OWNER,
+      leaseMs: reclusterLeaseMs(),
+    });
+  } catch (err) {
+    log.error('enrich.recluster_subset.error', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { ran: false };
+  }
+}
+
+/** How often each server looks for a waiting recluster request (any process's). */
+export const RECLUSTER_WATCH_INTERVAL_MS = 10_000;
+
+/**
+ * 90ba140a AC-B1/B3: a recluster request returns a handle immediately and waits
+ * for a consumer. The tick is 5 minutes, which is too long to wait for a request
+ * a person just made — and the request may come from another process (the
+ * memory-cli verb, another server). Each server polls the store's open-row index
+ * and, when a request is waiting and no tick is in flight, runs one guarded tick.
+ * Which server actually runs the pass is decided by the store-side claim, not
+ * here. Exported as the test seam; returns whether a tick was started.
+ */
+export async function pollReclusterRequestsOnce(): Promise<boolean> {
+  if (_enrichPassInFlight) return false;
+  for (const dbPath of openedPaths) {
+    try {
+      const adapter = await getDb(dbPath);
+      if (await hasPendingReclusterRequest(adapter)) {
+        void runPeriodicEnrichPassGuarded();
+        return true;
+      }
+    } catch (err) {
+      log.warn('recluster.watch.error', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return false;
+}
+
+/**
  * Run one in-process enrichment pass over all open DBs. Exported (test seam
  * only — see enrich-reentrancy.spec.ts) so the pre-fix stampede behaviour can
  * be reproduced directly: calling this UNGUARDED function concurrently is
@@ -4288,6 +4433,9 @@ export async function runPeriodicEnrichPass(opts: { acquireHealSlot?: boolean } 
         opName: 'enrich.pass.getDb',
         dbPath,
       });
+      // 90ba140a AC-B1: a pending FILTERED recluster job runs first, in the
+      // isolated child, so a request is not queued behind the heal step below.
+      await runReclusterSubsetJobOnDb(adapter, dbPath);
       await runEnrichPassOnDb(adapter, dbPath, opts);
     } catch (err) {
       // Durable sink — never stdout (JSON-RPC channel). The pre-fix
@@ -4794,6 +4942,14 @@ function scheduleNextEnrichTick(): void {
 }
 
 scheduleNextEnrichTick();
+// 90ba140a: recluster request watcher (self-rescheduling, unref'd, never overlaps).
+function scheduleReclusterWatch(): void {
+  const timer = setTimeout(() => {
+    void pollReclusterRequestsOnce().finally(scheduleReclusterWatch);
+  }, RECLUSTER_WATCH_INTERVAL_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+scheduleReclusterWatch();
 // BL-382: the drain's own chain. Independent of the enrich tick's interval —
 // they share only the background slot. The first pass is armed at the floor, so
 // a restart with a non-empty backlog starts draining within 30s rather than 5min.
@@ -5110,8 +5266,10 @@ if (require.main === module) {
   // from buildToolsListResult() — never hand-maintained ([contract:schema-hash]).
   if (process.argv.includes('--emit-schema')) {
     const { buildToolsListResult } = require('./backend.js') as typeof import('./backend.js');
-    process.stdout.write(JSON.stringify(buildToolsListResult(), null, 2) + '\n');
-    process.exit(0);
+    // Exit from the write callback: stdout is a pipe under gen-schema.cjs and
+    // `process.exit` right after `write` truncates the payload at the 64KB pipe
+    // buffer (the schema outgrew it with the recluster job fields).
+    process.stdout.write(JSON.stringify(buildToolsListResult(), null, 2) + '\n', () => process.exit(0));
   }
 
   // (BL-9f6681ee) memory-server is the long-lived store OWNER: it alone
