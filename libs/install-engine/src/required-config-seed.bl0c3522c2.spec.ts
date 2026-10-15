@@ -224,7 +224,7 @@ describe('soxe install — BL 0c3522c2 seeds a required key from x-sox-scope-def
 
 // ── Extension NOT under --root (registry file:// row / npm-package store) ─────
 
-describe('soxe install — e2302e94 AC2: the real memory-server manifest seeds db_path=~/.memory/memory.db at project scope', () => {
+describe('soxe install — e2302e94 AC2: a probe carrying the real memory-server db_path schema seeds db_path=~/.memory/memory.db at project scope', () => {
   it('e2302e94 AC2: a project-scope install of a probe carrying the memory-server db_path schema persists ~/.memory/memory.db', () => {
     // Same schema block the shipped manifest declares, lifted from it, so a manifest edit is what this observes.
     const real = JSON.parse(fs.readFileSync(path.join(REPO_ROOT,
