@@ -58,6 +58,7 @@ The engine-error report is written to the same destination as a gate report (`--
 - `id`, `stage` (letters A to H), `mechanism` (`mechanical` or `review`) are required; `command` is a shell command run from `--root`. An `id` becomes an evidence file name, so it must match `[A-Za-z0-9._-]`, start with a letter or digit, and not contain `..`; anything else is a table error (exit 65).
 - **No class relaxes G1, G2, G4, G10, G12, or a row with `release: true` / `nonRelaxable: true`** (testing policy section 6.7). Such a row is always selected, and a table that gives it `classes`, `rigors`, or `paths` is rejected. The list of non-relaxable ids is the constant `NON_RELAXABLE_IDS` in `lib.mjs`: it is not configurable per table (a table can add rows with `release: true` / `nonRelaxable: true`, but cannot remove or extend the built-in ids).
 - A row with no `command`, or mechanism `review`, is an **obligation**: reported as such, never as a pass.
+- A command that exits **78** ran but had no history to judge (for example an empty test-metrics store): the gate is reported as `unmeasured`, never as a pass. It does not fail the run by itself; `--fail-on-obligation` counts it like an obligation.
 - The engine releases nothing: no merge, tag, or publish. The report says `"released": false`.
 
 ## Checks
