@@ -79,7 +79,11 @@ export interface LivenessWatchdogOptions {
  * success) within `thresholdMs`.
  */
 export class LivenessWatchdog {
-  private pending = 0;
+  /** Begin time of every in-flight request, keyed by a monotonic id. A Map
+   *  iterates in insertion order, so the first value is always the OLDEST
+   *  pending request's begin time. Its size is the pending count. */
+  private readonly pendingBeganAt = new Map<number, number>();
+  private nextRequestId = 0;
   private lastCompletionAt: number;
   private readonly thresholdMs: number;
   private readonly now: () => number;
@@ -98,23 +102,54 @@ export class LivenessWatchdog {
    *  — call it exactly once when the request settles (success OR failure;
    *  a completed error response is still proof the server is alive). */
   beginRequest(opName: string): () => void {
-    this.pending += 1;
+    const id = this.nextRequestId++;
+    this.pendingBeganAt.set(id, this.now());
     let ended = false;
     return (): void => {
       if (ended) return;
       ended = true;
-      this.pending = Math.max(0, this.pending - 1);
+      this.pendingBeganAt.delete(id);
       this.lastCompletionAt = this.now();
       void opName; // retained for future per-op liveness breakdowns; unused today
     };
   }
 
   getPendingCount(): number {
-    return this.pending;
+    return this.pendingBeganAt.size;
   }
 
+  /** Time of the most recent completion (real completions only — never
+   *  advanced by a request merely beginning). */
   getLastCompletionAt(): number {
     return this.lastCompletionAt;
+  }
+
+  /** Begin time of the oldest still-pending request, or undefined if idle. */
+  private oldestPendingBeganAt(): number | undefined {
+    for (const beganAt of this.pendingBeganAt.values()) return beganAt;
+    return undefined;
+  }
+
+  /**
+   * Milliseconds the server has gone without proof of life WHILE it owed a
+   * response, or 0 when idle (3428f943).
+   *
+   * Staleness semantics: the clock starts at the LATER of (a) the last
+   * completion and (b) the moment the oldest still-pending request began.
+   *   - (b) is the 3428f943 fix: an idle gap (pending === 0) is not
+   *     staleness. Without it, the first request after an idle gap longer
+   *     than the threshold inherited a stale lastCompletionAt and was
+   *     declared wedged on the next tick however briefly it had been pending.
+   *   - (a) keeps completion-as-liveness: any completion (success or
+   *     failure) restarts the clock for every request still pending, so a
+   *     busy-but-progressing server is never killed. A straggler is not
+   *     masked forever — once completions stop, it trips `thresholdMs`
+   *     after the last one (or after its own begin, whichever is later).
+   */
+  private stalenessMs(): number {
+    const oldest = this.oldestPendingBeganAt();
+    if (oldest === undefined) return 0;
+    return this.now() - Math.max(this.lastCompletionAt, oldest);
   }
 
   /**
@@ -122,7 +157,7 @@ export class LivenessWatchdog {
    * directly without waiting on real timers.
    */
   isWedged(): boolean {
-    return this.pending > 0 && this.now() - this.lastCompletionAt > this.thresholdMs;
+    return this.pendingBeganAt.size > 0 && this.stalenessMs() > this.thresholdMs;
   }
 
   /** Run one check. If wedged, logs loudly and exits (unless already
@@ -134,10 +169,15 @@ export class LivenessWatchdog {
     if (this.tripped) return true;
     this.tripped = true;
 
-    const elapsedMs = this.now() - this.lastCompletionAt;
+    const pending = this.pendingBeganAt.size;
+    // Truthful elapsed (3428f943 AC4): measured from the liveness clock
+    // (>= the oldest pending request's begin), never the idle gap before it.
+    const elapsedMs = this.stalenessMs();
+    const oldestPendingMs = this.now() - (this.oldestPendingBeganAt() ?? this.now());
     const fields = {
-      pending_requests: this.pending,
+      pending_requests: pending,
       elapsed_since_last_completion_ms: elapsedMs,
+      oldest_pending_ms: oldestPendingMs,
       threshold_ms: this.thresholdMs,
     };
     // LOUD on purpose (BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001's
@@ -145,8 +185,8 @@ export class LivenessWatchdog {
     // the signal survives even if the telemetry sink itself is degraded.
     log.error('server.liveness.wedged', fields);
     process.stderr.write(
-      `[memory-server] FATAL: liveness watchdog tripped — ${this.pending} request(s) pending, ` +
-        `${elapsedMs}ms since the last request completed (threshold ${this.thresholdMs}ms). ` +
+      `[memory-server] FATAL: liveness watchdog tripped — ${pending} request(s) pending, ` +
+        `${elapsedMs}ms without a completion since the oldest request began (threshold ${this.thresholdMs}ms). ` +
         'A service that cannot serve should die, not linger — exiting non-zero for the ' +
         'supervisor to restart (BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001).\n',
     );
