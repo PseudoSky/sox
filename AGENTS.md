@@ -285,6 +285,10 @@ Before calling `backlog_transition_status`/`backlog_resolve_item` with status
 2. You have seen it **fail** with the fix disabled, and **pass** with it restored. Not "it would fail" — run it.
 3. A test that *skips* the failing case does not count.
 
+This applies only to an item you are marking resolved **by a fix**. An item that is invalidated
+(evidence shows the defect no longer exists or is obsolete) or already provably resolved needs no
+further work — no regression test, no red→green, nothing else; record the evidence and stop.
+
 This rule exists because four separate items shipped as RESOLVED while still broken:
 
 - **BL-88** added a schema column. Nothing read it. Its dependent BL-92 stayed live.
