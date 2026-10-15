@@ -186,7 +186,7 @@ import { mainThreadMonitor } from './mainthread-monitor.js';
 // into every persisted `metrics.snapshot` line, from the SAME sources
 // `memory_ping` already reads. See the module's own header.
 import { getSampledStorePath, recordStoreMetricsSample, registerStoreMetricsSection } from './metrics-snapshot-section.js';
-import { serverLivenessWatchdog, watchdogIntervalMs } from './liveness-watchdog.js';
+import { endLivenessAfter, serverLivenessWatchdog, watchdogIntervalMs } from './liveness-watchdog.js';
 // (862129b5 TUR-F) The off-thread Turso driver's stall owner — started at boot
 // below, alongside the liveness watchdog.
 import { startDriverStallWatchdog } from './driver-stall-watchdog.js';
@@ -1451,10 +1451,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     });
     throw err;
   } finally {
-    mainThreadMonitor.clearOp();
-    // (98fe54a3) A backup store touched by this call is closed, never kept.
-    if (transientBackupPaths.size > 0) await releaseTransientBackupStores();
-    endLiveness();
+    // (3428f943 AC5) endLiveness runs exactly once even if cleanup throws; a
+    // cleanup that hangs stays pending on purpose (a server stuck here is wedged).
+    await endLivenessAfter(endLiveness, async () => {
+      mainThreadMonitor.clearOp();
+      // (98fe54a3) A backup store touched by this call is closed, never kept.
+      if (transientBackupPaths.size > 0) await releaseTransientBackupStores();
+    });
   }
 }
 

@@ -56,6 +56,11 @@ export function watchdogIntervalMs(): number {
   return readPositiveIntEnv(WATCHDOG_INTERVAL_ENV, DEFAULT_WATCHDOG_INTERVAL_MS);
 }
 
+/** Monotonic millisecond clock (3428f943 AC6). */
+export function defaultMonotonicNow(): number {
+  return performance.now();
+}
+
 /** Injectable clock/exit for deterministic testing — no fake timers, no
  *  real process.exit() escaping a test run. */
 export interface LivenessWatchdogDeps {
@@ -93,7 +98,11 @@ export class LivenessWatchdog {
 
   constructor(opts: LivenessWatchdogOptions = {}) {
     this.thresholdMs = opts.thresholdMs ?? watchdogThresholdMs();
-    this.now = opts.deps?.now ?? (() => Date.now());
+    // Monotonic default (3428f943 AC6): performance.now() is immune to NTP steps and
+    // sleep/wake wall-clock jumps that would make a Date.now() delta spuriously
+    // exceed the threshold. Only differences are ever compared, so the arbitrary
+    // origin is irrelevant. Injected `now` is unchanged.
+    this.now = opts.deps?.now ?? defaultMonotonicNow;
     this.exit = opts.deps?.exit ?? ((code: number) => forceExit(code, 'liveness_watchdog'));
     this.lastCompletionAt = this.now();
   }
@@ -145,6 +154,10 @@ export class LivenessWatchdog {
    *     busy-but-progressing server is never killed. A straggler is not
    *     masked forever — once completions stop, it trips `thresholdMs`
    *     after the last one (or after its own begin, whichever is later).
+   *
+   * Known limitation (design property, filed not fixed here): a wedged
+   * request is masked for as long as OTHER requests keep completing, since
+   * every completion restarts the shared clock.
    */
   private stalenessMs(): number {
     const oldest = this.oldestPendingBeganAt();
@@ -208,6 +221,22 @@ export class LivenessWatchdog {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+  }
+}
+
+/**
+ * Run post-request cleanup, then end the liveness entry — exactly once on
+ * EVERY path (3428f943 AC5). `end` sits in a `finally`, so a cleanup that
+ * throws can no longer leave a permanent false pending entry that arms an
+ * idle SIGKILL. A cleanup that genuinely HANGS still keeps the entry pending
+ * on purpose: a server stuck in post-request cleanup cannot serve, which is
+ * exactly what the watchdog exists to catch. The cleanup error propagates.
+ */
+export async function endLivenessAfter(end: () => void, cleanup: () => Promise<void> | void): Promise<void> {
+  try {
+    await cleanup();
+  } finally {
+    end();
   }
 }
 
