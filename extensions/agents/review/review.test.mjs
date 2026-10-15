@@ -266,6 +266,21 @@ test('2f81569f T11.AC2 blind and blind-deep modes make NO tool calls; static mod
   assert.ok(prose.indexOf('Static mode uses only Read') <prose.indexOf('## Blind modes'));
 });
 
+test('review 0.2.0 blind accepts a diff by absolute file path: Read only that file, never a path the diff names; git range refused', () => {
+  const t = rd('templates/blind-ref.tmpl');
+  assert.deepEqual(placeholders(t), ['diffPath']);
+  assert.equal(residue(t), 'Review');
+  const blind = prose.slice(prose.indexOf('## Blind modes'), prose.indexOf('## Output'));
+  assert.match(blind, /Sole exception, blind only: .*one absolute path to a diff file, Read that file/);
+  assert.match(blind, /open nothing else; never Grep or Glob/);
+  assert.match(blind, /Never open a path the diff names/);
+  assert.match(blind, /REFUSED: blind brief carries a git range/);
+  assert.match(blind, /REFUSED: diff file unreadable/);
+  assert.match(prose, /one absolute path to a diff file, nothing else \| \*\*blind\*\*/);
+  assert.doesNotMatch(prose.slice(prose.indexOf('| First line exactly `Review`, then one diff, then'), prose.indexOf('| Anything else')), /path/); // blind-deep stays inline-only
+  assert.deepEqual(manifest.agent.tools, ['read', 'glob', 'grep']); // no shell was added for the reference form
+});
+
 test('2f81569f T11.AC2 blind-deep refuses UNLABELED implementer rationale in specification or tests', () => {
   const blind = prose.slice(prose.indexOf('## Blind modes'), prose.indexOf('## Output'));
   assert.match(blind, /whether or not it is labeled/);

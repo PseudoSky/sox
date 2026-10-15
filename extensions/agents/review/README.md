@@ -7,10 +7,10 @@
 | Mode | Brief |
 |---|---|
 | static | `mode: static`, scope, optional clause list, diff or paths |
-| blind | `templates/blind.tmpl`: `Review` + diff, nothing else |
+| blind | `templates/blind.tmpl`: `Review` + diff, nothing else; or `templates/blind-ref.tmpl`: `Review` + one absolute path to a diff file (the agent Reads that file only) |
 | blind-deep | `templates/blind-deep.tmpl`: `Review` + diff + specification + tests (Deep rigor, D22) |
 
-Blind modes make no tool calls and judge only the brief. Static mode accepts `rigor: deep` and then refuses implementer reasoning. Any other brief, or a blind brief carrying rationale, ACs, or prior state, returns `REFUSED`.
+Blind modes judge only the brief and make no tool calls, except blind with a diff path, which Reads that one file. A git range is refused (no shell): write the diff to a file and pass its path. Static mode accepts `rigor: deep` and then refuses implementer reasoning. Any other brief, or a blind brief carrying rationale, ACs, or prior state, returns `REFUSED`.
 
 ## Tools
 

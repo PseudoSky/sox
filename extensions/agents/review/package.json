@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-review",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "review agent — read-only static and blind reviewer; findings by severity with file:line evidence",
   "private": true,
   "license": "MIT",

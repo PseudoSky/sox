@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+Blind review of a large diff by reference.
+
+- Blind mode accepts, after `Review`, one absolute path to a diff file; the agent Reads that file in chunks and nothing else (never Grep/Glob, never a path the diff names). Blind-deep and static are unchanged. Template `templates/blind-ref.tmpl`.
+- A git range is refused (`REFUSED: blind brief carries a git range (no shell; pass a diff file path)`); no shell was granted. Decision record: DESIGN.md.
+- Why: a 1.2 MB / 19,649-line plan diff split into four slices was refused 4/4 (`mode unclear`) because blind mode required the diff inline and forbade every tool call.
+- review.md: +3 / -1 lines (4948 to 5.4 KB).
+
 ## 0.1.1
 
 Static-review corrections (2f81569f T11).

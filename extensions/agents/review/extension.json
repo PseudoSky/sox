@@ -1,10 +1,10 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "review",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "agent",
   "title": "review",
-  "description": "Use when a change needs an independent read-only review: static mode judges tier and fidelity-gap validity, teeth, and structure coupling (G9, R3, R4, G12) and correctness, returning findings by severity with file:line evidence; blind mode accepts only a diff and the word Review (at Deep rigor also the specification and tests, never the implementer's reasoning). Has no edit, write, or shell tools. Triggers: \"review this diff\", \"static review\", \"blind review\", \"is this test valid\".",
+  "description": "Use when a change needs an independent read-only review: static mode judges tier and fidelity-gap validity, teeth, and structure coupling (G9, R3, R4, G12) and correctness, returning findings by severity with file:line evidence; blind mode accepts only the word Review and a diff (inline or by file path) (at Deep rigor also the specification and tests, never the implementer's reasoning). Has no edit, write, or shell tools. Triggers: \"review this diff\", \"static review\", \"blind review\", \"is this test valid\".",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -36,7 +36,7 @@
   ],
   "agent": {
     "name": "review",
-    "description": "Read-only reviewer with static and blind modes. Returns findings by severity with file:line evidence; blind mode accepts only a diff and the word Review. Cannot edit, write, or run commands.",
+    "description": "Read-only reviewer with static and blind modes. Returns findings by severity with file:line evidence; blind mode accepts only the word Review and a diff (inline or by file path). Cannot edit, write, or run commands.",
     "model": "sonnet",
     "mode": "all",
     "temperature": 0.1,
@@ -64,7 +64,7 @@
     "codex": {},
     "claude": {
       "model": "sonnet",
-      "version": "v0.1.1",
+      "version": "v0.2.0",
       "tools": [
         "Read",
         "Grep",
