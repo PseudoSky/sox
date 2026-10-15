@@ -127,6 +127,9 @@ export function selectGates(table, { step, changeClass, rigor, changed }) {
   });
 }
 
+/** The exit status a gate uses for "I ran, but there is no history to judge": reported as `unmeasured`, not a pass. */
+export const UNMEASURED_EXIT = 78;
+
 /** Default process runner. Injectable so unit tests never spawn. */
 export function shellRunner(command, { cwd, timeoutMs }) {
   const r = spawnSync(command, { shell: true, cwd, encoding: 'utf8', timeout: timeoutMs ?? DEFAULT_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
@@ -176,7 +179,10 @@ export function runGates(table, opts, { run = shellRunner, now = () => Date.now(
     }
     const t0 = now();
     const r = run(g.command, { cwd: root, timeoutMs: g.timeoutMs });
-    const row = { ...base, selected: true, outcome: r.exit === 0 ? 'pass' : 'fail', exit: r.exit, durationMs: now() - t0, reason: d.reason };
+    // UNMEASURED_EXIT: a gate that ran but had no history to judge (an empty metrics store) says so with 78. It is
+    // reported as `unmeasured`, never as a pass, and counts with the obligations under --fail-on-obligation.
+    const outcome = r.exit === 0 ? 'pass' : r.exit === UNMEASURED_EXIT ? 'unmeasured' : 'fail';
+    const row = { ...base, selected: true, outcome, exit: r.exit, durationMs: now() - t0, reason: d.reason };
     if (r.error) row.error = r.error;
     if (evidenceDir) {
       fs.mkdirSync(evidenceDir, { recursive: true });
@@ -188,10 +194,11 @@ export function runGates(table, opts, { run = shellRunner, now = () => Date.now(
   }
   const failed = rows.filter((r) => r.outcome === 'fail');
   const obligations = rows.filter((r) => r.outcome === 'obligation');
+  const unmeasured = rows.filter((r) => r.outcome === 'unmeasured');
   const warnings = [];
   if (rows.every((r) => !r.selected)) warnings.push(`step ${step}: 0 gates selected (every bound gate has nothing to check for this class, rigor, and changed paths)`);
   let exit = failed.reduce((worst, r) => Math.max(worst, r.exit), 0);
-  if (exit === 0 && failOnObligation && obligations.length) exit = 1;
+  if (exit === 0 && failOnObligation && (obligations.length || unmeasured.length)) exit = 1;
   return {
     schema: 1,
     kind: 'gate-report',
@@ -202,6 +209,7 @@ export function runGates(table, opts, { run = shellRunner, now = () => Date.now(
       passed: rows.filter((r) => r.outcome === 'pass').length,
       failed: failed.map((r) => r.id),
       obligations: obligations.map((r) => r.id),
+      unmeasured: unmeasured.map((r) => r.id),
     },
     warnings,
     exit,

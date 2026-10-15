@@ -341,3 +341,15 @@ test('891dbac0 AC1 a usage error raised by parseArgs writes the engine-error rep
   assert.deepEqual(scanDestination(['run', '--report']).flags, {}, 'a value flag with no value is ignored, not fatal');
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('a gate exiting 78 is unmeasured, never a pass; it fails only under --fail-on-obligation, and a real failure still wins', () => {
+  const t = table([G('G5', { command: 'g5' }), G('G7', { command: 'g7' })]);
+  const run = (exits) => (cmd) => ({ exit: exits[cmd], stdout: '', stderr: '' });
+  const r = runGates(t, { step: 'B', root: '.' }, { run: run({ g5: 78, g7: 0 }) });
+  assert.deepEqual(r.gates.map((g) => g.outcome), ['unmeasured', 'pass']);
+  assert.equal(r.summary.passed, 1);
+  assert.deepEqual(r.summary.unmeasured, ['G5']);
+  assert.equal(r.exit, 0);
+  assert.equal(runGates(t, { step: 'B', root: '.', failOnObligation: true }, { run: run({ g5: 78, g7: 0 }) }).exit, 1);
+  assert.equal(runGates(t, { step: 'B', root: '.' }, { run: run({ g5: 78, g7: 1 }) }).exit, 1);
+});
