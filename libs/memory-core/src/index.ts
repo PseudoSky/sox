@@ -436,17 +436,41 @@ export type {
 export {
   enqueueReclusterJob,
   readReclusterJob,
+  readOpenReclusterJob,
+  readLatestReclusterJob,
+  hasPendingReclusterRequest,
+  claimGlobalReclusterJobs,
+  releaseGlobalReclusterJobs,
+  releaseSubsetReclusterJob,
+  claimSubsetReclusterJob,
+  reapStaleReclusterJobs,
   settleReclusterJobs,
+  settleSubsetReclusterJob,
+  summarizeSubsetResult,
+  reclusterJobState,
+  isTerminalReclusterState,
   readPartition,
+  RECLUSTER_LATEST_KEY,
 } from './recluster-job.js';
 export type {
   ReclusterJobStatus,
+  ReclusterJobState,
+  ReclusterJobScope,
+  ReclusterJobReason,
+  ReclusterSubsetRequest,
+  ReclusterSubsetSummary,
   ReclusterPartition,
   ReclusterJob,
   EnqueueReclusterJobOptions,
   EnqueueReclusterJobResult,
   ReclusterSettleOutcome,
+  SubsetSettleOutcome,
+  ClaimReclusterOptions,
+  ClaimReclusterResult,
+  ReleaseReclusterOptions,
 } from './recluster-job.js';
+export { runPendingSubsetReclusterJob } from './recluster-job-runner.js';
+export type { SubsetRunDeps, SubsetRunOutcome, SubsetIsolatedOutcome } from './recluster-job-runner.js';
 
 // ── Knowledge layer (D-C): outcome-gated records + open facets + coverage ──────
 // The pure verdict (types + deriveVerdict), the claim/outcome split, the

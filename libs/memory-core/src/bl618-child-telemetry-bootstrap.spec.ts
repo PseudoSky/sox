@@ -41,7 +41,9 @@ afterEach(() => {
 
 function tmpDir(prefix: string): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { dir, // The fork child can still be flushing its sqlite sidecars when the parent's result
+  // arrives; retry so a late write cannot turn a passing test red (ENOTEMPTY).
+  cleanup: () => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 function readRecords(filePath: string | null): Record<string, unknown>[] {
