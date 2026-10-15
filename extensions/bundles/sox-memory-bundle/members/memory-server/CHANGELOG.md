@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.5.0
+
+### Minor Changes
+
+- 4fe407b: The project-scope default for `config.memory-server.db_path` changes from `~/.memory/memory-dev.db` to `~/.memory/memory.db`. `soxe install --scope project` now seeds the same store as user scope, so the separate dev store is no longer created by default. This is a behaviour change for new project-scope installs (hence `minor`); a `db_path` already set in any config scope is never overwritten, so existing installs keep their configured store until it is edited. The fail-closed rule is unchanged: the server still never infers a store path, and with no configured `db_path` every store tool returns `E_STORE_NOT_CONFIGURED`. Fixes e2302e94. To keep a separate dev store for project installs, set `config.memory-server.db_path` explicitly.
+
+### Patch Changes
+
+- fc773bb: Stop re-scoring rejected candidates on every incremental clustering pass.
+
+  - The incremental join persists a rejection watermark in `sox_store_meta` and evaluates only candidates above it, so a steady-state tick no longer rescans every unassigned episode against every community member.
+  - The watermark resets on a threshold change, a membership change, growth of the unassigned set below the watermark (un-invalidation), or a 6 hour full-rescan backstop. Candidates with no vector, or rejected by the degenerate-ratio guard, hold it below them.
+  - Enrich passes with no backlog no longer time out inside the clustering step.
+
+- f329a56: Fix memory store contention and enrich-child churn.
+
+  - Enrich passes run in a child process that is refused while a prior child for the same store is still alive, so one store never has two holders.
+  - Enrich children exit when their parent disconnects, and the parent SIGKILLs live children on exit, so no orphan holds the store.
+  - SIGKILL escalation after SIGTERM is armed independently of settle, so a SIGTERM-ignoring child cannot survive a timeout.
+  - Idle enrich ticks (no open trigger and an unchanged store) skip the fork, with a forced real pass every 13 ticks.
+  - Replace two untraced catch blocks with traced warnings and trace the enrich child lifecycle.
+
+- ee83906: A requested global recluster that memory-core refused (`nodeCap`) or aborted (`budget`) now settles `skipped` with its reason, episode count and cap in `skip_reason`; one whose isolated child fails is retried a bounded number of times with backoff instead of re-forking every tick; and `memory_ping` reports both.
+
+  - `recluster_status` for a refused or aborted job reads `status: "skipped"` with `skip_reason` such as `nodeCap: 20000 episodes exceed cap 16000; full pass not run`, never `completed`.
+  - A requested full pass whose child fails or is killed at its wall-clock timeout (a requested full pass at 11,763 episodes can exceed the 600 s timeout under host load) used to leave its trigger row open, so every 5-minute tick re-forked it for up to 600 s of CPU each. It now keeps its jobs `pending`, retries after 15 min, 30 min, then 60 min, and gives up after 4 failed attempts: its jobs settle `failed` (`gave up`), every open enrich trigger row up to the pass's snapshot is completed so it never re-forks on its own (episodes still needing enrichment are picked up by later passes, which select them by node state, not by trigger row), and a new explicit `recluster` request starts a fresh budget. Inside a backoff window ticks still run incremental passes over the rows older than the full request. Retry state is per process: a restart restarts the attempt count.
+  - `memory_ping` gains an additive `cluster.full_pass_degraded` field while the most recent requested full pass did not run: `{ reason, episodeCount, nodeCap, budgetMs, timedOut, attempts, error, nextRetryAt, since }`, `null` otherwise. `reason` is `nodeCap`, `budget`, or `child_failed` (`episodeCount` is `null` there; `timedOut`, `attempts`, `error` and `nextRetryAt` describe the failure, `nextRetryAt` is `null` once retries are exhausted). It clears when a later requested full pass completes un-degraded; a mixed-model skipped pass and incremental ticks leave it untouched. It does not change `status`.
+  - The full pass's cluster budget is now 90% of the child timeout (`SOX_ENRICH_FULL_TIMEOUT_MS`, default 600 s, so 540 s) and is passed to the child, instead of an independent constant.
+  - `memory_curate` subset `recluster` results carry the `degraded` marker through when the pass was refused or aborted.
+
 ## 1.4.5
 
 ### Patch Changes

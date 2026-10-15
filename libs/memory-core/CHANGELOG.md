@@ -1,5 +1,42 @@
 # @adhd/sox-memory-core
 
+## 0.13.0
+
+### Minor Changes
+
+- 8d338ee: `memoryCurate({ op: 'recluster', filters })` and the package root now carry the degradation surface through.
+
+  - The result of a subset recluster includes `degraded` (`{ reason: 'nodeCap' | 'budget', ... }`) when `clusterSubset` refused or aborted the pass, instead of reading as an ordinary empty result. Un-degraded results are unchanged and have no `degraded` key.
+  - `DEFAULT_CLUSTER_NODE_CAP` and the `ClusterDegradation` type are exported from the package root so consumers branch on the same shape and cap memory-core uses rather than redeclaring them.
+  - Together with the `clusterSubset` contract change in the nodecap entry, a degraded `persist: true` subset recluster now reports `persisted: false` and leaves the previous lens in place.
+
+- 68b637b: A requested full recluster over a corpus above `nodeCap` is no longer reported as a completed pass, and the default cap changes. This is a behaviour change (hence `minor`), not an additive API.
+
+  - `clusterStore` returns `degraded: { reason: 'nodeCap', episodeCount, nodeCap }` when it refuses the full pass. Previously it fell back to the incremental join, which can never create a community, and looked like success.
+  - A full pass whose time budget is spent returns `degraded: { reason: 'budget', ... }` and writes nothing, leaving the previous partition untouched. The budget is checked before each run of the all-pairs pass, never inside one. In practice it fires in two cases: vector loading and calibration alone consumed the budget, or the degenerate-cluster guard rejected a finished pass and a retry is predicted not to fit. In the second case the rejected pass is discarded (`clusters: []`) and the previous partition stays.
+  - `runBatchEnrich` reports both cases as `cluster_pass_skipped` with a `nodeCap:` / `budget:` `cluster_skip_reason` and the structured `cluster_degraded`.
+  - The default full-pass cap is derived from measurement and raised from 10,000 to 16,000 episodes (`DEFAULT_CLUSTER_NODE_CAP`). A store between 10,001 and 16,000 episodes that was previously refused now runs a real full pass.
+  - `budgetMs` and a `now` clock are new optional `clusterStore` and `clusterSubset` options.
+  - A budget-aborted pass is no longer counted in `passes_full` or the full-pass quality gauges.
+
+  Contract change for `clusterSubset({ persist: true })`: a degraded pass (over `nodeCap` or budget-aborted) no longer persists. Before, it wrote an empty lens plus a marker and returned `persisted: true`, replacing any existing lens for that filter with nothing. Now it leaves the existing lens untouched and returns `persisted: false` together with `degraded`. Callers that treated `persisted: true` as always true on a `persist: true` call must check `degraded`/`persisted`.
+
+### Patch Changes
+
+- fc773bb: Stop re-scoring rejected candidates on every incremental clustering pass.
+
+  - The incremental join persists a rejection watermark in `sox_store_meta` and evaluates only candidates above it, so a steady-state tick no longer rescans every unassigned episode against every community member.
+  - The watermark resets on a threshold change, a membership change, growth of the unassigned set below the watermark (un-invalidation), or a 6 hour full-rescan backstop. Candidates with no vector, or rejected by the degenerate-ratio guard, hold it below them.
+  - Enrich passes with no backlog no longer time out inside the clustering step.
+
+- f329a56: Fix memory store contention and enrich-child churn.
+
+  - Enrich passes run in a child process that is refused while a prior child for the same store is still alive, so one store never has two holders.
+  - Enrich children exit when their parent disconnects, and the parent SIGKILLs live children on exit, so no orphan holds the store.
+  - SIGKILL escalation after SIGTERM is armed independently of settle, so a SIGTERM-ignoring child cannot survive a timeout.
+  - Idle enrich ticks (no open trigger and an unchanged store) skip the fork, with a forced real pass every 13 ticks.
+  - Replace two untraced catch blocks with traced warnings and trace the enrich child lifecycle.
+
 ## 0.12.4
 
 ### Patch Changes

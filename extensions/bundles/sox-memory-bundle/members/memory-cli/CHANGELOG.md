@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.5
+
+### Patch Changes
+
+- Republish to pick up `@adhd/sox-memory-core` 0.13.0 and `@adhd/sox-install-engine` 0.6.1, which these packages bundle or depend on. No API changes.
+
 ## 0.3.4
 
 ### Patch Changes

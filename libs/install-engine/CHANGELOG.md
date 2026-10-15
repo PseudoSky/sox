@@ -1,5 +1,11 @@
 # @adhd/sox-install-engine
 
+## 0.6.1
+
+### Patch Changes
+
+- fc773bb: Additive public surface: export `unifiedLineDiff` (diff.ts), `desiredPlacedContent` and `desiredPlacedArtifact` (install.ts), and `hashPathForInstall` (hash.ts); `diff` options accept `placementRoot`. Consumers that already import `diff`/`diffAll` are unaffected.
+
 ## 0.6.0
 
 ### Minor Changes
