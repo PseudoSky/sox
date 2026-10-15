@@ -154,7 +154,7 @@ export interface ExtensionManifest {
    *   x-sox-prompt  — prompt text shown during interactive install
    *   x-sox-default — value used when user enters nothing
    *   x-sox-scope-default — per-install-scope value for a REQUIRED key, e.g.
-   *     `{ "user": "~/.memory/memory.db", "project": "~/.memory/memory-dev.db" }`.
+   *     `{ "user": "~/.memory/memory.db", "project": "~/.memory/memory.db" }`.
    *     Seeded without prompting on a non-interactive install and offered as the
    *     prompt default on an interactive one (see resolveRequiredConfigSeed).
    */

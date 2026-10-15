@@ -10,11 +10,21 @@
  *
  * Contract pinned here:
  *   - `x-sox-scope-default[<scope>]` seeds a REQUIRED key on a non-interactive
- *     install (user → ~/.memory/memory.db, project → ~/.memory/memory-dev.db for
- *     memory-server), persisted into THAT scope's config file.
+ *     install (user and project → ~/.memory/memory.db for memory-server, per
+ *     e2302e94 — the project-scope dev store collapsed into the main store),
+ *     persisted into THAT scope's config file.
  *   - An exported `SOX_CONFIG_<KEY>` wins over the scope default (explicit value).
  *   - A key already set in any cascade scope is never overwritten.
  *   - A scope with no declared default (local/org) is left unset → warning.
+ *
+ * e2302e94 (owner-directed): the project-scope default is ~/.memory/memory.db.
+ * Risk map (Light, tier S; no fidelity gap — every case runs the real code in-process
+ * or the real built CLI, nothing is mocked; the process spawn is the CLI under test):
+ *   AC1 manifest default drifts from {user,project: memory.db}  → manifest-pin test
+ *   AC2 project install seeds a different path than the manifest → real-manifest e2e test
+ *   AC3 a stale dev-store claim lingers in the swept files       → stale-claim scan test
+ *   AC4 fail-closed lost (db_path no longer required)            → manifest-pin test
+ *   AC5/AC6 are gate / file checks (nx gates + smoke; changeset), not unit tests.
  *
  * The e2e cases drive the REAL built CLI (dist/apps/sox/main.js) against a
  * sandboxed workspace + SOX_ECOSYSTEM_HOME, so no real home config is touched.
@@ -75,16 +85,28 @@ describe('resolveRequiredConfigSeed — BL 0c3522c2', () => {
 // ── The real manifest ─────────────────────────────────────────────────────────
 
 describe('memory-server manifest — BL 0c3522c2 seeds db_path per scope', () => {
-  it('declares db_path required with user → memory.db and project → memory-dev.db', () => {
-    const manifest = JSON.parse(fs.readFileSync(
-      path.join(REPO_ROOT, 'extensions/bundles/sox-memory-bundle/members/memory-server/extension.json'), 'utf8',
-    )) as { config_schema: { required: string[]; properties: Record<string, ConfigSchemaProperty> } };
-    expect(manifest.config_schema.required).toContain('db_path');
-    const dbProp = manifest.config_schema.properties['db_path'];
-    expect(dbProp?.['x-sox-scope-default']).toEqual({
+  const memberDir = path.join(REPO_ROOT, 'extensions/bundles/sox-memory-bundle/members/memory-server');
+  const readManifest = () => JSON.parse(fs.readFileSync(path.join(memberDir, 'extension.json'), 'utf8')) as {
+    config_schema: { required: string[]; properties: Record<string, ConfigSchemaProperty> };
+  };
+
+  it('e2302e94 AC1 AC4: db_path stays required and seeds ~/.memory/memory.db for both user and project', () => {
+    const manifest = readManifest();
+    expect(manifest.config_schema.required).toContain('db_path'); // AC4: still fail-closed
+    expect(manifest.config_schema.properties['db_path']?.['x-sox-scope-default']).toEqual({
       user: '~/.memory/memory.db',
-      project: '~/.memory/memory-dev.db',
+      project: '~/.memory/memory.db',
     });
+  });
+
+  it('e2302e94 AC3: no stale dev-store claim in manifest, member CLAUDE.md or install.ts; incident comment kept as history', () => {
+    const stale = ['extension.json', 'CLAUDE.md'].map((f) => path.join(memberDir, f))
+      .concat(path.join(REPO_ROOT, 'libs/install-engine/src/install.ts'))
+      .filter((f) => fs.readFileSync(f, 'utf8').includes('memory-dev.db'));
+    expect(stale).toEqual([]);
+    const incident = fs.readFileSync(path.join(REPO_ROOT, 'libs/host-runtime/src/ext-config-cascade.ts'), 'utf8');
+    expect(incident).toContain('5f98a1ff');
+    expect(incident).toContain('memory-dev.db');
   });
 });
 
@@ -171,7 +193,7 @@ describe('soxe install — BL 0c3522c2 seeds a required key from x-sox-scope-def
     expect(seededDbPath('user')).toBe(SCOPE_DEFAULTS.user);
   });
 
-  it('project scope seeds the project default into the project config', () => {
+  it('project scope seeds the project default into the project config (probe manifest)', () => {
     const r = runCli(['install', PROBE, '--scope', 'project', '--root', workspace]);
     expect(r.code, r.out).toBe(0);
     expect(seededDbPath('project')).toBe(SCOPE_DEFAULTS.project);
@@ -201,6 +223,23 @@ describe('soxe install — BL 0c3522c2 seeds a required key from x-sox-scope-def
 });
 
 // ── Extension NOT under --root (registry file:// row / npm-package store) ─────
+
+describe('soxe install — e2302e94 AC2: the real memory-server manifest seeds db_path=~/.memory/memory.db at project scope', () => {
+  it('e2302e94 AC2: a project-scope install of a probe carrying the memory-server db_path schema persists ~/.memory/memory.db', () => {
+    // Same schema block the shipped manifest declares, lifted from it, so a manifest edit is what this observes.
+    const real = JSON.parse(fs.readFileSync(path.join(REPO_ROOT,
+      'extensions/bundles/sox-memory-bundle/members/memory-server/extension.json'), 'utf8')) as {
+      config_schema: { properties: { db_path: ConfigSchemaProperty } };
+    };
+    const extJson = path.join(workspace, 'extensions', 'agents', PROBE, 'extension.json');
+    const probe = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { config_schema: { properties: Record<string, unknown> } };
+    probe.config_schema.properties['db_path'] = real.config_schema.properties.db_path;
+    fs.writeFileSync(extJson, JSON.stringify(probe, null, 2));
+    const r = runCli(['install', PROBE, '--scope', 'project', '--root', workspace]);
+    expect(r.code, r.out).toBe(0);
+    expect(seededDbPath('project')).toBe('~/.memory/memory.db');
+  });
+});
 
 describe('soxe install — BL 0c3522c2 seeds even when the manifest is not under --root', () => {
   it('findManifestForSource walks up from a file:// entrypoint to the matching extension.json', () => {
