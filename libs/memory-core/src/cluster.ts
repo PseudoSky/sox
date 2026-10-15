@@ -757,21 +757,75 @@ async function incrementalJoin(
   );
   if (candidates.length === 0) return { joined: 0, candidate_count: 0, admission: emptyAdmission(communityMemberVecs.size, 0) };
 
-  // 4. Vectors for candidates.
-  const candidateRowids = candidates.map((e) => e.rowid);
+  // 3b. Rejection watermark (BL-cluster-watermark). A candidate rejected on
+  //     similarity or no-target is a pure function of (threshold, live member
+  //     set, its own vector). While none of those change, re-evaluating it on
+  //     every tick is wasted work — live data showed 5,506 unassigned candidates
+  //     rescanned against every member each tick with zero joins (543 of 549
+  //     passes). The watermark records the rowid up to which every candidate was
+  //     decided, and only candidates above it are evaluated. See
+  //     `readIncrementalWatermark` for the invalidation rules.
+  const wmKey = incrementalWatermarkKey(storeKey, salt);
+  const membership = membershipFingerprint(communityRowids, memberRows);
+  const stored = await readIncrementalWatermark(adapter, wmKey);
+  const belowWatermark = (wm: number): number => candidates.reduce((n, e) => (e.rowid <= wm ? n + 1 : n), 0);
+  const watermarkUsable =
+    stored !== null &&
+    stored.threshold === threshold &&
+    stored.membership === membership &&
+    Date.now() - Date.parse(stored.fullScanAt) < INCREMENTAL_WATERMARK_BACKSTOP_MS &&
+    belowWatermark(stored.rowid) <= stored.belowCount;
+  const scanFrom = watermarkUsable && stored ? stored.rowid : 0;
+  const toEvaluate = candidates.filter((e) => e.rowid > scanFrom);
+  log.info('cluster.incremental.scan', {
+    store_key: storeKey,
+    mode: scanFrom === 0 ? 'full' : 'resumed',
+    scanned: toEvaluate.length,
+    skipped: candidates.length - toEvaluate.length,
+    scan_from_rowid: scanFrom,
+  });
+  /** Lowest rowid still undecided this pass (missing vector or guard-rejected). */
+  let blockedRowid: number | null = null;
+  // Persists the watermark for this pass. Runs on EVERY exit that has a candidate
+  // set, not only the full path: `belowCount` must track the live candidate set,
+  // or a count left stale-high by an early return hides a later un-invalidation.
+  const persistWatermark = async (): Promise<void> => {
+    const evaluatedMax = toEvaluate.reduce((m, e) => Math.max(m, e.rowid), scanFrom);
+    const nextWatermark = blockedRowid === null ? evaluatedMax : Math.min(evaluatedMax, blockedRowid - 1);
+    await writeIncrementalWatermark(adapter, wmKey, {
+      threshold,
+      membership,
+      rowid: nextWatermark,
+      belowCount: belowWatermark(nextWatermark),
+      // `scanFrom > 0` only when a usable watermark was read, so `stored` is set.
+      fullScanAt: scanFrom === 0 || !stored ? new Date().toISOString() : stored.fullScanAt,
+    });
+  };
+  if (toEvaluate.length === 0) {
+    await persistWatermark();
+    return { joined: 0, candidate_count: candidates.length, admission: emptyAdmission(communityMemberVecs.size, 0) };
+  }
+
+  // 4. Vectors for the candidates that still need a decision.
+  const evalRowids = toEvaluate.map((e) => e.rowid);
   const candidateVecResult = await adapter.executeAll<VecRow>(
-    `SELECT node_id, embedding FROM vec_node WHERE node_id IN (${candidateRowids.map(() => '?').join(',')})`,
-    candidateRowids as unknown[],
+    `SELECT node_id, embedding FROM vec_node WHERE node_id IN (${evalRowids.map(() => '?').join(',')})`,
+    evalRowids as unknown[],
   );
   // Candidates with no `vec_node` row can never be compared to anything. This is
   // an EMBEDDING-pipeline backlog surfacing inside clustering, and conflating it
   // with `below_threshold` would point an investigation at τ when the actual
   // cause is an unembedded episode. Counted here (and not only in the
   // zero-rows early return) so a PARTIALLY-embedded candidate set is still
-  // attributed correctly.
-  const missingVectors = candidates.length - candidateVecResult.rows.length;
+  // attributed correctly. A missing vector also BLOCKS the watermark: the
+  // candidate must be re-examined once its vector lands.
+  const vecIds = new Set(candidateVecResult.rows.map((r) => r.node_id));
+  const missingRowids = evalRowids.filter((rowid) => !vecIds.has(rowid));
+  blockedRowid = missingRowids.length > 0 ? Math.min(...missingRowids) : null;
+  const missingVectors = missingRowids.length;
   recordJoinOutcome(storeKey, 'no_vector', missingVectors);
   if (candidateVecResult.rows.length === 0) {
+    await persistWatermark();
     return { joined: 0, candidate_count: candidates.length, admission: emptyAdmission(communityMemberVecs.size, 0) };
   }
 
@@ -838,6 +892,10 @@ async function incrementalJoin(
       // BL-496: counted separately from below_threshold — this candidate
       // DID clear τ and is genuinely deferred, not excluded.
       rejectedGuard++;
+      // The guard's outcome depends on the live episode total, which moves on
+      // every write, so a guard-rejected candidate is not a stable decision and
+      // must hold the watermark below it.
+      blockedRowid = blockedRowid === null ? vRow.node_id : Math.min(blockedRowid, vRow.node_id);
       continue;
     }
 
@@ -873,6 +931,13 @@ async function incrementalJoin(
     joined++;
   }
 
+  // Advance the watermark past every candidate decided this pass, stopping just
+  // below the lowest candidate that is still undecided (missing vector or
+  // guard-rejected). The membership fingerprint was taken BEFORE this pass's
+  // joins, so any join here makes the next tick re-check the rejected set against
+  // the new member — the convergence the join loop's comment describes.
+  await persistWatermark();
+
   // BL-496: summarise the rejected population. `sort` is over at most the
   // candidate count (bounded by the unassigned backlog), and only runs on
   // numbers already computed above — no extra similarity work.
@@ -894,6 +959,99 @@ async function incrementalJoin(
       community_targets: communityMemberVecs.size,
     },
   };
+}
+
+/**
+ * Rejection watermark for `incrementalJoin` (BL-cluster-watermark).
+ *
+ * Persisted in `sox_store_meta` per (storeKey, salt). `rowid` is the highest
+ * candidate rowid decided with nothing left undecided below it. A stored
+ * watermark is reused only while ALL of these hold; any miss forces a full
+ * re-check of every unassigned candidate:
+ *
+ *  - `threshold` is unchanged — τ moves, every rejection moves with it.
+ *  - `membership` (fingerprint of the live community set and every MEMBER_OF
+ *    pair, taken before the pass's joins) is unchanged — a new member can
+ *    make an old rejection a join.
+ *  - `belowCount` has not grown — an unassigned candidate at or below the
+ *    watermark can only appear through un-invalidation or revival of an old
+ *    row (restore-neardup, the un-invalidate paths in this file). Shrinkage
+ *    (near-dup invalidation) is harmless and does not force a rescan.
+ *  - `fullScanAt` is within `INCREMENTAL_WATERMARK_BACKSTOP_MS` — a bounded
+ *    staleness backstop for mutations that change a vector's similarity
+ *    without touching membership (re-embeds). It is the time of the last FULL
+ *    re-check, so resumed ticks do not extend it.
+ */
+export const INCREMENTAL_WATERMARK_BACKSTOP_MS = 6 * 60 * 60 * 1000;
+
+interface IncrementalWatermark {
+  threshold: number;
+  membership: string;
+  rowid: number;
+  belowCount: number;
+  fullScanAt: string;
+}
+
+function incrementalWatermarkKey(storeKey: string, salt: string): string {
+  return `cluster_incremental_watermark:${storeKey}:${salt}`;
+}
+
+/** Stable fingerprint of the live join targets: community rowids plus every
+ *  live MEMBER_OF pair. Any join, invalidation, or community change moves it. */
+function membershipFingerprint(
+  communityRowids: readonly number[],
+  memberRows: readonly { community_rowid: number; node_id: number }[],
+): string {
+  const h = crypto.createHash('sha256');
+  for (const c of [...communityRowids].sort((a, b) => a - b)) h.update(`c${c};`);
+  const pairs = memberRows.map((r) => `${r.community_rowid}:${r.node_id}`).sort();
+  for (const p of pairs) h.update(`m${p};`);
+  return h.digest('hex');
+}
+
+async function readIncrementalWatermark(
+  adapter: StoreAdapter,
+  key: string,
+): Promise<IncrementalWatermark | null> {
+  const row = await adapter.executeGet<{ value: string }>(
+    `SELECT value FROM sox_store_meta WHERE key = ?`,
+    [key],
+  );
+  if (!row) return null;
+  let parsed: Partial<IncrementalWatermark>;
+  try {
+    parsed = JSON.parse(row.value) as Partial<IncrementalWatermark>;
+  } catch (err) {
+    // A corrupt watermark is discarded (forcing a full re-check, which is always
+    // correct), but never silently: the trace is the only evidence it happened.
+    log.warn('cluster.incremental.watermark_unreadable', {
+      key,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+  if (
+    typeof parsed.threshold !== 'number' ||
+    typeof parsed.membership !== 'string' ||
+    typeof parsed.rowid !== 'number' ||
+    typeof parsed.belowCount !== 'number' ||
+    typeof parsed.fullScanAt !== 'string'
+  ) {
+    return null;
+  }
+  return parsed as IncrementalWatermark;
+}
+
+async function writeIncrementalWatermark(
+  adapter: StoreAdapter,
+  key: string,
+  watermark: IncrementalWatermark,
+): Promise<void> {
+  await adapter.executeRun(
+    `INSERT INTO sox_store_meta (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    [key, JSON.stringify(watermark)],
+  );
 }
 
 /**
