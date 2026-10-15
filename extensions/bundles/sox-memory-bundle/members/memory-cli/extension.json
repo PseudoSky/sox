@@ -15,7 +15,7 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "runCli",
-    "description": "Call runCli(argv: string[]) where argv starts after 'node <entry>'. Subcommands: init, status, list, registry, export. All are deterministic; zero LLM calls."
+    "description": "Call runCli(argv: string[]) where argv starts after 'node <entry>'. Subcommands: init, status, list, registry, export, recluster (requests a background recluster job; --wait polls it, exit 0 completed / 2 failed / 3 degraded / 4 timeout). All are deterministic; zero LLM calls."
   },
   "dependencies": [{ "id": "memory-server" }],
   "tags": ["memory", "cli"],
