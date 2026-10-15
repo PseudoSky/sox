@@ -116,7 +116,7 @@ async function dispatch(a) {
     });
     const file = writeReport(report, a.flags['--report'], root);
     for (const w of report.warnings) process.stderr.write(`gate-engine: warning: ${w}\n`);
-    if (file) process.stderr.write(`gate-engine: ${report.summary.passed}/${report.summary.selected} passed, failed=[${report.summary.failed}] obligations=[${report.summary.obligations}] -> ${file}\n`);
+    if (file) process.stderr.write(`gate-engine: ${report.summary.passed}/${report.summary.selected} passed, failed=[${report.summary.failed}] obligations=[${report.summary.obligations}] unmeasured=[${report.summary.unmeasured}] -> ${file}\n`);
     return report.exit;
   }
   if (verb === 'check') {

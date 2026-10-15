@@ -167,3 +167,15 @@ test('891dbac0 AC1 a real usage error (unknown flag) replaces a stale gate-repor
   assert.equal(r.status, 64, r.stderr);
   assert.deepEqual([report().kind, report().code], ['engine-error', 'E_USAGE']);
 });
+
+test('a command exiting 78 is reported unmeasured in the report and the stderr summary, exits 0, and exits 1 under --fail-on-obligation', () => {
+  writeTable([
+    { id: 'G3', command: cmd(0), stage: 'B', mechanism: 'mechanical' },
+    { id: 'G7', command: cmd(78), stage: 'B', mechanism: 'mechanical' },
+  ]);
+  const r = run(['run', '--step', 'B']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /1\/2 passed.*unmeasured=\[G7\]/);
+  assert.deepEqual(report().summary.unmeasured, ['G7']);
+  assert.equal(run(['run', '--step', 'B', '--fail-on-obligation']).status, 1);
+});
