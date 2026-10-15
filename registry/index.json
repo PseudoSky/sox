@@ -24,46 +24,46 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "50a24445e3b7fd5123b754bba3e491111312a84a"
+    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
   },
   {
     "id": "memory-cli",
     "type": "command",
-    "version": "0.3.4",
+    "version": "0.3.5",
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
-    "source": "npm-package:@adhd/sox-extension-memory-cli@0.3.4",
-    "checksum": "sha256:90d2a19b06ee7699e083425abaceda652f8d9e5bbaabcb4661ed7a8739268efe",
+    "source": "npm-package:@adhd/sox-extension-memory-cli@0.3.5",
+    "checksum": "sha256:3c86686f89654a04cce170e3a825d870c81f7bf4e40b40e871c8d53929581c4c",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "50a24445e3b7fd5123b754bba3e491111312a84a"
+    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
   },
   {
     "id": "memory-flush",
     "type": "hook",
-    "version": "0.2.8",
+    "version": "0.2.9",
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
-    "source": "npm-package:@adhd/sox-extension-memory-flush@0.2.8",
-    "checksum": "sha256:97037da4f5eea24d4299913ac03a97c683e43dbfa7921519c4f68de261b19ee0",
+    "source": "npm-package:@adhd/sox-extension-memory-flush@0.2.9",
+    "checksum": "sha256:9c4aba423b845ee089c828ae8a3c150b6cdb683e8a01b92552be1cbb59817b30",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "50a24445e3b7fd5123b754bba3e491111312a84a"
+    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
   },
   {
     "id": "memory-server",
     "type": "mcp-server",
-    "version": "1.4.5",
+    "version": "1.5.0",
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 29 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, bi-temporal invalidation, atomic claims, and an observable global re-cluster.",
-    "source": "npm-package:@adhd/sox-extension-memory-server@1.4.5",
-    "checksum": "sha256:4166becd5d34117c3bd03c8ce5138ed1613d8d074603088f7ef747037cf74815",
+    "source": "npm-package:@adhd/sox-extension-memory-server@1.5.0",
+    "checksum": "sha256:e319793f4ed490ad1911c24c87bbcf3975d1a52cacf7f453508b6bb7e9b69abf",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -73,7 +73,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "50a24445e3b7fd5123b754bba3e491111312a84a"
+    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
   },
   {
     "id": "memory-usage",
@@ -88,19 +88,19 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "50a24445e3b7fd5123b754bba3e491111312a84a"
+    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
   },
   {
     "id": "sox",
     "type": "command",
-    "version": "1.4.0",
+    "version": "1.4.1",
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
-    "source": "npm-package:@adhd/sox-cli@1.4.0",
-    "checksum": "sha256:8b3f713797047f706f16eacfbfa8deef35ea684c292ef42e78a4b137dffdd015",
+    "source": "npm-package:@adhd/sox-cli@1.4.1",
+    "checksum": "sha256:9959c273885a02481c856ac27e8a51526c014fe30a05faeb4189ca4cdaa3dc58",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "50a24445e3b7fd5123b754bba3e491111312a84a"
+    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
   }
 ]
