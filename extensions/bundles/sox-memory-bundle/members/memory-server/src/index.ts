@@ -48,6 +48,7 @@ import {
   getEmbedPipelineMetrics,
   getClusterPipelineMetrics,
   recordClusterPassAdmission,
+  type ClusterDegradation,
   getOntologySnapshot,
   getStoreEngineIdentity,
   hasPendingFullEnrich,
@@ -301,6 +302,80 @@ function recordRecallDegradations(degradations: readonly string[] | undefined): 
     const channel = classifyDegradationChannel(d);
     recallDegradations.by_channel[channel] = (recallDegradations.by_channel[channel] ?? 0) + 1;
   }
+}
+
+// ── Requested-full-pass degradation alarm (0c9c76b4 AC7/AC8) ─────────────────
+//
+// A requested full recluster over `nodeCap` (or one that outran its budget) is
+// refused/aborted by memory-core and reported as `cluster_degraded`. The job
+// settles `skipped`, but the job row is only visible to the caller who polls
+// it; an operator reading `memory_ping` saw nothing, so a store that had not
+// reorganised in weeks looked healthy. This per-store alarm is raised by a
+// degraded REQUESTED full pass and cleared only by a later requested full pass
+// that ran un-degraded. Passes that never reached the cluster step for another
+// reason (child failed, mixed-model guard) neither raise nor clear it: they
+// carry no information about whether the corpus fits the cap.
+//
+// Module-local for the same reason as recallDegradations above.
+export type FullPassDegradedAlarm = {
+  reason: 'nodeCap' | 'budget';
+  episodeCount: number;
+  /** Present when reason === 'nodeCap'. */
+  nodeCap: number | null;
+  /** Present when reason === 'budget'. */
+  budgetMs: number | null;
+  /** ISO time the alarm was first raised (kept across repeated degraded passes). */
+  since: string;
+};
+
+const fullPassDegradedByDb = new Map<string, FullPassDegradedAlarm>();
+
+function fullPassAlarmKey(dbPath: string): string {
+  return path.resolve(expandTilde(dbPath));
+}
+
+/** The skip reason a degraded pass settles recluster jobs with. */
+export function describeClusterDegradation(d: ClusterDegradation): string {
+  return d.reason === 'nodeCap'
+    ? `nodeCap: ${d.episodeCount} episodes exceed cap ${d.nodeCap}; full pass not run`
+    : `budget: full pass over ${d.episodeCount} episodes exceeded ${d.budgetMs}ms (elapsed ${Math.round(d.elapsedMs)}ms); aborted, partition unchanged`;
+}
+
+/**
+ * Fold one finished tick into the alarm. `requestedFull` is whether a full pass
+ * was REQUESTED (an incremental tick says nothing about full-pass health).
+ */
+export function recordFullPassOutcome(
+  dbPath: string,
+  requestedFull: boolean,
+  outcome: { ok: boolean; degraded?: ClusterDegradation; skipped?: boolean },
+  nowIso: string = new Date().toISOString(),
+): void {
+  if (!requestedFull || !outcome.ok) return;
+  const key = fullPassAlarmKey(dbPath);
+  const d = outcome.degraded;
+  if (d) {
+    fullPassDegradedByDb.set(key, {
+      reason: d.reason,
+      episodeCount: d.episodeCount,
+      nodeCap: d.reason === 'nodeCap' ? d.nodeCap : null,
+      budgetMs: d.reason === 'budget' ? d.budgetMs : null,
+      since: fullPassDegradedByDb.get(key)?.since ?? nowIso,
+    });
+    return;
+  }
+  if (!outcome.skipped) fullPassDegradedByDb.delete(key);
+}
+
+/** `memory_ping.cluster.full_pass_degraded` — null when no alarm is raised. */
+export function snapshotFullPassDegraded(dbPath: string): FullPassDegradedAlarm | null {
+  const a = fullPassDegradedByDb.get(fullPassAlarmKey(dbPath));
+  return a ? { ...a } : null;
+}
+
+/** Test-only reset. */
+export function _resetFullPassDegradedForTest(): void {
+  fullPassDegradedByDb.clear();
 }
 
 /** Snapshot for `memory_ping`. Returns a copy — callers must never mutate. */
@@ -1530,6 +1605,8 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
     // input — the ping must then read `unhealthy`, never `ok`.
     let storeOpenError: string | null = null;
     let storeOpened = false;
+    // 0c9c76b4 AC8: raised by a degraded requested full recluster pass.
+    let fullPassDegraded: FullPassDegradedAlarm | null = null;
     // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the honest pipeline verdict
     // state, hoisted out of the try so the top-level `status` can fold it in.
     // null when the store never opened (the verdict is then 'unhealthy' anyway).
@@ -1585,6 +1662,8 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           storeName = storeResult.name;
         }
       }
+
+      if (resolvedPath) fullPassDegraded = snapshotFullPassDegraded(resolvedPath);
 
       if (resolvedPath && fs.existsSync(resolvedPath)) {
         // sha256 file fingerprint
@@ -1998,6 +2077,11 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // SA-7 blocks
           instance: instanceBlock,
           store: storeBlock,
+          // 0c9c76b4 AC8: additive. `full_pass_degraded` is non-null while the
+          // most recent REQUESTED full recluster was refused (nodeCap) or
+          // aborted (budget); it clears when a later requested full pass runs
+          // un-degraded. Pure data — it never moves `status`.
+          cluster: { full_pass_degraded: fullPassDegraded },
           embed: embedBlock,
           // (862129b5 TUR-F) the off-thread Turso driver's lifecycle snapshot,
           // read synchronously before any store query. `state:'stalled'` is the
@@ -3763,11 +3847,22 @@ export async function runEnrichPassOnDb(
   // the child's reason, and let `recluster_status` distinguish it; only the
   // skipped case is downgraded — a genuinely failed pass still settles `failed`.
   try {
+    // 0c9c76b4 AC7/AC8: a degraded requested full pass settles `skipped` with
+    // the structured reason/episodeCount/cap (never `completed`) and drives the
+    // memory_ping alarm.
+    const degraded = isolated.ok ? isolated.result.cluster_degraded : undefined;
+    recordFullPassOutcome(dbPath, fullPass, {
+      ok: isolated.ok,
+      ...(degraded ? { degraded } : {}),
+      skipped: isolated.ok && isolated.result.cluster_pass_skipped === true,
+    });
     const settleOutcome: ReclusterSettleOutcome = !isolated.ok
       ? { ok: false, error: isolated.error ?? 'unknown' }
-      : isolated.result.cluster_pass_skipped
-        ? { ok: false, skipped: true, reason: isolated.result.cluster_skip_reason ?? 'cluster pass skipped' }
-        : { ok: true };
+      : degraded
+        ? { ok: false, skipped: true, reason: describeClusterDegradation(degraded) }
+        : isolated.result.cluster_pass_skipped
+          ? { ok: false, skipped: true, reason: isolated.result.cluster_skip_reason ?? 'cluster pass skipped' }
+          : { ok: true };
     await settleReclusterJobs(adapter, maxSeq, settleOutcome);
   } catch (err) {
     log.error('enrich.recluster_job.settle_failed', {

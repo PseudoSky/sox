@@ -25,7 +25,7 @@ import { readFileSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import { runBatchEnrich, openDb, type BatchEnrichOptions, type BatchEnrichResult } from '@adhd/sox-memory-core';
+import { runBatchEnrich, openDb, DEFAULT_CLUSTER_NODE_CAP, type BatchEnrichOptions, type BatchEnrichResult } from '@adhd/sox-memory-core';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -88,7 +88,7 @@ export interface CaptureEnrichmentBaselineResult {
 
 export const DEFAULT_BATCH_ENRICH_OPTIONS: BatchEnrichOptions = {
   clusterThreshold: 0.82,
-  clusterNodeCap: 10000,
+  clusterNodeCap: DEFAULT_CLUSTER_NODE_CAP,
   importanceChunkSize: 500,
   entityStoplistThreshold: 0.30,
   incrementalCluster: false,

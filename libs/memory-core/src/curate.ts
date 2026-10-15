@@ -13,6 +13,7 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { monotonicFactory } from 'ulid';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { clusterSubset, dropSubsetLens, listSubsetLenses } from './cluster.js';
+import type { ClusterDegradation } from './cluster.js';
 import { gcOrphanedCommunityState } from './community-gc.js';
 import { invalidateEpisodeInTx } from './invalidation-meta.js';
 import { enqueueReclusterJob, readReclusterJob } from './recluster-job.js';
@@ -97,6 +98,9 @@ export interface CurateReclusterSubsetResult {
   cluster_count: number;
   unclustered_count: number;
   full_pass: boolean;
+  /** (0c9c76b4) Present when the requested pass was refused (nodeCap) or aborted
+   *  (budget) — the subset was NOT clustered as requested and nothing persisted. */
+  degraded?: ClusterDegradation;
   clusters: Array<{
     community_uid: string;
     label: string;
@@ -556,6 +560,7 @@ async function curateRecluster(
       cluster_count: clusters.length,
       unclustered_count: res.unclustered_count,
       full_pass: res.full_pass,
+      ...(res.degraded ? { degraded: res.degraded } : {}),
       clusters,
     };
   }

@@ -349,14 +349,14 @@ export {
   calibrateThreshold, clusterStats, clusterStore, clusterSubset, dropSubsetLens,
   listSubsetLenses, materializeClusters, resolveDefaultThreshold,
   CLUSTER_THRESHOLD_CEILING, CLUSTER_THRESHOLD_FLOOR, CLUSTER_TARGET_MEAN_DEGREE,
-  CLUSTER_ELIGIBLE_SQL, CLUSTER_MIN_CONTENT_LENGTH
+  CLUSTER_ELIGIBLE_SQL, CLUSTER_MIN_CONTENT_LENGTH, DEFAULT_CLUSTER_NODE_CAP
 } from './cluster.js';
 export type {
   ClusterResult, ClusterStats, ClusterStoreOptions,
   ClusterStoreResult, ClusterSubsetOptions,
   ClusterSubsetResult, DropSubsetLensResult, MaterializeOptions,
   SubsetLensDescriptor, ThresholdCalibration, ThresholdCalibrationContext,
-  ClusterAdmissionStats
+  ClusterAdmissionStats, ClusterDegradation
 } from './cluster.js';
 
 // ── Cluster pipeline metrics (BL-496: time-to-community) ──────────────────────
