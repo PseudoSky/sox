@@ -797,10 +797,18 @@ function communityScopeClause(salt: string): string {
  * data and this join simply keeps consuming whatever `threshold` its caller
  * resolves, unchanged.
  *
- * Does not create new communities (that remains a full/subset pass's job)
- * and does not touch community `meta` (member_count there is cosmetic;
- * `clusterStats` computes coverage/largest-cluster live off `edge` rows,
- * never off stored meta).
+ * Does not create new communities (that remains a full/subset pass's job).
+ *
+ * 050ba52f: after the join loop, `meta.member_count` of every community that
+ * received a member is rewritten to its live MEMBER_OF count, because
+ * `memory_get_community` reads `memberCount` straight from `meta`. The
+ * community uid is deliberately NOT recomputed (owner ruling K0 32a2a24e: the
+ * first-minted uid stays stable; member overlap inherits it), so a join never
+ * mints, re-derives, or supersedes an identity. The `joined` outcome counter
+ * (`recordJoinOutcome`) is the join-rate instrument that the old stale-count
+ * drift used to be by accident (note 37d0a0df) — it must keep firing per join.
+ * `mean_intra_sim` and `centroid_rowid` stay at their materialize-time values;
+ * they describe the cluster as scored, not its live size.
  */
 async function incrementalJoin(
   adapter: StoreAdapter,
@@ -1062,6 +1070,20 @@ async function incrementalJoin(
     // still converges, just one tick later, with a materially smaller blob
     // risk per pass.
     joined++;
+  }
+
+  // 050ba52f: refresh the stored member_count of each community that grew.
+  // Recounted from live edges rather than incremented, so a revived edge (the
+  // ON CONFLICT branch above) and any prior drift both converge on the truth.
+  for (const communityRowid of joinedThisPass.keys()) {
+    const live = await adapter.executeGet<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM edge WHERE dst = ? AND rel = 'MEMBER_OF' AND t_invalid IS NULL`,
+      [communityRowid],
+    );
+    await adapter.executeRun(
+      `UPDATE node SET meta = json_set(COALESCE(meta, '{}'), '$.member_count', ?) WHERE rowid = ?`,
+      [live?.cnt ?? 0, communityRowid],
+    );
   }
 
   // Advance the watermark past every candidate decided this pass, stopping just
