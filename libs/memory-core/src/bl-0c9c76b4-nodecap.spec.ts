@@ -19,8 +19,28 @@
  *   AC4 single predicate       -> label and branch hand-synchronised again
  *   AC5 budget abort           -> pass continues past budget, or writes a half partition
  *   AC6 default cap            -> literal 10000 left behind / cap not derived from measurement
+ *   AC11 degraded subset       -> a degraded persist:true clusterSubset overwrites an existing
+ *                                 lens with an empty one / writes a marker / reports persisted:true
+ *   AC5 (metrics)              -> a budget-aborted pass is counted as a completed `full` pass
  *
  * Every test title carries '0c9c76b4 AC<n>' so the criterion is greppable.
+ *
+ * Red runs (recorded 2026-10-15, worktree recluster-fix-c1). Each: seed ONE fault,
+ *   `npx nx test memory-core -- libs/memory-core/src/bl-0c9c76b4-nodecap.spec.ts`,
+ *   restore byte-identical (shasum -c), re-run green (22 passed, exit 0).
+ *   F1 cluster.ts `if (opts.persist && !result.degraded) {` -> `if (opts.persist) {`
+ *      exit 1, 4 failed: the four AC11 persist:true tests (nodeCap/budget x
+ *      existing-lens/no-lens); `AssertionError: expected true to be false` (persisted).
+ *   F2 cluster.ts `if (completedPass) recordClusterPass(...)` -> unconditional
+ *      exit 1, 1 failed: AC5 metrics test, `AssertionError: expected 1 to be +0` (passes_full).
+ *   F3 cluster.ts drop `...(decision.degraded ? { degraded: decision.degraded } : {})`
+ *      exit 1, 6 failed: AC1 x2, AC3 clusterStore, AC11 nodeCap x3;
+ *      `expected undefined to deeply equal { reason: 'nodeCap', ... }`.
+ *   F4 cluster.ts `wontFit` budget comparison made unreachable (`budgetMs * 1e9`)
+ *      exit 1, 6 failed: AC5 x2, AC11 budget x3, AC5 metrics;
+ *      `AssertionError: expected undefined to be 'budget'`.
+ *   F5 cluster.ts DEFAULT_CLUSTER_NODE_CAP 16_000 -> 10_000
+ *      exit 1, 2 failed: both AC6 tests, `expected 10000 to be greater than 10000`.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
@@ -32,11 +52,14 @@ import { memoryWrite } from './write.js';
 import { runBatchEnrich } from './enrich-batch.js';
 import {
   clusterStore,
+  clusterSubset,
+  listSubsetLenses,
   resolveClusterPass,
   DEFAULT_CLUSTER_NODE_CAP,
   DEFAULT_FULL_PASS_BUDGET_MS,
   CLUSTER_NODE_CAP_MEASUREMENT,
 } from './cluster.js';
+import { getClusterMetrics, _resetClusterMetricsForTest } from './cluster-metrics.js';
 
 let priorAdapterEnv: string | undefined;
 beforeEach(() => {
@@ -313,6 +336,139 @@ describe('0c9c76b4 AC6 — one derived default cap', () => {
     for (const f of ['cluster.ts', 'enrich-batch.ts']) {
       const src = fs.readFileSync(path.join(__dirname, f), 'utf8');
       expect(src, f).not.toMatch(/(?:\?\?|=)\s*10_?000\b/);
+    }
+  });
+});
+
+/** Every non-episode node (communities, lens markers) and every live edge, in a stable order. */
+async function lensState(adapter: StoreAdapter): Promise<{ nodes: unknown[]; edges: unknown[] }> {
+  const nodes = await adapter.executeAll<Record<string, unknown>>(
+    `SELECT uid, kind, t_invalid, meta FROM node WHERE kind <> 'episode' ORDER BY uid`,
+  );
+  const edges = await adapter.executeAll<Record<string, unknown>>(
+    `SELECT src, dst, rel, t_invalid FROM edge ORDER BY src, dst, rel`,
+  );
+  return { nodes: nodes.rows, edges: edges.rows };
+}
+
+const SUBSET_FILTER = { project_path: '/test/nodecap' };
+
+describe('0c9c76b4 AC11 — a degraded subset pass never overwrites an existing lens and reports persisted:false', () => {
+  /** Reads `readings` in order (the last one repeats). */
+  function scriptedClock(readings: number[]): () => number {
+    let i = 0;
+    return () => readings[Math.min(i++, readings.length - 1)]!;
+  }
+
+  type Degrade = 'nodeCap' | 'budget';
+  const degradeOpts = (kind: Degrade): { nodeCap: number; budgetMs?: number; now?: () => number } =>
+    kind === 'nodeCap'
+      ? { nodeCap: 50 }
+      : { nodeCap: 100, budgetMs: 1_000, now: scriptedClock([0, 60_000]) };
+
+  for (const kind of ['nodeCap', 'budget'] as const) {
+    it(`0c9c76b4 AC11: ${kind}-degraded persist:true over an EXISTING lens leaves it byte-identical and persisted:false`, async () => {
+      const { dir, cleanup } = tmpDir();
+      try {
+        const adapter = await seed(dir);
+        const built = await clusterSubset(adapter, {
+          filter: SUBSET_FILTER, persist: true, threshold: TAU, nodeCap: 100,
+        });
+        expect(built.persisted).toBe(true);
+        expect(built.degraded).toBeUndefined();
+        const lensesBefore = await listSubsetLenses(adapter);
+        expect(lensesBefore).toHaveLength(1);
+        expect(lensesBefore[0]!.community_count).toBeGreaterThanOrEqual(1);
+        const before = await lensState(adapter);
+
+        const r = await clusterSubset(adapter, {
+          filter: SUBSET_FILTER, persist: true, threshold: TAU, ...degradeOpts(kind),
+        });
+        expect(r.degraded?.reason).toBe(kind);
+        expect(r.persisted).toBe(false);
+        expect(r.clusters).toEqual([]);
+        expect(await listSubsetLenses(adapter)).toEqual(lensesBefore);
+        expect(await lensState(adapter)).toEqual(before);
+        await adapter.close();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it(`0c9c76b4 AC11: ${kind}-degraded persist:true with NO prior lens writes no empty lens and no marker`, async () => {
+      const { dir, cleanup } = tmpDir();
+      try {
+        const adapter = await seed(dir);
+        const before = await lensState(adapter);
+        const r = await clusterSubset(adapter, {
+          filter: SUBSET_FILTER, persist: true, threshold: TAU, ...degradeOpts(kind),
+        });
+        expect(r.degraded?.reason).toBe(kind);
+        expect(r.persisted).toBe(false);
+        expect(await listSubsetLenses(adapter)).toEqual([]);
+        expect(await lensState(adapter)).toEqual(before);
+        await adapter.close();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it(`0c9c76b4 AC11: ${kind}-degraded persist:false is read-only, reports the degradation and persisted:false`, async () => {
+      const { dir, cleanup } = tmpDir();
+      try {
+        const adapter = await seed(dir);
+        const before = await lensState(adapter);
+        const r = await clusterSubset(adapter, {
+          filter: SUBSET_FILTER, persist: false, threshold: TAU, ...degradeOpts(kind),
+        });
+        expect(r.degraded?.reason).toBe(kind);
+        expect(r.persisted).toBe(false);
+        expect(await lensState(adapter)).toEqual(before);
+        await adapter.close();
+      } finally {
+        cleanup();
+      }
+    });
+  }
+
+  it('0c9c76b4 AC11: control — an un-degraded persist:true pass still persists (the no-persist branch is not blanket)', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const adapter = await seed(dir);
+      const r = await clusterSubset(adapter, {
+        filter: SUBSET_FILTER, persist: true, threshold: TAU, nodeCap: 100,
+      });
+      expect(r.degraded).toBeUndefined();
+      expect(r.persisted).toBe(true);
+      expect((await listSubsetLenses(adapter)).length).toBe(1);
+      await adapter.close();
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe('0c9c76b4 AC5 — a budget-aborted pass is not counted as a completed full pass in cluster metrics', () => {
+  it('0c9c76b4 AC5: budget abort leaves passes_full at 0; a completed full pass on another store counts 1', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      _resetClusterMetricsForTest();
+      const adapter = await seed(dir);
+      const aborted = await clusterStore(adapter, {
+        nodeCap: 100, budgetMs: 1_000, now: ((): (() => number) => { const t = [0, 60_000]; let i = 0; return () => t[Math.min(i++, 1)]!; })(), storeKey: 'k-aborted',
+      });
+      expect(aborted.degraded?.reason).toBe('budget');
+      const m = getClusterMetrics('k-aborted');
+      expect(m).not.toBeNull();
+      expect(m!.counters.passes_full).toBe(0);
+      expect(m!.quality).toBeNull();
+
+      const done = await clusterStore(adapter, { nodeCap: 100, threshold: TAU, storeKey: 'k-done' });
+      expect(done.full_pass).toBe(true);
+      expect(getClusterMetrics('k-done')!.counters.passes_full).toBe(1);
+      await adapter.close();
+    } finally {
+      cleanup();
     }
   });
 });

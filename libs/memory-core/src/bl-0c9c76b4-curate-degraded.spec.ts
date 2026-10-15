@@ -5,10 +5,23 @@
  * marker clusterSubset now returns, so a subset pass that was refused (nodeCap)
  * or aborted (budget) reads as an ordinary empty result.
  * Tier: S (clusterSubset mocked at the module boundary; no store opened).
- * Gap: does not exercise a real over-cap corpus; that is covered by
- * bl-0c9c76b4-nodecap.spec.ts at the clusterSubset layer.
+ * Gap: does not exercise a real over-cap corpus, and says nothing about what
+ * clusterSubset persists. That contract (a degraded subset pass writes nothing,
+ * returns persisted:false) is owned by bl-0c9c76b4-nodecap.spec.ts, AC11, at the
+ * clusterSubset layer; here clusterSubset is a mock and only the pass-through of
+ * its result is observed.
  * Item: 0c9c76b4 AC9. Risk map: the only changed line is the spread in
- * curateRecluster; a seeded fault (delete it) must fail the first test.
+ * curateRecluster; deleting it must fail the first two tests.
+ *
+ * Red run (recorded 2026-10-15, worktree recluster-fix-c1):
+ *   Fault seeded: delete `...(res.degraded ? { degraded: res.degraded } : {}),` in curate.ts.
+ *   Command: npx nx test memory-core -- libs/memory-core/src/bl-0c9c76b4-curate-degraded.spec.ts
+ *   Exit 1 (2 failed, 1 passed): `a nodeCap-degraded subset pass surfaces degraded`
+ *     AssertionError: expected undefined to deeply equal { reason: 'nodeCap', ... };
+ *     `a budget-degraded subset pass surfaces degraded`
+ *     AssertionError: expected undefined to deeply equal { reason: 'budget', ... }.
+ *   The third test (no key when un-degraded) stays green by design.
+ *   Restored byte-identical (shasum -c) and re-run green: 3 passed, exit 0.
  */
 import { describe, it, expect, vi } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';

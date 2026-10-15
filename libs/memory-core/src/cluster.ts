@@ -1238,8 +1238,11 @@ async function computeClusters(
   let lastPassMs = 0;
   /**
    * Elapsed ms if starting another all-pairs run now would not fit the budget,
-   * else null. `elapsed + lastPassMs` (not bare `elapsed`) is deliberate: a
-   * guard retry costs about what the pass before it cost, so a retry that
+   * else null. `elapsed` is measured from the start of the pass, so it already
+   * includes vector loading and calibration. Before the first run
+   * `lastPassMs` is 0 and this reduces to `elapsed > budgetMs` (the setup alone
+   * spent the budget); before a guard RETRY, `elapsed + lastPassMs` predicts
+   * that the retry costs about what the pass before it cost, so a retry that
    * cannot finish inside the budget is refused up front rather than started and
    * killed by the parent's SIGTERM.
    */
@@ -1292,13 +1295,20 @@ async function computeClusters(
   let clusters: ClusterResult[] = [];
 
   while (attempts < 4) {
-    // Deadline: checked BEFORE every (re)run of the all-pairs pass, and a rerun
-    // must be predicted to FIT (see `wontFit`). Nothing has
-    // been written at this point (`computeClusters` is pure; persistence is the
-    // caller's single transaction), so abandoning leaves the previous partition
-    // exactly as it was. A pass already in flight is never discarded: it is
-    // synchronous and uninterruptible, and throwing away a finished partition
-    // would make the next tick repeat the identical overrun forever.
+    // Deadline: checked BEFORE every (re)run of the all-pairs pass (see
+    // `wontFit`). Nothing has been written at this point (`computeClusters` is
+    // pure; persistence is the caller's single transaction), so abandoning
+    // leaves the previous partition exactly as it was.
+    //
+    // In practice this fires in exactly two situations: (1) before the first
+    // run, when vector loading + calibration alone consumed the budget; and
+    // (2) before a D5.5 guard RETRY that is predicted not to fit. In case (2)
+    // the pass that just finished was REJECTED by the degenerate guard (its
+    // largest cluster held more than half the corpus), so there is no
+    // acceptable partition to keep: it is discarded (`clusters: []`) and the
+    // previous partition stays. A run in flight is never interrupted — it is
+    // synchronous and uninterruptible inside `@adhd/sox-analysis`; that is why
+    // `nodeCap`, not this budget, bounds a single run.
     const overBy = wontFit();
     if (overBy !== null) {
       return {
@@ -1403,8 +1413,15 @@ export async function clusterStore(
         });
       }
 
-      recordClusterPass(storeKey, path);
-      await measureBacklog(adapter, storeKey, path);
+      // A budget-aborted pass computed and wrote nothing: it is not a completed
+      // `full` pass and must not inflate `passes_full` or trigger the
+      // full-pass-only quality measurement. The backlog gauge is still read (a
+      // cheap COUNT that stays true), under the non-full path so quality is
+      // skipped. A nodeCap refusal already carries `path === 'incremental'`
+      // (the incremental join genuinely ran), so it is counted as what it was.
+      const completedPass = result.degraded?.reason !== 'budget';
+      if (completedPass) recordClusterPass(storeKey, path);
+      await measureBacklog(adapter, storeKey, completedPass ? path : 'incremental');
       emitClusterPassEvent(storeKey, path, result);
       return result;
     },
@@ -1592,10 +1609,19 @@ export interface ClusterSubsetOptions {
   restrict?: { sql: string; params: unknown[] };
   threshold?: number;
   nodeCap?: number;
+  /** Wall-clock budget for the pass (default {@link DEFAULT_FULL_PASS_BUDGET_MS}). */
+  budgetMs?: number;
+  /** Injectable monotonic-ms clock for the budget check (default `performance.now`). */
+  now?: () => number;
   /**
    * When true, persist the produced communities to the DB under this filter's
    * provenance (scoped — does not touch global or other-filter communities).
    * Default false: a read-only synthesis query with no side effects.
+   *
+   * A DEGRADED pass (`degraded` set: refused over `nodeCap` or aborted on
+   * `budget`) is never persisted, whatever this says: the result reports
+   * `persisted: false` and an existing lens for the same filter is left exactly
+   * as it was (backlog 0c9c76b4 AC11).
    */
   persist?: boolean;
   /** Metrics bucket — the store's `dbPath`. See {@link DEFAULT_STORE_KEY}. */
@@ -1667,6 +1693,8 @@ export async function clusterSubset(
       computeClusters(adapter, episodes, {
         threshold: opts.threshold,
         nodeCap: opts.nodeCap,
+        budgetMs: opts.budgetMs,
+        now: opts.now,
         salt: provenanceHash,
         storeKey,
       }),
@@ -1675,7 +1703,10 @@ export async function clusterSubset(
 
   // A degraded pass (nodeCap refusal or budget abort) produced no partition. It
   // must not be persisted: `materializeClusters` with zero clusters would
-  // REPLACE this lens's existing communities with nothing.
+  // REPLACE this lens's existing communities with nothing. (Before 0c9c76b4 a
+  // degraded persist:true pass DID write an empty lens + marker and returned
+  // persisted:true; it now leaves the old lens untouched and reports
+  // persisted:false — AC11.)
   let persisted = false;
   if (opts.persist && !result.degraded) {
     const filterRepr = opts.filter ?? opts.restrict?.sql ?? null;
