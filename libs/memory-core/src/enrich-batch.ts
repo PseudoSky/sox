@@ -20,7 +20,13 @@
 
 import { getMemoryGraphBackend } from './graph-backend.js';
 import { buildAutoLinks } from './autolink.js';
-import { clusterStore, type ClusterAdmissionStats, type ThresholdCalibration } from './cluster.js';
+import {
+  clusterStore,
+  DEFAULT_CLUSTER_NODE_CAP,
+  type ClusterAdmissionStats,
+  type ClusterDegradation,
+  type ThresholdCalibration,
+} from './cluster.js';
 import { computeImportance } from './importance.js';
 import type { ImportanceWeights } from './importance.js';
 import { ENRICH_VERSION } from './enrich-version.js';
@@ -37,8 +43,14 @@ export interface BatchEnrichOptions {
   clusterThreshold?: number;
   /** Near-dup threshold for SAME_AS edges (default 0.95 real, 0.98 hash). */
   nearDupThreshold?: number;
-  /** Maximum episodes per full cluster pass (default 10000; soft cap per D1.7). */
+  /** Maximum episodes per full cluster pass (default {@link DEFAULT_CLUSTER_NODE_CAP}; soft cap per D1.7). */
   clusterNodeCap?: number;
+  /**
+   * Wall-clock budget for the full cluster pass (default
+   * `DEFAULT_FULL_PASS_BUDGET_MS`). A pass that cannot fit is abandoned before
+   * writing anything and reported skipped with a `budget:` reason.
+   */
+  clusterBudgetMs?: number;
   /** Importance blend weights (default: all 1.0, max sum = 10). */
   importanceWeights?: ImportanceWeights;
   /** Entity stoplist coverage threshold; entities in > this fraction of episodes are excluded
@@ -145,6 +157,14 @@ export interface BatchEnrichResult {
    * Absent on a full pass (which re-partitions rather than admitting).
    */
   cluster_admission?: ClusterAdmissionStats;
+  /**
+   * Backlog 0c9c76b4: present when a FULL pass was requested and not delivered
+   * (corpus above `clusterNodeCap`, or the pass blew its time budget). Always
+   * accompanied by `cluster_pass_skipped: true` and a `cluster_skip_reason`
+   * that names the cause, so a caller that only reads the skipped flag is
+   * already honest; this carries the structured detail for `memory_ping`.
+   */
+  cluster_degraded?: ClusterDegradation;
 }
 
 interface EpisodeRow {
@@ -206,7 +226,8 @@ export async function runBatchEnrich(
 
   const {
     clusterThreshold,
-    clusterNodeCap = 10000,
+    clusterNodeCap = DEFAULT_CLUSTER_NODE_CAP,
+    clusterBudgetMs,
     importanceWeights,
     entityStoplistThreshold = 0.30,
     incrementalCluster = false,
@@ -289,6 +310,7 @@ export async function runBatchEnrich(
       // pass calibrates its own τ — see `resolveClusterThreshold` above.
       ...(thresholdOverride !== undefined ? { threshold: thresholdOverride } : {}),
       nodeCap: clusterNodeCap,
+      ...(clusterBudgetMs !== undefined ? { budgetMs: clusterBudgetMs } : {}),
       incrementalOnly: incrementalCluster,
       // Metrics bucket. Omitted (not set to undefined) when the caller supplied
       // none, so cluster.ts's own DEFAULT_STORE_KEY fallback applies rather than
@@ -308,7 +330,18 @@ export async function runBatchEnrich(
     // "considered and rejected" escapes the child before it exits.
     if (clusterResult.admission) result.cluster_admission = clusterResult.admission;
 
-    if (clusterResult.clusters.length === 0 && !clusterResult.full_pass && result.incremental_joined === 0) {
+    if (clusterResult.degraded) {
+      // A requested full pass was refused (nodeCap) or abandoned (budget). The
+      // incremental join, if it ran, is real work and stays counted in
+      // `incremental_joined`, but the GLOBAL reorganisation the caller asked for
+      // did not happen — so the pass is reported skipped, never completed.
+      result.cluster_degraded = clusterResult.degraded;
+      result.cluster_pass_skipped = true;
+      result.cluster_skip_reason =
+        clusterResult.degraded.reason === 'nodeCap'
+          ? `nodeCap: ${clusterResult.degraded.episodeCount} episodes exceed cap ${clusterResult.degraded.nodeCap}; full pass not run`
+          : `budget: full pass exceeded ${clusterResult.degraded.budgetMs}ms (elapsed ${Math.round(clusterResult.degraded.elapsedMs)}ms); aborted, partition unchanged`;
+    } else if (clusterResult.clusters.length === 0 && !clusterResult.full_pass && result.incremental_joined === 0) {
       result.cluster_pass_skipped = true;
       result.cluster_skip_reason = clusterResult.incremental_joined !== undefined
         ? 'incremental join: no existing community within threshold (deferred to full/subset pass)'

@@ -114,11 +114,107 @@ export interface ClusterResult {
   centroid_rowid: number;
 }
 
+/**
+ * Why a pass that was asked to do (or was in the middle of) a FULL re-cluster
+ * did not produce a full partition. Present on a result ONLY when the caller's
+ * request was not honoured — never on an incremental pass the caller asked for.
+ *
+ * Backlog 0c9c76b4: before this existed a requested full pass over a corpus
+ * larger than `nodeCap` silently ran the incremental join (which can never
+ * create a community) and was settled `completed`. A caller must be able to
+ * tell "the global reorganisation ran" from "it was refused/aborted".
+ */
+export type ClusterDegradation =
+  | {
+      /** The candidate corpus exceeded `nodeCap`; the O(n²) pass was not attempted. */
+      reason: 'nodeCap';
+      episodeCount: number;
+      nodeCap: number;
+    }
+  | {
+      /** The full pass ran past `budgetMs` and was abandoned before writing anything. */
+      reason: 'budget';
+      episodeCount: number;
+      budgetMs: number;
+      elapsedMs: number;
+    };
+
+/**
+ * Default ceiling on candidate episodes for one FULL (O(n²)) pass. Defined
+ * here once; `runBatchEnrich` and `clusterStore` both read it (ADR-0013: a
+ * typed constant/option, no env toggle).
+ *
+ * ## Derivation (backlog 0c9c76b4 AC6)
+ *
+ * The full pass is an all-pairs DBSCAN in `@adhd/sox-analysis`: cost is
+ * c · N², c ≈ one 768-d cosine distance per pair.
+ *
+ * Measured 2026-10-14, synthetic 768-d vectors, isolated node process, host at
+ * load average 100-150 (so WALL time was 8-10x inflated: 204-268 s at N=5000).
+ * CPU time is what load cannot distort, and it repeated to within 1%
+ * and scaled quadratically (N=12,000 predicted 149 s, measured 149.2 s):
+ *   N=2,500  CPU 6.5 s, 6.4 s                      -> 1.03 µs/pair
+ *   N=5,000  CPU 26.7 s, 26.5 s, 26.7 s, 26.4 s    -> 1.06 µs/pair
+ *   N=12,000 CPU 149.2 s (wall 1,012 s under the same load)  -> 1.04 µs/pair
+ *   N=4,950  23.4 s (in-repo measurement, see calibrateThreshold) -> 0.95 µs/pair
+ * so c ≈ 1.07 µs (the worst repeat is used below).
+ *
+ * Rule: ONE full pass, on an idle core, must use at most 50% of the 600 s
+ * enrich-child SIGTERM (`DEFAULT_ENRICH_FULL_TIMEOUT_MS`), leaving the other
+ * half for vector load, materialisation and CPU contention:
+ *   c · cap² ≤ 300 s  =>  cap ≤ sqrt(300 / 1.068e-6) ≈ 16,760.
+ * 16,000 -> 273 s (46%). 17,000 -> 309 s (breaks the rule) — pinned by a test.
+ * The previous 10,000 cost 107 s, and the live corpus (11,763 episodes) was
+ * already past it.
+ *
+ * The D5.5 degenerate guard may re-run the pass at τ+0.05 (up to 3 more
+ * times). Multiplying the cost by four would cap the corpus at ~8,400 — below
+ * the live store — so retries are NOT budgeted into the cap; they are bounded
+ * by the budget instead: a retry only starts if (elapsed + the previous pass's
+ * duration) fits `DEFAULT_FULL_PASS_BUDGET_MS`, so at 16,000 a retry is refused
+ * rather than run, and the pass reports `degraded: 'budget'`. Calibration
+ * (PKT-30) puts the guard at zero retries in practice.
+ */
+export const DEFAULT_CLUSTER_NODE_CAP = 16_000;
+
+/**
+ * Raw measurement behind {@link DEFAULT_CLUSTER_NODE_CAP}; the arithmetic in
+ * the derivation above is re-checked from these fields by the AC6 test, so the
+ * comment and the constant cannot drift apart.
+ */
+export const CLUSTER_NODE_CAP_MEASUREMENT = {
+  measuredN: 5_000,
+  /** Worst CPU-seconds of four repeats of one all-pairs pass at measuredN. */
+  measuredSeconds: 26.7,
+  worstCasePasses: 1,
+  budgetSeconds: 600,
+  budgetFraction: 0.5,
+} as const;
+
+/**
+ * Wall-clock budget for a full pass, below the 600 s SIGTERM of the isolated
+ * enrich child so the pass can abandon CLEANLY (no write, honest result)
+ * instead of being killed mid-flight. Checked before each (re)run of the
+ * all-pairs pass, and a RE-run must be predicted to fit (elapsed + the previous
+ * run's duration). An in-flight run is synchronous inside `@adhd/sox-analysis`
+ * and cannot be interrupted from here, which is why the cap above, not this
+ * budget, is what bounds a single run.
+ */
+export const DEFAULT_FULL_PASS_BUDGET_MS = 540_000;
+
 export interface ClusterStoreOptions {
   /** Cosine threshold τ (default: resolveDefaultThreshold(), currently 0.87). */
   threshold?: number;
-  /** Soft cap on nodes per full pass (default 10000; D1.7). */
+  /**
+   * Cap on candidate episodes for one full pass (default
+   * {@link DEFAULT_CLUSTER_NODE_CAP}; D1.7). Above it a requested full pass is
+   * REFUSED and reported as `degraded: { reason: 'nodeCap' }`.
+   */
   nodeCap?: number;
+  /** Wall-clock budget for a full pass (default {@link DEFAULT_FULL_PASS_BUDGET_MS}). */
+  budgetMs?: number;
+  /** Injectable monotonic-ms clock for the budget check (default `performance.now`). */
+  now?: () => number;
   /** If true, only run local neighborhood check for new nodes rather than full re-cluster. */
   incrementalOnly?: boolean;
   /** Metrics bucket — the store's `dbPath`. See {@link DEFAULT_STORE_KEY}. */
@@ -127,8 +223,16 @@ export interface ClusterStoreOptions {
 
 export interface ClusterStoreResult {
   clusters: ClusterResult[];
-  /** Whether the full O(n²) pass was run (false if nodeCap exceeded or incrementalOnly). */
+  /**
+   * Whether the full O(n²) pass was run to completion (false if nodeCap
+   * exceeded, budget abort, or incrementalOnly).
+   */
   full_pass: boolean;
+  /**
+   * Set when a FULL pass was requested but not delivered — see
+   * {@link ClusterDegradation}. Absent when the pass ran as requested.
+   */
+  degraded?: ClusterDegradation;
   /** Count of episodes with no cluster assignment (singletons, suppressed per D1.6). */
   unclustered_count: number;
   /**
@@ -595,10 +699,39 @@ async function selectEpisodes(
   return result.rows;
 }
 
+/** The single full-vs-incremental decision for one pass (backlog 0c9c76b4 AC4). */
+export interface ClusterPassDecision {
+  mode: 'full' | 'incremental';
+  /** Set iff a full pass was requested and refused for exceeding `nodeCap`. */
+  degraded?: Extract<ClusterDegradation, { reason: 'nodeCap' }>;
+}
+
+/**
+ * Resolve, ONCE, whether a pass runs full or incremental. `clusterStore` calls
+ * this for its stage label and passes the decision down to `computeClusters`
+ * for the branch, so the label and the branch cannot drift (they used to be two
+ * hand-synchronised copies of the same predicate).
+ *
+ * Boundary: `episodeCount === nodeCap` is a full pass; `nodeCap + 1` degrades.
+ */
+export function resolveClusterPass(
+  episodeCount: number,
+  opts: { incrementalOnly?: boolean | undefined; nodeCap?: number | undefined },
+): ClusterPassDecision {
+  const nodeCap = opts.nodeCap ?? DEFAULT_CLUSTER_NODE_CAP;
+  if (opts.incrementalOnly) return { mode: 'incremental' };
+  if (episodeCount <= nodeCap) return { mode: 'full' };
+  return { mode: 'incremental', degraded: { reason: 'nodeCap', episodeCount, nodeCap } };
+}
+
 interface ComputeClustersOptions {
   threshold?: number | undefined;
   nodeCap?: number | undefined;
   incrementalOnly?: boolean | undefined;
+  /** Pre-resolved decision (clusterStore); resolved from `episodes.length` when absent. */
+  pass?: ClusterPassDecision | undefined;
+  budgetMs?: number | undefined;
+  now?: (() => number) | undefined;
   /** UID salt for the produced communities (subset provenance; '' for global). */
   salt?: string | undefined;
   /** Metrics bucket — the store's `dbPath`. See {@link DEFAULT_STORE_KEY}. */
@@ -1069,15 +1202,14 @@ async function computeClusters(
   // vectors calibration needs (PKT-30). An explicit `opts.threshold` is an
   // absolute override at every layer — callers that pass one mean it.
   const threshold = opts.threshold ?? resolveDefaultThreshold();
-  const nodeCap = opts.nodeCap ?? 10000;
   const salt = opts.salt ?? '';
 
   if (episodes.length < 2) {
     return { clusters: [], full_pass: true, unclustered_count: episodes.length };
   }
 
-  const isFullPass = !opts.incrementalOnly && episodes.length <= nodeCap;
-  if (!isFullPass) {
+  const decision = opts.pass ?? resolveClusterPass(episodes.length, opts);
+  if (decision.mode !== 'full') {
     // BL-349/BL-326: incremental mode now performs a real, O(1)-per-episode
     // local-neighborhood join against existing communities (createGraphBackend
     // has already run in the caller — clusterStore/clusterSubset — before
@@ -1095,8 +1227,26 @@ async function computeClusters(
       unclustered_count: candidate_count - joined,
       incremental_joined: joined,
       admission,
+      ...(decision.degraded ? { degraded: decision.degraded } : {}),
     };
   }
+
+  const now = opts.now ?? (() => performance.now());
+  const budgetMs = opts.budgetMs ?? DEFAULT_FULL_PASS_BUDGET_MS;
+  const startedAt = now();
+  /** Duration of the most recent all-pairs run — the best predictor of the next one. */
+  let lastPassMs = 0;
+  /**
+   * Elapsed ms if starting another all-pairs run now would not fit the budget,
+   * else null. `elapsed + lastPassMs` (not bare `elapsed`) is deliberate: a
+   * guard retry costs about what the pass before it cost, so a retry that
+   * cannot finish inside the budget is refused up front rather than started and
+   * killed by the parent's SIGTERM.
+   */
+  const wontFit = (): number | null => {
+    const elapsed = now() - startedAt;
+    return elapsed + lastPassMs > budgetMs ? elapsed : null;
+  };
 
   const rowids = episodes.map((e) => e.rowid);
   const rowidToEp = new Map<number, EpRow>(episodes.map((e) => [e.rowid, e]));
@@ -1142,8 +1292,33 @@ async function computeClusters(
   let clusters: ClusterResult[] = [];
 
   while (attempts < 4) {
+    // Deadline: checked BEFORE every (re)run of the all-pairs pass, and a rerun
+    // must be predicted to FIT (see `wontFit`). Nothing has
+    // been written at this point (`computeClusters` is pure; persistence is the
+    // caller's single transaction), so abandoning leaves the previous partition
+    // exactly as it was. A pass already in flight is never discarded: it is
+    // synchronous and uninterruptible, and throwing away a finished partition
+    // would make the next tick repeat the identical overrun forever.
+    const overBy = wontFit();
+    if (overBy !== null) {
+      return {
+        clusters: [],
+        full_pass: false,
+        unclustered_count: candidateRowids.length,
+        guard_retries: attempts,
+        effective_threshold: currentThreshold,
+        degraded: {
+          reason: 'budget',
+          episodeCount: candidateRowids.length,
+          budgetMs,
+          elapsedMs: overBy,
+        },
+      };
+    }
     const clusterInput = candidateRowids.map((id, i) => ({ id, vec: candidateVecs[i]! }));
+    const passStartedAt = now();
     const groups = runClusters(clusterInput, currentThreshold);
+    lastPassMs = now() - passStartedAt;
     const maxClusterSize = Math.max(...Array.from(groups.values()).map((g) => g.length), 0);
     const ratio = maxClusterSize / candidateRowids.length;
 
@@ -1183,23 +1358,24 @@ export async function clusterStore(
   getMemoryGraphBackend(adapter);
 
   const storeKey = opts.storeKey ?? DEFAULT_STORE_KEY;
-  const nodeCap = opts.nodeCap ?? 10000;
 
   // `withContendedStage` fixes the path label BEFORE `admit` runs, but the
   // full-vs-incremental branch depends on the candidate COUNT — which
   // `selectEpisodes` only learns by running. Resolving that with
   // `opts.incrementalOnly` alone would mislabel the case that matters most: a
   // full-pass request that silently degraded to incremental because it exceeded
-  // `nodeCap`. So the count is resolved first, from the SAME predicate
+  // `nodeCap`. So the count is resolved first, from the predicate
   // `selectEpisodes` uses (`EPISODE_CANDIDATE_PREDICATE` — one constant, so the
   // two cannot drift), making the stage label provably equal to the branch
   // taken. One indexed COUNT is negligible beside a pass that loads thousands
-  // of vectors.
+  // of vectors. The decision is made HERE, once (`resolveClusterPass`), and
+  // handed to `computeClusters` — the label and the branch read the same value
+  // rather than two copies of one predicate.
   const countRow = await adapter.executeGet<{ cnt: number }>(
     `SELECT COUNT(*) AS cnt FROM node n WHERE ${EPISODE_CANDIDATE_PREDICATE}`,
   );
-  const isFullPass = !opts.incrementalOnly && (countRow?.cnt ?? 0) <= nodeCap;
-  const path: ClusterPassPath = isFullPass ? 'full' : 'incremental';
+  const decision = resolveClusterPass(countRow?.cnt ?? 0, opts);
+  const path: ClusterPassPath = decision.mode === 'full' ? 'full' : 'incremental';
 
   let episodes: EpRow[] = [];
   return MEMORY_CORE_STAGES.withContendedStage(
@@ -1215,6 +1391,9 @@ export async function clusterStore(
         threshold: opts.threshold,
         nodeCap: opts.nodeCap,
         incrementalOnly: opts.incrementalOnly,
+        pass: decision,
+        budgetMs: opts.budgetMs,
+        now: opts.now,
         storeKey,
       });
 
@@ -1265,6 +1444,7 @@ function emitClusterPassEvent(
     store_key: storeKey,
     path,
     full_pass: result.full_pass,
+    ...(result.degraded ? { degraded: result.degraded } : {}),
     clusters: result.clusters.length,
     unclustered_count: result.unclustered_count,
     incremental_joined: result.incremental_joined ?? 0,
@@ -1493,8 +1673,11 @@ export async function clusterSubset(
   );
   recordClusterPass(storeKey, 'subset');
 
+  // A degraded pass (nodeCap refusal or budget abort) produced no partition. It
+  // must not be persisted: `materializeClusters` with zero clusters would
+  // REPLACE this lens's existing communities with nothing.
   let persisted = false;
-  if (opts.persist) {
+  if (opts.persist && !result.degraded) {
     const filterRepr = opts.filter ?? opts.restrict?.sql ?? null;
     await adapter.transaction(async () => {
       await materializeClusters(adapter, result.clusters, {
