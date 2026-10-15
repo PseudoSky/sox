@@ -7,10 +7,10 @@
 | Mode | Brief |
 |---|---|
 | static | `mode: static`, scope, optional clause list, diff or paths |
-| blind | `templates/blind.tmpl`: `Review` + diff, nothing else; or `templates/blind-ref.tmpl`: `Review` + one absolute path to a diff file (the agent Reads that file only) |
+| blind | `templates/blind.tmpl`: `Review` + diff, nothing else; `templates/blind-ref.tmpl`: `Review` + one absolute path to a diff file (the agent Reads that file only); or `templates/blind-range.tmpl`: `Review`, `<base>...<head>`, absolute repo path (three lines; the agent runs only the allowlisted read-only `git diff` forms) |
 | blind-deep | `templates/blind-deep.tmpl`: `Review` + diff + specification + tests (Deep rigor, D22) |
 
-Blind modes judge only the brief and make no tool calls, except blind with a diff path, which Reads that one file. A git range is refused (no shell): write the diff to a file and pass its path. Static mode accepts `rigor: deep` and then refuses implementer reasoning. Any other brief, or a blind brief carrying rationale, ACs, or prior state, returns `REFUSED`.
+Blind modes judge only the brief and make no tool calls, except blind with a diff path (Reads that one file) and blind with a git range (Bash restricted to `git -C <path> --no-pager diff --no-ext-diff --no-textconv <range>` and its `--name-only` / `-- <file>` paging forms). Enforcement: opencode carries a `permission.bash` pattern map (deny-all, one allow, guards for redirects, pipes, substitution, `--output`, `--ext-diff`, `--textconv`, `-c`); claude has no argument patterns, so there it is prose only. See DESIGN.md. Static mode accepts `rigor: deep` and then refuses implementer reasoning. Any other brief, or a blind brief carrying rationale, ACs, or prior state, returns `REFUSED`.
 
 ## Tools
 

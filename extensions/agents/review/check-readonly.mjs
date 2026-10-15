@@ -1,5 +1,8 @@
 // 2f81569f T11.AC1 / cac771f8 AC2 — proves the review agent declares no edit/write/shell/dispatch capability.
-// CLI: node check-readonly.mjs [extension.json]
+// CLI: node check-readonly.mjs [--strict] [extension.json]
+//   Guarantee (review profile, the CLI default): no file-write tools; Bash only through the canonical read-only git-diff
+//   permission map (GIT_DIFF_BASH) on claude/opencode. `--strict` (and the API default) denies bash outright, as for every
+//   other read-only agent.
 //   exit 0 = read-only        exit 1 = violation(s)        exit 2 = file unreadable / not JSON
 //   exit 3 = malformed shape (a field the check must read has the wrong type; cannot be proven read-only)
 //   exit 4 = internal error (a bug in this checker; message only, never a stack trace)
@@ -21,6 +24,23 @@ const NATIVE_MEMBERS = new Set(['fs', 'shell', 'dispatch', 'hitl']);
 /** fs-server tools that only read (agent-mcp.ts FS_READ_TOOLS/FS_LIST_TOOLS/FS_SEARCH_TOOLS). */
 const FS_READ_RULE = /^(fs\.)?(read_|get_file_info$|list_|directory_tree$|search_files$)/;
 
+/**
+ * The only bash map a read-only agent may carry under the review profile (opencode last-match-wins: `*` deny first, the one
+ * git-diff allow, then guards). The guards deny redirects, pipes, substitution and every long option that could write
+ * (--output) or run a program (--ext-diff, --textconv) or redirect git (--git-dir, -c); git accepts unambiguous
+ * abbreviations, so they deny by prefix. opencode's matcher rewrites `\\` to `/`, so a backslash guard would deny every path; backslash is prose-forbidden instead. Claude has no argument patterns, so there the map is prose-only.
+ */
+export const GIT_DIFF_ALLOW = 'git -C * --no-pager diff --no-ext-diff --no-textconv *';
+export const GIT_DIFF_BASH = Object.freeze({
+  '*': 'deny',
+  [GIT_DIFF_ALLOW]: 'allow',
+  ...Object.fromEntries(
+    ['*>*', '*<*', '*|*', '*;*', '*&*', '*$*', '*`*', '*"*', "*'*", '*--o*', '*--e*', '*--t*', '*--g*', '*--w*', '*--c*', '*--p*', '*--b*', '*--names*', '* -c*'].map((g) => [g, 'deny']),
+  ),
+});
+/** Profile for the review agent: bash allowed ONLY as exactly GIT_DIFF_BASH. */
+export const REVIEW_PROFILE = Object.freeze({ bashAllow: GIT_DIFF_BASH });
+
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isDeny = (v) => v === 'deny';
 const describe = (v) => (v === null ? 'null' : Array.isArray(v) ? 'an array' : typeof v);
@@ -37,6 +57,13 @@ function arrayAt(v, path, out) {
   if (v === undefined) return [];
   if (!Array.isArray(v)) { out.push(`malformed: ${path} must be an array (got ${describe(v)})`); return []; }
   return v;
+}
+
+/** `bash` value under a profile: `deny`, or (profile only) exactly the canonical map in canonical order. */
+function bashViolation(val, path, opts, out) {
+  if (isDeny(val)) return;
+  if (!opts.bashAllow) { out.push(`${path}.bash is not "deny"`); return; }
+  if (JSON.stringify(val) !== JSON.stringify(opts.bashAllow)) out.push(`${path}.bash is neither "deny" nor exactly the allowlisted read-only git-diff map`);
 }
 
 /** One permission map (agent.permission or a render override's permission/permissions). */
@@ -57,10 +84,11 @@ function permissionMapViolations(map, path, out) {
   }
 }
 
-function toolListViolations(list, path, out) {
+function toolListViolations(list, path, out, allowBash = false) {
   for (const t of list) {
     const name = typeof t === 'string' ? t : (isObj(t) ? (t.logical ?? '') : '');
     if (typeof t !== 'string') out.push(`${path} declares a non-core tool object (memory/MCP can write)`);
+    else if (allowBash && name.toLowerCase() === 'bash') continue;
     else if (!READ_ONLY_TOOLS.has(name.toLowerCase())) out.push(`${path} declares "${name}"`);
   }
 }
@@ -91,26 +119,33 @@ function nativeToolingViolations(nt, host, out) {
 }
 
 /** Returns the list of findings; empty means read-only. `malformed:` findings mean the input shape could not be evaluated. */
-export function checkReadOnly(manifest) {
+export function checkReadOnly(manifest, opts = {}) {
   const v = [];
   if (!isObj(manifest)) return [`malformed: manifest must be an object (got ${describe(manifest)})`];
   const agent = manifest.agent === undefined ? {} : objectAt(manifest.agent, 'agent', v);
 
-  toolListViolations(arrayAt(agent.tools, 'agent.tools', v), 'agent.tools', v);
+  const allowBash = Boolean(opts.bashAllow);
+  toolListViolations(arrayAt(agent.tools, 'agent.tools', v), 'agent.tools', v, allowBash);
 
   const permission = objectAt(agent.permission, 'agent.permission', v);
-  for (const k of MUST_DENY) if (permission[k] !== 'deny') v.push(`permission.${k} is not "deny"`);
+  for (const k of MUST_DENY) {
+    if (k === 'bash') bashViolation(permission[k], 'permission', opts, v);
+    else if (permission[k] !== 'deny') v.push(`permission.${k} is not "deny"`);
+  }
   permissionMapViolations(permission, 'permission', v);
 
   for (const [host, r] of Object.entries(objectAt(manifest.render, 'render', v))) {
     if (r === undefined) continue;
     if (!isObj(r)) { v.push(`malformed: render.${host} must be an object (got ${describe(r)})`); continue; }
-    toolListViolations(arrayAt(r.tools, `render.${host}.tools`, v), `render.${host}.tools`, v);
+    toolListViolations(arrayAt(r.tools, `render.${host}.tools`, v), `render.${host}.tools`, v, allowBash && (host === 'claude' || host === 'opencode'));
     // A render override REPLACES the IR permission map (agent-renderers.ts: `override?.permission ?? ir.permission`).
     if (r.permission !== undefined) {
       const m = objectAt(r.permission, `render.${host}.permission`, v);
       if (isObj(r.permission)) {
-        for (const k of MUST_DENY) if (m[k] !== 'deny') v.push(`render.${host}.permission replaces the IR map and omits "${k}: deny"`);
+        for (const k of MUST_DENY) {
+          if (k === 'bash' && allowBash && (host === 'claude' || host === 'opencode') && m[k] !== 'deny') bashViolation(m[k], `render.${host}.permission`, opts, v);
+          else if (m[k] !== 'deny') v.push(`render.${host}.permission replaces the IR map and omits "${k}: deny"`);
+        }
         permissionMapViolations(m, `render.${host}.permission`, v);
       }
     }
@@ -136,11 +171,13 @@ export function checkReadOnly(manifest) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const path = process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), 'extension.json');
+  const args = process.argv.slice(2);
+  const strict = args.includes('--strict');
+  const path = args.find((a) => !a.startsWith('--')) ?? join(dirname(fileURLToPath(import.meta.url)), 'extension.json');
   let m;
   try { m = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { console.error(`check-readonly: cannot read ${path}: ${e.message}`); process.exit(2); }
   let v;
-  try { v = checkReadOnly(m); } catch (e) { console.error(`check-readonly: internal error evaluating ${path}: ${e.message}`); process.exit(4); }
+  try { v = checkReadOnly(m, strict ? {} : REVIEW_PROFILE); } catch (e) { console.error(`check-readonly: internal error evaluating ${path}: ${e.message}`); process.exit(4); }
   if (v.some((f) => f.startsWith('malformed:'))) { console.error(`check-readonly: MALFORMED\n- ${v.join('\n- ')}`); process.exit(3); }
   if (v.length) { console.error(`check-readonly: FAIL\n- ${v.join('\n- ')}`); process.exit(1); }
   console.log(`check-readonly: OK (${path})`);

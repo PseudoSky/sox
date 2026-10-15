@@ -6,7 +6,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { checkReadOnly } from './check-readonly.mjs';
+import { checkReadOnly as checkReadOnlyStrict, REVIEW_PROFILE, GIT_DIFF_BASH, GIT_DIFF_ALLOW } from './check-readonly.mjs';
+
+/** The review agent's profile: bash only as the canonical read-only git-diff map. Other agents use the strict (no-profile) form. */
+const checkReadOnly = (m) => checkReadOnlyStrict(m, REVIEW_PROFILE);
 import { createHash } from 'node:crypto';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -31,15 +34,22 @@ test('2f81569f T11.AC1 shipped manifest is read-only', () => {
 for (const [label, mutate, expected] of [
   ['edit tool added', (m) => m.agent.tools.push('edit'), /agent\.tools declares "edit"/],
   ['write tool added', (m) => m.agent.tools.push('write'), /agent\.tools declares "write"/],
-  ['bash tool added', (m) => m.agent.tools.push('bash'), /agent\.tools declares "bash"/],
+  ['shell tool added', (m) => m.agent.tools.push('shell'), /agent\.tools declares "shell"/],
   ['apply_patch added', (m) => m.agent.tools.push('apply_patch'), /agent\.tools declares "apply_patch"/],
   ['claude Write added', (m) => m.render.claude.tools.push('Write'), /render\.claude\.tools declares "Write"/],
   ['claude NotebookEdit added', (m) => m.render.claude.tools.push('NotebookEdit'), /render\.claude\.tools declares "NotebookEdit"/],
   ['edit permission loosened', (m) => { m.agent.permission.edit = 'allow'; }, /^permission\.edit is not "deny"/],
-  ['bash permission loosened', (m) => { m.agent.permission.bash = { '*': 'allow' }; }, /^permission\.bash is not "deny"/],
+  ['bash permission loosened', (m) => { m.agent.permission.bash = { '*': 'allow' }; }, /^permission\.bash is neither "deny" nor exactly the allowlisted/],
   ['memory server tool added', (m) => m.agent.tools.push({ logical: 'memory', server: 'memory-server' }), /agent\.tools declares a non-core tool object/],
   ...['task', 'skill', 'webfetch', 'websearch', 'question', 'todowrite'].map((k) => [`${k} permission loosened`, (m) => { m.agent.permission[k] = 'allow'; }, new RegExp(`^permission\\.${k} is not "deny"`)]),
   ...['task', 'skill', 'webfetch', 'websearch', 'question', 'todowrite'].map((k) => [`${k} permission removed`, (m) => { delete m.agent.permission[k]; }, new RegExp(`^permission\\.${k} is not "deny"`)]),
+  ['git-diff map with a guard removed', (m) => { delete m.agent.permission.bash['*--o*']; }, /permission\.bash is neither "deny" nor exactly/],
+  ['git-diff map with a second allow', (m) => { m.agent.permission.bash['git -C * status'] = 'allow'; }, /permission\.bash is neither "deny" nor exactly/],
+  ['git-diff map with the allow widened', (m) => { const b = m.agent.permission.bash; delete b[GIT_DIFF_ALLOW]; b['git *'] = 'allow'; }, /permission\.bash is neither "deny" nor exactly/],
+  ['git-diff map with --ext-diff guard flipped to allow', (m) => { m.agent.permission.bash['*--e*'] = 'allow'; }, /permission\.bash is neither "deny" nor exactly/],
+  ['render.opencode.permission replaces the map with bash allowed wholesale', (m) => { m.render.opencode.permission = { ...m.agent.permission, bash: 'allow' }; }, /render\.opencode\.permission\.bash is neither/],
+  ['render.agent-mcp.permissions gets the git-diff map', (m) => { m.render['agent-mcp'].permissions = { bash: GIT_DIFF_BASH }; }, /render\.agent-mcp\.permissions\.bash is not "deny"/],
+  ['render.agent-mcp.tools declares Bash', (m) => { m.render['agent-mcp'].tools = ['Bash']; }, /render\.agent-mcp\.tools declares "Bash"/],
   ['render.opencode.permission replaces the map with edit allowed', (m) => { m.render.opencode.permission = { edit: 'allow', write: 'deny', bash: 'deny' }; }, /render\.opencode\.permission replaces the IR map and omits "edit: deny"/],
   ['render.opencode.permission replaces the map and omits denies', (m) => { m.render.opencode.permission = { read: 'allow' }; }, /render\.opencode\.permission replaces the IR map and omits "write: deny"/],
   ['render.agent-mcp.permissions loosens edit', (m) => { m.render['agent-mcp'].permissions = { edit: 'allow' }; }, /render\.agent-mcp\.permissions\.edit is not "deny"/],
@@ -60,8 +70,47 @@ test('2f81569f T11.AC1 a render override that keeps every deny is accepted', () 
   assert.deepEqual(checkReadOnly(m), []);
 });
 
-test('2f81569f T11.AC1 prose contract states the agent cannot edit or run', () => {
-  assert.match(prose, /no edit, write, or shell tools/);
+test('2f81569f T11.AC1 prose contract states the agent cannot edit or write and runs only the git-diff form', () => {
+  assert.match(prose, /no edit or write tools and run nothing but the one read-only git-diff form/);
+});
+
+// ---- 0.3.0 AC2: bash is opt-in per profile; every other read-only agent still must deny it -------------
+test('0.3.0 AC2 strict mode (the default for any other read-only agent) rejects the shipped bash map and Bash tool', () => {
+  const f = checkReadOnlyStrict(manifest);
+  assert.ok(f.some((x) => x === 'permission.bash is not "deny"'), JSON.stringify(f));
+  assert.ok(f.some((x) => /agent\.tools declares "bash"/.test(x)));
+  const strictDeny = structuredClone(manifest);
+  strictDeny.agent.permission.bash = 'deny';
+  strictDeny.agent.tools = ['read', 'glob', 'grep'];
+  strictDeny.render.claude.tools = ['Read', 'Grep', 'Glob'];
+  assert.deepEqual(checkReadOnlyStrict(strictDeny), []);
+});
+
+test('0.3.0 AC2 the shipped bash map is exactly the canonical git-diff map, with the one allow and every guard after the deny-all', () => {
+  assert.deepEqual(manifest.agent.permission.bash, GIT_DIFF_BASH);
+  const keys = Object.keys(manifest.agent.permission.bash);
+  assert.equal(keys[0], '*');
+  assert.equal(manifest.agent.permission.bash['*'], 'deny');
+  assert.deepEqual(Object.entries(GIT_DIFF_BASH).filter(([, a]) => a === 'allow').map(([k]) => k), [GIT_DIFF_ALLOW]);
+  for (const g of ['*>*', '*|*', '*;*', '*$*', '*--o*', '*--e*', '*--t*', '*--g*', '* -c*']) assert.equal(GIT_DIFF_BASH[g], 'deny', g);
+  assert.deepEqual(manifest.agent.tools, ['read', 'glob', 'grep', 'bash']);
+  assert.deepEqual(manifest.render.claude.tools, ['Read', 'Grep', 'Glob', 'Bash']);
+  assert.equal(manifest.render.claude.version, `v${manifest.version}`);
+  assert.equal(manifest.version, '0.3.0');
+});
+
+test('0.3.0 AC2 no allowed command is write-capable: the allow pattern fixes --no-ext-diff --no-textconv, and guards deny output/ext/textconv/config prefixes', () => {
+  assert.match(GIT_DIFF_ALLOW, /^git -C \* --no-pager diff --no-ext-diff --no-textconv \*$/);
+  // opencode wildcard semantics modeled: `*` = any run, last matching rule wins, and BOTH sides have `\\` rewritten to `/` (a `*\\*` guard denied every path: measured live, see DESIGN.md)
+  const norm = (x) => x.replaceAll('\\', '/');
+  const rx = (pat) => new RegExp('^' + norm(pat).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+  const decide = (cmd) => Object.entries(GIT_DIFF_BASH).filter(([p]) => rx(p).test(norm(cmd))).map(([, a]) => a).pop() ?? 'deny';
+  const ok = ['git -C /r --no-pager diff --no-ext-diff --no-textconv main...HEAD', 'git -C /r --no-pager diff --no-ext-diff --no-textconv --name-only a...b', 'git -C /r --no-pager diff --no-ext-diff --no-textconv a...b -- src/x.js'];
+  for (const c of ok) assert.equal(decide(c), 'allow', c);
+  const bad = ['git -C /r --no-pager diff --no-ext-diff --no-textconv --output=x a...b', 'git -C /r --no-pager diff --no-ext-diff --no-textconv --out=x a...b', 'git -C /r --no-pager diff --no-ext-diff --no-textconv --ext-diff a...b', 'git -C /r --no-pager diff --no-ext-diff --no-textconv --textconv a...b',
+    'git -C /r --no-pager diff --no-ext-diff --no-textconv a...b > x', 'git -C /r --no-pager diff --no-ext-diff --no-textconv a...b | tee x', 'git -C /r -c core.pager=x --no-pager diff --no-ext-diff --no-textconv a...b', 'git -C /r --git-dir=/e --no-pager diff --no-ext-diff --no-textconv a...b',
+    'git -C /r --no-pager diff --no-ext-diff --no-textconv a...b; rm x', 'git -C /r --no-pager diff --no-ext-diff --no-textconv $(id)...b', 'git -C /r --no-pager status', 'ls', 'cat /etc/passwd', 'git -C /r --no-pager diff a...b'];
+  for (const c of bad) assert.equal(decide(c), 'deny', c);
 });
 
 // ---- cac771f8 AC2 ----------------------------------------------------------------------
@@ -80,7 +129,7 @@ for (const [label, mutate, expected] of [
   ['nativeWebTools:true', (m) => { m.render['agent-mcp'].nativeWebTools = true; }, /nativeWebTools enables web access/],
   ['render.agent-mcp.permission (singular) loosens edit', (m) => { m.render['agent-mcp'].permission = { ...m.agent.permission, edit: 'allow' }; }, /render\.agent-mcp\.permission replaces the IR map and omits "edit: deny"/],
   ['render.agent-mcp.permission (singular) omits every deny', (m) => { m.render['agent-mcp'].permission = { read: 'allow' }; }, /render\.agent-mcp\.permission replaces the IR map and omits "bash: deny"/],
-  ['render.claude.permission (singular) loosens bash', (m) => { m.render.claude.permission = { ...m.agent.permission, bash: { '*': 'allow' } }; }, /render\.claude\.permission replaces the IR map and omits "bash: deny"/],
+  ['render.claude.permission (singular) loosens bash', (m) => { m.render.claude.permission = { ...m.agent.permission, bash: { '*': 'allow' } }; }, /render\.claude\.permission\.bash is neither "deny" nor exactly the allowlisted/],
   ['render.agent-mcp.permission grants memory_*', (m) => { m.render['agent-mcp'].permission = { ...m.agent.permission, 'memory_*': 'allow' }; }, /render\.agent-mcp\.permission\.memory_\* is not "deny"/],
   ['render.opencode.permissions grants mcp__x__*', (m) => { m.render.opencode.permissions = { 'mcp__x__*': 'allow' }; }, /render\.opencode\.permissions\.mcp__x__\* is not "deny"/],
 ]) {
@@ -100,7 +149,7 @@ test('cac771f8 AC2 read-only render overrides are accepted (no over-rejection)',
     fs: { readOnly: true, permissions: { 'fs.write_file': 'deny', 'fs.edit_file': 'deny' } },
   };
   m.render['agent-mcp'].nativeWebTools = false;
-  m.render['agent-mcp'].permission = { ...m.agent.permission };
+  m.render['agent-mcp'].permission = { ...m.agent.permission, bash: 'deny' };
   assert.deepEqual(checkReadOnly(m), []);
   m.render['agent-mcp'].nativeTooling = { fs: false };
   assert.deepEqual(checkReadOnly(m), []);
@@ -138,7 +187,7 @@ for (const [label, mutate, expected] of [
   ['agent.tools declares agent-catalog (dispatch capability)', (m) => { m.agent.tools.push('agent-catalog'); }, /agent\.tools declares "agent-catalog"/],
   ['agent.tools declares multiedit', (m) => { m.agent.tools.push('multiedit'); }, /agent\.tools declares "multiedit"/],
   ['render.claude.tools declares Task', (m) => { m.render.claude.tools.push('Task'); }, /render\.claude\.tools declares "Task"/],
-  ['render.claude.tools declares Bash', (m) => { m.render.claude.tools.push('Bash'); }, /render\.claude\.tools declares "Bash"/],
+  ['render.claude.tools declares WebFetch', (m) => { m.render.claude.tools.push('WebFetch'); }, /render\.claude\.tools declares "WebFetch"/],
   ['permission.task as an allow-list map (spawns a writer)', (m) => { m.agent.permission.task = { '*': 'deny', typescript: 'allow' }; }, /^permission\.task delegates to typescript/],
   ['render.opencode.permission.task as an allow-list map', (m) => { m.render.opencode.permission = { ...m.agent.permission, task: { debug: 'allow' } }; }, /^render\.opencode\.permission\.task delegates to debug/],
   ['render.agent-mcp.permissions.allowedAgents', (m) => { m.render['agent-mcp'].permissions = { allowedAgents: ['typescript'] }; }, /permissions\.allowedAgents delegates to other agents/],
@@ -266,7 +315,7 @@ test('2f81569f T11.AC2 blind and blind-deep modes make NO tool calls; static mod
   assert.ok(prose.indexOf('Static mode uses only Read') <prose.indexOf('## Blind modes'));
 });
 
-test('review 0.2.0 blind accepts a diff by absolute file path: Read only that file, never a path the diff names; git range refused', () => {
+test('review 0.2.0 blind accepts a diff by absolute file path: Read only that file, never a path the diff names', () => {
   const t = rd('templates/blind-ref.tmpl');
   assert.deepEqual(placeholders(t), ['diffPath']);
   assert.equal(residue(t), 'Review');
@@ -274,11 +323,9 @@ test('review 0.2.0 blind accepts a diff by absolute file path: Read only that fi
   assert.match(blind, /Sole exception, blind only: .*one absolute path to a diff file, Read that file/);
   assert.match(blind, /open nothing else; never Grep or Glob/);
   assert.match(blind, /Never open a path the diff names/);
-  assert.match(blind, /REFUSED: blind brief carries a git range/);
   assert.match(blind, /REFUSED: diff file unreadable/);
   assert.match(prose, /one absolute path to a diff file, nothing else \| \*\*blind\*\*/);
   assert.doesNotMatch(prose.slice(prose.indexOf('| First line exactly `Review`, then one diff, then'), prose.indexOf('| Anything else')), /path/); // blind-deep stays inline-only
-  assert.deepEqual(manifest.agent.tools, ['read', 'glob', 'grep']); // no shell was added for the reference form
 });
 
 test('2f81569f T11.AC2 blind-deep refuses UNLABELED implementer rationale in specification or tests', () => {
@@ -355,4 +402,22 @@ test('2f81569f T11 review.md: static-tools sentence is well formed and the +star
   assert.match(prose, /Static mode uses only Read, Grep, and Glob; Read every cited file before judging it\./);
   assert.match(prose, /`\+start` is the number of the hunk's first body line, whether that line is context or added/);
   assert.match(prose, /removed \(`-`\) lines are never counted/);
+});
+
+test('0.3.0 blind accepts one git range plus one absolute repo path: only the allowlisted git-diff forms, exact 3-line shape, REFUSED beyond it', () => {
+  const t = rd('templates/blind-range.tmpl');
+  assert.deepEqual(placeholders(t).sort(), ['range', 'repoPath']);
+  assert.equal(residue(t), 'Review');
+  assert.match(prose, /line 2 one git range `<base>\.\.\.<head>`, line 3 one absolute repo path, nothing else \| \*\*blind\*\* \(git range\)/);
+  const blind = prose.slice(prose.indexOf('## Blind modes'), prose.indexOf('## Output'));
+  assert.match(blind, /Second exception, blind only: .*`git -C <path> --no-pager diff --no-ext-diff --no-textconv <range>`/);
+  assert.match(blind, /`--name-only`/);
+  assert.match(blind, /-- <file>/);
+  assert.match(blind, /has no fourth line/);
+  assert.match(blind, /first Bash call is the range form with nothing added from the brief; a fourth line .* gets `REFUSED: blind brief carries <what>` and no Bash call at all/);
+  assert.match(blind, /redirect, pipe/);
+  assert.match(blind, /Never open a path the diff names/);
+  assert.match(blind, /REFUSED: diff file unreadable/); // v0.2.0 file-path form kept
+  assert.doesNotMatch(prose, /carries a git range/); // the 0.2.0 refusal of a range is gone
+  assert.doesNotMatch(prose.slice(prose.indexOf('| First line exactly `Review`, then one diff, then'), prose.indexOf('| Anything else')), /range|path/); // blind-deep stays inline-only
 });

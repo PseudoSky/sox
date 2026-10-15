@@ -1,10 +1,10 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "review",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "agent",
   "title": "review",
-  "description": "Use when a change needs an independent read-only review: static mode judges tier and fidelity-gap validity, teeth, and structure coupling (G9, R3, R4, G12) and correctness, returning findings by severity with file:line evidence; blind mode accepts only the word Review and a diff (inline or by file path) (at Deep rigor also the specification and tests, never the implementer's reasoning). Has no edit, write, or shell tools. Triggers: \"review this diff\", \"static review\", \"blind review\", \"is this test valid\".",
+  "description": "Use when a change needs an independent read-only review: static mode judges tier and fidelity-gap validity, teeth, and structure coupling (G9, R3, R4, G12) and correctness, returning findings by severity with file:line evidence; blind mode accepts only the word Review and a diff (inline, by file path, or as one git range plus a repo path) (at Deep rigor also the specification and tests, never the implementer's reasoning). Has no edit or write tools; Bash only for read-only git diff. Triggers: \"review this diff\", \"static review\", \"blind review\", \"is this test valid\".",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -36,14 +36,15 @@
   ],
   "agent": {
     "name": "review",
-    "description": "Read-only reviewer with static and blind modes. Returns findings by severity with file:line evidence; blind mode accepts only the word Review and a diff (inline or by file path). Cannot edit, write, or run commands.",
+    "description": "Read-only reviewer with static and blind modes. Returns findings by severity with file:line evidence; blind mode accepts only the word Review and a diff (inline, by file path, or one git range plus a repo path). Cannot edit or write; Bash only for read-only git diff.",
     "model": "sonnet",
     "mode": "all",
     "temperature": 0.1,
     "tools": [
       "read",
       "glob",
-      "grep"
+      "grep",
+      "bash"
     ],
     "permission": {
       "read": "allow",
@@ -51,7 +52,29 @@
       "grep": "allow",
       "edit": "deny",
       "write": "deny",
-      "bash": "deny",
+      "bash": {
+        "*": "deny",
+        "git -C * --no-pager diff --no-ext-diff --no-textconv *": "allow",
+        "*>*": "deny",
+        "*<*": "deny",
+        "*|*": "deny",
+        "*;*": "deny",
+        "*&*": "deny",
+        "*$*": "deny",
+        "*`*": "deny",
+        "*\"*": "deny",
+        "*'*": "deny",
+        "*--o*": "deny",
+        "*--e*": "deny",
+        "*--t*": "deny",
+        "*--g*": "deny",
+        "*--w*": "deny",
+        "*--c*": "deny",
+        "*--p*": "deny",
+        "*--b*": "deny",
+        "*--names*": "deny",
+        "* -c*": "deny"
+      },
       "webfetch": "deny",
       "websearch": "deny",
       "task": "deny",
@@ -64,11 +87,12 @@
     "codex": {},
     "claude": {
       "model": "sonnet",
-      "version": "v0.2.0",
+      "version": "v0.3.0",
       "tools": [
         "Read",
         "Grep",
-        "Glob"
+        "Glob",
+        "Bash"
       ]
     },
     "opencode": {

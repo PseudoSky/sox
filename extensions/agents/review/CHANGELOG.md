@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+Blind review by git range, with Bash restricted to read-only `git diff`.
+
+- Blind mode additionally accepts exactly three lines: `Review`, one `<base>...<head>` range, one absolute repo path. The agent obtains the diff itself with only `git -C <path> --no-pager diff --no-ext-diff --no-textconv <range>` (paging: the same with `--name-only`, then once per file with `-- <file>`). Any fourth line, other command, option, redirect, pipe or metacharacter is refused (`REFUSED: blind brief carries <what>`); the file-path form, inline form, blind-deep and static are unchanged. Template `templates/blind-range.tmpl`. This answers the open sign-off in DESIGN.md (user approval of Bash for the range form).
+- Manifest: `bash` added to `agent.tools` and `render.claude.tools`; `agent.permission.bash` is now the opencode pattern map (deny-all, one allow, 20 guard denials; last match wins). agent-mcp fails closed on the pattern map (its shell stays disabled); codex renders no permission block.
+- `check-readonly.mjs`: new `REVIEW_PROFILE` (CLI default) passes only when `bash` is exactly the canonical map (`GIT_DIFF_BASH`), on claude/opencode only; the API default and `--strict` still require `bash: deny`, as for every other read-only agent. Guarantee: no file-write tools; Bash only for the allowlisted read-only git diff forms.
+- review.md: +3 lines / +951 bytes (4902 to 5853); new capability, two sentences of prose. Decision record, A/B and residual risk: DESIGN.md.
+- Fixed during A/B: a `*\\*` backslash guard denied every command containing `/` (opencode rewrites `\\` to `/` on both sides of a match); removed and guarded by a model test.
+
 ## 0.2.0
 
 Blind review of a large diff by reference.
