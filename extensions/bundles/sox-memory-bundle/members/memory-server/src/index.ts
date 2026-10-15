@@ -313,17 +313,29 @@ function recordRecallDegradations(degradations: readonly string[] | undefined): 
 // reorganised in weeks looked healthy. This per-store alarm is raised by a
 // degraded REQUESTED full pass and cleared only by a later requested full pass
 // that ran un-degraded. Passes that never reached the cluster step for another
-// reason (child failed, mixed-model guard) neither raise nor clear it: they
-// carry no information about whether the corpus fits the cap.
+// reason (mixed-model guard) neither raise nor clear it: they carry no
+// information about whether the corpus fits the cap. A requested full pass
+// whose isolated child FAILED (timeout, crash) raises a `child_failed` alarm:
+// the corpus never got reorganised and the operator must be told, and the
+// bounded retry below owns whether it is re-forked.
 //
 // Module-local for the same reason as recallDegradations above.
 export type FullPassDegradedAlarm = {
-  reason: 'nodeCap' | 'budget';
-  episodeCount: number;
+  reason: 'nodeCap' | 'budget' | 'child_failed';
+  /** Episodes the cluster step saw; null when it never ran (`child_failed`). */
+  episodeCount: number | null;
   /** Present when reason === 'nodeCap'. */
   nodeCap: number | null;
   /** Present when reason === 'budget'. */
   budgetMs: number | null;
+  /** `child_failed` only: true when the child was killed at its wall-clock timeout. */
+  timedOut: boolean | null;
+  /** `child_failed` only: consecutive failed attempts of the current request. */
+  attempts: number | null;
+  /** `child_failed` only: the child's error (`timeout`, `exit:1`, `signal:SIGKILL`, ...). */
+  error: string | null;
+  /** `child_failed` only: ISO time of the next retry; null once retries are exhausted. */
+  nextRetryAt: string | null;
   /** ISO time the alarm was first raised (kept across repeated degraded passes). */
   since: string;
 };
@@ -342,17 +354,40 @@ export function describeClusterDegradation(d: ClusterDegradation): string {
 }
 
 /**
- * Fold one finished tick into the alarm. `requestedFull` is whether a full pass
- * was REQUESTED (an incremental tick says nothing about full-pass health).
+ * Fold one finished tick into the alarm. `requestedFull` is whether a full
+ * pass was REQUESTED (an incremental tick says nothing about full-pass health).
  */
 export function recordFullPassOutcome(
   dbPath: string,
   requestedFull: boolean,
-  outcome: { ok: boolean; degraded?: ClusterDegradation; skipped?: boolean },
+  outcome:
+    | { ok: true; degraded?: ClusterDegradation; skipped?: boolean }
+    | {
+        ok: false;
+        /** Set for a requested full pass whose child failed. */
+        childFailure?: { error: string; timedOut: boolean; attempts: number; nextRetryAt: string | null };
+      },
   nowIso: string = new Date().toISOString(),
 ): void {
-  if (!requestedFull || !outcome.ok) return;
+  if (!requestedFull) return;
   const key = fullPassAlarmKey(dbPath);
+  const since = fullPassDegradedByDb.get(key)?.since ?? nowIso;
+  if (!outcome.ok) {
+    const f = outcome.childFailure;
+    if (!f) return;
+    fullPassDegradedByDb.set(key, {
+      reason: 'child_failed',
+      episodeCount: null,
+      nodeCap: null,
+      budgetMs: null,
+      timedOut: f.timedOut,
+      attempts: f.attempts,
+      error: f.error,
+      nextRetryAt: f.nextRetryAt,
+      since,
+    });
+    return;
+  }
   const d = outcome.degraded;
   if (d) {
     fullPassDegradedByDb.set(key, {
@@ -360,11 +395,75 @@ export function recordFullPassOutcome(
       episodeCount: d.episodeCount,
       nodeCap: d.reason === 'nodeCap' ? d.nodeCap : null,
       budgetMs: d.reason === 'budget' ? d.budgetMs : null,
-      since: fullPassDegradedByDb.get(key)?.since ?? nowIso,
+      timedOut: null,
+      attempts: null,
+      error: null,
+      nextRetryAt: null,
+      since,
     });
     return;
   }
   if (!outcome.skipped) fullPassDegradedByDb.delete(key);
+}
+
+// ── Bounded retry of a failed requested full pass (0c9c76b4 AC12/AC13) ───────
+//
+// Mechanism: a requested full pass is an open `organizer_queue` row
+// (`payload.full = 1`) that stays open until a pass COMPLETES it, which only
+// happens when the isolated child returns ok. A child killed at its 600 s
+// wall-clock timeout therefore left the row open and the next 5-minute tick
+// re-forked the same full pass, burning up to 600 s of CPU every tick.
+//
+// Per-store parent-side state (module-local, like the alarm) records the failed
+// attempts and the earliest next attempt. While inside the backoff window the
+// tick runs as an INCREMENTAL pass whose snapshot window stops just below the
+// full-pass row, so the row (and its job) stay open and untouched, and older
+// rows still drain. After FULL_PASS_MAX_ATTEMPTS failures the request is given
+// up: its jobs settle `failed`, its trigger row is completed (so it can never
+// re-fork), and the `child_failed` alarm stays raised. A NEW explicit recluster
+// request (a full row with a higher seq than the failed one) resets the budget.
+// Restart loses the state: the first tick after a restart is simply attempt N+1
+// with no wait, bounded by the same attempt count from then on.
+export const FULL_PASS_RETRY_BASE_MS = 15 * 60_000;
+export const FULL_PASS_RETRY_CAP_MS = 60 * 60_000;
+export const FULL_PASS_MAX_ATTEMPTS = 4;
+
+/** Delay after the `attempts`-th consecutive failure: 15 min, 30 min, 60 min (cap). */
+export function fullPassRetryDelayMs(attempts: number): number {
+  return Math.min(FULL_PASS_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), FULL_PASS_RETRY_CAP_MS);
+}
+
+type FullPassRetryState = { attempts: number; nextAttemptAtMs: number; fullSeq: number };
+const fullPassRetryByDb = new Map<string, FullPassRetryState>();
+
+/**
+ * Decide whether a pending requested full pass may fork now. `deferred` means
+ * the caller must run incremental with `maxSeq` (just below the full row).
+ */
+async function fullPassRetryGate(
+  adapter: StoreAdapter,
+  dbPath: string,
+  maxSeq: number,
+  nowMs: number,
+): Promise<{ deferred: false; fullSeq: number } | { deferred: true; fullSeq: number; windowMaxSeq: number }> {
+  const row = await adapter.executeGet<{ lo: number | null; hi: number | null }>(
+    `SELECT MIN(seq) AS lo, MAX(seq) AS hi FROM organizer_queue
+     WHERE done_at IS NULL AND op = 'enrich'
+       AND json_extract(payload, '$.full') = 1 AND seq <= ?`,
+    [maxSeq],
+  );
+  const lo = row?.lo ?? 0;
+  const hi = row?.hi ?? 0;
+  const key = fullPassAlarmKey(dbPath);
+  const st = fullPassRetryByDb.get(key);
+  if (st && hi > st.fullSeq) {
+    fullPassRetryByDb.delete(key); // a new explicit request: fresh budget
+    return { deferred: false, fullSeq: hi };
+  }
+  if (st && nowMs < st.nextAttemptAtMs) {
+    return { deferred: true, fullSeq: hi, windowMaxSeq: Math.max(0, lo - 1) };
+  }
+  return { deferred: false, fullSeq: hi };
 }
 
 /** `memory_ping.cluster.full_pass_degraded` — null when no alarm is raised. */
@@ -376,6 +475,7 @@ export function snapshotFullPassDegraded(dbPath: string): FullPassDegradedAlarm 
 /** Test-only reset. */
 export function _resetFullPassDegradedForTest(): void {
   fullPassDegradedByDb.clear();
+  fullPassRetryByDb.clear();
 }
 
 /** Snapshot for `memory_ping`. Returns a copy — callers must never mutate. */
@@ -3568,6 +3668,14 @@ const enrichIsolationTimeoutMs = () => envMs('SOX_ENRICH_ISOLATION_TIMEOUT_MS', 
 const DEFAULT_ENRICH_FULL_TIMEOUT_MS = 600_000;
 const enrichFullTimeoutMs = () => envMs('SOX_ENRICH_FULL_TIMEOUT_MS', DEFAULT_ENRICH_FULL_TIMEOUT_MS);
 
+/**
+ * 0c9c76b4 AC14: the cluster step's wall-clock budget, derived from the ACTUAL
+ * child timeout (90%) so it can abandon cleanly before the SIGTERM instead of
+ * trusting a constant that drifts from the env-tunable timeout. At the default
+ * 600 s this is 540 s, memory-core's `DEFAULT_FULL_PASS_BUDGET_MS`.
+ */
+export const fullPassClusterBudgetMs = (): number => Math.floor(enrichFullTimeoutMs() * 0.9);
+
 // ── Queue-drain health SLO (BL-172 follow-on) ─────────────────────────────────
 //
 // "HEALTHY" must require workload progress, not just RPC liveness: memory_ping
@@ -3727,7 +3835,7 @@ export async function maxOpenEnrichTriggerSeq(adapter: StoreAdapter): Promise<nu
 export async function runEnrichPassOnDb(
   adapter: StoreAdapter,
   dbPath: string,
-  opts: { acquireHealSlot?: boolean } = {},
+  opts: { acquireHealSlot?: boolean; /** Test seam for the full-pass retry clock. */ nowMs?: () => number } = {},
 ): Promise<{
   queue_completed: number;
   full_pass: boolean;
@@ -3803,8 +3911,23 @@ export async function runEnrichPassOnDb(
       })()
     : await healMissingVectors(adapter, wq, { limit: drainBatchLimit() });
 
-  const maxSeq = await maxOpenEnrichTriggerSeq(adapter);
-  const fullPass = await hasPendingFullEnrich(adapter, maxSeq);
+  let maxSeq = await maxOpenEnrichTriggerSeq(adapter);
+  let fullPass = await hasPendingFullEnrich(adapter, maxSeq);
+  // 0c9c76b4 AC12/AC13: a requested full pass that already failed is not
+  // re-forked until its backoff window passes. Inside the window this tick runs
+  // incremental over a snapshot that stops below the full row (see
+  // fullPassRetryGate), leaving the row and its job open.
+  const nowMs = (opts.nowMs ?? Date.now)();
+  let fullSeq = 0;
+  if (fullPass) {
+    const gate = await fullPassRetryGate(adapter, dbPath, maxSeq, nowMs);
+    fullSeq = gate.fullSeq;
+    if (gate.deferred) {
+      fullPass = false;
+      maxSeq = gate.windowMaxSeq;
+      log.info('enrich.full_pass.backoff_deferred', { db_path: dbPath, full_seq: gate.fullSeq });
+    }
+  }
 
   // BL-348: isolated child process — see runEnrichIsolated's own doc for why
   // this never throws/rejects, even when the child crashes or times out.
@@ -3816,7 +3939,9 @@ export async function runEnrichPassOnDb(
   const maxNodeRowid = (await adapter.executeGet<{ m: number }>('SELECT COALESCE(MAX(rowid), 0) AS m FROM node'))?.m ?? 0;
   const isolated = await runEnrichIsolatedGated(
     dbPath,
-    { incrementalCluster: !fullPass },
+    fullPass
+      ? { incrementalCluster: false, clusterBudgetMs: fullPassClusterBudgetMs() }
+      : { incrementalCluster: true },
     { hasOpenTriggers: fullPass || maxSeq > 0, fingerprint: `${maxNodeRowid}|${backlogBefore}` },
     fullPass ? enrichFullTimeoutMs() : enrichIsolationTimeoutMs(),
   );
@@ -3829,7 +3954,40 @@ export async function runEnrichPassOnDb(
     recordClusterPassAdmission(dbPath, isolated.result.cluster_admission);
   }
 
-  const queueCompleted = isolated.ok ? await completeEnrichTriggerRows(adapter, maxSeq) : 0;
+  // 0c9c76b4 AC12/AC13: fold a requested full pass's outcome into the bounded
+  // retry state. A failed child schedules the next attempt (exponential from
+  // 15 min, capped) and, after FULL_PASS_MAX_ATTEMPTS, gives the request up:
+  // its trigger row is completed below so it can never re-fork on its own.
+  let childFailure: { error: string; timedOut: boolean; attempts: number; nextRetryAt: string | null } | null = null;
+  let giveUp = false;
+  if (fullPass) {
+    const retryKey = fullPassAlarmKey(dbPath);
+    if (isolated.ok) {
+      fullPassRetryByDb.delete(retryKey);
+    } else {
+      const attempts = (fullPassRetryByDb.get(retryKey)?.attempts ?? 0) + 1;
+      giveUp = attempts >= FULL_PASS_MAX_ATTEMPTS;
+      const nextAttemptAtMs = nowMs + fullPassRetryDelayMs(attempts);
+      if (giveUp) fullPassRetryByDb.delete(retryKey);
+      else fullPassRetryByDb.set(retryKey, { attempts, nextAttemptAtMs, fullSeq });
+      childFailure = {
+        error: isolated.error ?? 'unknown',
+        timedOut: isolated.error === 'timeout',
+        attempts,
+        nextRetryAt: giveUp ? null : new Date(nextAttemptAtMs).toISOString(),
+      };
+      log.warn('enrich.full_pass.child_failed', {
+        db_path: dbPath,
+        error: childFailure.error,
+        timed_out: childFailure.timedOut,
+        attempts,
+        give_up: giveUp,
+        next_retry_at: childFailure.nextRetryAt,
+      });
+    }
+  }
+
+  const queueCompleted = isolated.ok || giveUp ? await completeEnrichTriggerRows(adapter, maxSeq) : 0;
 
   // SR-9: settle any observable recluster jobs this pass covered. The snapshot
   // discipline mirrors completeEnrichTriggerRows — only jobs whose trigger row
@@ -3851,19 +4009,35 @@ export async function runEnrichPassOnDb(
     // the structured reason/episodeCount/cap (never `completed`) and drives the
     // memory_ping alarm.
     const degraded = isolated.ok ? isolated.result.cluster_degraded : undefined;
-    recordFullPassOutcome(dbPath, fullPass, {
-      ok: isolated.ok,
-      ...(degraded ? { degraded } : {}),
-      skipped: isolated.ok && isolated.result.cluster_pass_skipped === true,
-    });
+    recordFullPassOutcome(
+      dbPath,
+      fullPass,
+      isolated.ok
+        ? {
+            ok: true,
+            ...(degraded ? { degraded } : {}),
+            skipped: isolated.result.cluster_pass_skipped === true,
+          }
+        : { ok: false, ...(childFailure ? { childFailure } : {}) },
+      new Date(nowMs).toISOString(),
+    );
+    // A requested full pass whose child failed but still has retries left keeps
+    // its jobs `pending`: the request is neither done nor lost. Exhaustion (and
+    // every non-full failure) settles `failed` as before.
+    const retryPending = childFailure !== null && !giveUp;
     const settleOutcome: ReclusterSettleOutcome = !isolated.ok
-      ? { ok: false, error: isolated.error ?? 'unknown' }
+      ? {
+          ok: false,
+          error: giveUp
+            ? `full pass child failed ${childFailure?.attempts} times (last: ${isolated.error ?? 'unknown'}); gave up. Request recluster again to retry`
+            : (isolated.error ?? 'unknown'),
+        }
       : degraded
         ? { ok: false, skipped: true, reason: describeClusterDegradation(degraded) }
         : isolated.result.cluster_pass_skipped
           ? { ok: false, skipped: true, reason: isolated.result.cluster_skip_reason ?? 'cluster pass skipped' }
           : { ok: true };
-    await settleReclusterJobs(adapter, maxSeq, settleOutcome);
+    if (!retryPending) await settleReclusterJobs(adapter, maxSeq, settleOutcome);
   } catch (err) {
     log.error('enrich.recluster_job.settle_failed', {
       db_path: dbPath,
