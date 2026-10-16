@@ -14,7 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import accounts, analyze, breakout, inlet, paper, plans, report
+from . import accounts, analyze, breakout, inlet, marketdata, paper, plans, report, screen
 from .errors import FinanceError
 from .layout import Layout, read_json
 
@@ -114,7 +114,33 @@ def cmd_plan(args: argparse.Namespace, layout: Layout) -> Any:
     raise FinanceError(f"unknown plan action {args.action}")
 
 
+def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
+    if args.action == "bars":
+        record = marketdata.get_bars(layout, args.symbol, args.range, refresh=args.refresh)
+        bars = record["bars"]
+        return {"symbol": record["symbol"], "range": record["range"], "bars": len(bars),
+                "first": bars[0]["date"], "last": bars[-1]["date"], "last_close": bars[-1]["close"],
+                "fetched_at": record["fetched_at"], "source": record["source"],
+                "cache": str(layout.base / "market" / f"{record['symbol']}.json")}
+    if args.action == "screen":
+        return screen.run_screen(layout, [s for s in args.symbols.split(",") if s],
+                                 max_candidates=args.max_candidates, top=args.top)
+    raise FinanceError(f"unknown market action {args.action}")
+
+
+def _plan_breakouts(args: argparse.Namespace, layout: Layout) -> Any:
+    equity = analyze.analyze_account(layout, args.account)["equity"]
+    planner = screen.run_planner(layout, args.screen, equity, args.risk_pct)
+    built = screen.plans_from_planner(layout, args.account, planner, write=args.write)
+    return {"account_equity": equity, "planner_output": planner["planner_output"],
+            "summary": planner["result"]["summary"],
+            "plans": [{"plan_id": p["plan_id"], "symbol": p["symbol"], "status": p["status"]} for p in built],
+            "written": args.write}
+
+
 def cmd_breakout(args: argparse.Namespace, layout: Layout) -> Any:
+    if args.action == "plan":
+        return _plan_breakouts(args, layout)
     item = _load_json_arg(args.item)
     digest = hashlib.sha256(json.dumps(item, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     plan = breakout.translate_breakout(item, args.account, args.plan_id, digest, mode=args.mode)
@@ -213,6 +239,22 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--plan-id", required=True)
     bt.add_argument("--mode", default="planned")
     bt.add_argument("--write", action="store_true", help="store the plan (default: print only)")
+    bp = bo_sub.add_parser("plan")
+    bp.add_argument("--account", required=True)
+    bp.add_argument("--screen", required=True, help="screener JSON from `market screen`")
+    bp.add_argument("--risk-pct", default="0.5")
+    bp.add_argument("--write", action="store_true", help="store the plans (default: print only)")
+
+    mk = groups.add_parser("market")
+    mk_sub = mk.add_subparsers(dest="action", required=True)
+    mb = mk_sub.add_parser("bars")
+    mb.add_argument("--symbol", required=True)
+    mb.add_argument("--range", default="1y", choices=list(marketdata.RANGES))
+    mb.add_argument("--refresh", action="store_true")
+    ms = mk_sub.add_parser("screen")
+    ms.add_argument("--symbols", required=True, help="comma list; the screener never needs a key")
+    ms.add_argument("--max-candidates", type=int, default=100)
+    ms.add_argument("--top", type=int, default=20)
 
     an = groups.add_parser("analyze")
     an.add_argument("--account")
@@ -227,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 DISPATCH = {
     "account": cmd_account, "inlet": cmd_inlet, "paper": cmd_paper, "plan": cmd_plan,
-    "breakout": cmd_breakout, "analyze": cmd_analyze, "report": cmd_report,
+    "breakout": cmd_breakout, "market": cmd_market, "analyze": cmd_analyze, "report": cmd_report,
 }
 
 

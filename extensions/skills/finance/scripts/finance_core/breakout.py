@@ -10,7 +10,7 @@ from .money import money_str, parse_money
 from .plans import validate_plan
 
 REQUIRED_PLAN_KEYS = ("signal_entry", "worst_entry", "stop_loss_price", "risk_per_share", "target_price",
-                      "shares", "risk_dollars", "binding_constraint")
+                      "shares", "risk_dollars")
 
 
 def _m(value: Any, field: str) -> str:
@@ -32,6 +32,8 @@ def translate_breakout(item: dict[str, Any], account_id: str, plan_id: str, inpu
     for key in REQUIRED_PLAN_KEYS:
         if tp is not None and tp.get(key) in (None, ""):
             reasons.append(f"missing key: trade_plan.{key}")
+    if tp is not None and "binding_constraint" not in tp:  # null is valid: no constraint bound
+        reasons.append("missing key: trade_plan.binding_constraint")
     shares = None
     if not reasons:
         try:
@@ -61,7 +63,7 @@ def translate_breakout(item: dict[str, Any], account_id: str, plan_id: str, inpu
             "risk_amount": _m(tp["risk_dollars"], "risk_dollars"),
             "valid_until": item["plan_valid_for_session"],
             "gates": [
-                {"name": "sizing", "passed": True, "detail": f"binding_constraint={tp['binding_constraint']}"},
+                {"name": "sizing", "passed": True, "detail": f"binding_constraint={tp['binding_constraint'] or 'none'}"},
                 {"name": "entry_ceiling", "passed": True, "detail": f"worst_entry={tp['worst_entry']}"},
             ],
             "source": {"playbook": "P5", "version": playbook_version, "input_hash": input_hash},

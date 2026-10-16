@@ -18,9 +18,9 @@ This version connects no live broker. Live-capable capabilities are declared in 
 
 ## Capabilities
 
-Playbooks name capabilities, not tools. The project's `AGENTS.md` `## Capabilities` table binds them. An absent row means the capability is unavailable and the playbook stops at its last ungated output.
+Playbooks name capabilities, not tools. The project's `AGENTS.md` `## Capabilities` table binds them. An absent row means the capability is unavailable and the playbook stops at its last ungated output. `market-data`, `inlet` and `paper-broker` are provided by the finance core itself and need no row.
 
-- `market-data`: quotes, bars, fundamentals. Required by P1, P2, P3, P6 input, P9.
+- `market-data`: daily bars (OHLCV, adjusted close, dividends, splits) for US stocks and ETFs from Yahoo's public chart endpoint. Keyless, unofficial, personal use only; cached under `.finance/market/`. Fundamentals, options chains and market-breadth feeds are not provided, so playbooks that need them report "unavailable". Required by P1, P2, P3, P6 input, P9.
 - `inlet`: reads a holdings file from outside the repo and returns a mapping proposal. Used by P0 import.
 - `paper-broker`: the local paper broker. Places orders, applies fills, cancels, reports positions. Always available.
 - `broker-read`: live read of a real brokerage account. Absent in this version.
@@ -29,6 +29,8 @@ Playbooks name capabilities, not tools. The project's `AGENTS.md` `## Capabiliti
 ## Core commands
 
 The deterministic core is `scripts/finance_core` (stdlib Python). Run it from the skill's `scripts/` directory: `cd <skill>/scripts && python3 -m finance_core --root <project> <group> <command>`. Output is JSON on stdout; a rejection is JSON on stderr with exit 2. `--root` is the directory holding `.finance/`.
+
+Market data and proposals: `market bars --symbol <S> [--range 1y]` fetches and caches bars. `market screen --symbols A,B,C` runs the VCP screener on those symbols. `breakout plan --account <id> --screen <file> [--write]` sizes against the account's equity, runs the breakout planner, and translates each actionable order into a plan; without `--write` it prints and stores nothing. Yahoo limits by network: a 429 after retries is reported with the cause; retry later or from another network.
 
 ## Inlet: any brokerage's holdings file
 
@@ -48,7 +50,7 @@ Breakout: `breakout translate --item <json>` takes one planner actionable item: 
 
 ## Trade plans are shared outputs
 
-Any playbook may emit a plan (P5 most often; P1 or P3 may emit one too). Plans are stored with `plan put` and read with `plan list`, so a later playbook reuses the plan rather than re-deriving it. A plan's mode is `planned`, `paper:<account_id>`, or `live:<account_id>`. `live:` requires an approval record naming the account, and the core records it but does not execute it in this version.
+Any playbook may emit a plan (P5 most often; P1 or P3 may emit one too). Plans are stored with `plan put` and read with `plan list`, so a later playbook reuses the plan rather than re-deriving it. A plan's mode is `planned`, `paper:<account_id>`, or `live:<account_id>`. `live:` requires an approval record naming the account, and the core records it but does not execute it in this version. A plan's `risk_per_share` may exceed the trigger-to-stop distance (the planner sizes from the worst entry) but never fall below it.
 
 ## Routing
 

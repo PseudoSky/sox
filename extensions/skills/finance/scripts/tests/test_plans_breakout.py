@@ -153,3 +153,35 @@ def test_breakout_inconsistent_risk_fails_validation():
     item["trade_plan"]["risk_dollars"] = 500.0
     with pytest.raises(FinanceError, match="invalid"):
         breakout.translate_breakout(item, "acc1", "zzz-1", input_hash=H)
+
+
+def test_translate_accepts_null_binding_constraint_from_real_planner():
+    # The planner emits binding_constraint: null when no constraint bound; it used to be rejected.
+    item = synthetic_item()
+    item["trade_plan"]["binding_constraint"] = None
+    plan = breakout.translate_breakout(item, "acc1", "zzz-null", input_hash=H)
+    assert plans.validate_plan(plan) == []
+    assert plan["gates"][0]["detail"] == "binding_constraint=none"
+
+
+def test_translate_still_requires_binding_constraint_key():
+    item = synthetic_item()
+    del item["trade_plan"]["binding_constraint"]
+    with pytest.raises(FinanceError) as exc:
+        breakout.translate_breakout(item, "acc1", "zzz-missing", input_hash=H)
+    assert "missing key: trade_plan.binding_constraint" in exc.value.reasons
+
+
+def test_risk_per_share_may_exceed_but_not_understate_trigger_to_stop_distance():
+    # Planner sizes risk from the worst entry, so risk_per_share > |trigger - stop| is valid.
+    base = make_plan()
+    distance = abs(plans_money(base["trigger_price"]) - plans_money(base["stop_price"]))
+    over = make_plan(risk_per_share=str(distance + 1), risk_amount=str((distance + 1) * base["quantity"]))
+    assert plans.validate_plan(over) == []
+    under = make_plan(risk_per_share=str(distance - 1), risk_amount=str((distance - 1) * base["quantity"]))
+    assert any("understates" in e for e in plans.validate_plan(under))
+
+
+def plans_money(value):
+    from decimal import Decimal
+    return Decimal(value)

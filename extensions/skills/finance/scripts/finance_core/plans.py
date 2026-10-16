@@ -68,8 +68,8 @@ def validate_plan(plan: Any) -> list[str]:
     qty = plan.get("quantity")
     if isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
         errors.append("quantity: positive int required")
-    if trigger is not None and stop is not None and rps is not None and abs(rps - abs(trigger - stop)) > RISK_PS_TOL:
-        errors.append(f"risk_per_share: {rps} != |trigger - stop| = {abs(trigger - stop)}")
+    if trigger is not None and stop is not None and rps is not None and rps < abs(trigger - stop) - RISK_PS_TOL:
+        errors.append(f"risk_per_share: {rps} understates |trigger - stop| = {abs(trigger - stop)}")
     if (rps is not None and amount is not None and isinstance(qty, int) and not isinstance(qty, bool)
             and abs(amount - rps * qty) > RISK_AMT_TOL):
         errors.append(f"risk_amount: {amount} != risk_per_share * quantity = {rps * qty}")
