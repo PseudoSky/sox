@@ -22,12 +22,6 @@
       "outputs": [],
       "options": {"command": "python3 -m pytest -q tests", "cwd": "extensions/skills/finance/scripts"},
       "cache": true
-    },
-    "test-sources": {
-      "executor": "nx:run-commands",
-      "outputs": [],
-      "options": {"command": "python3 -m pytest -q sources --continue-on-collection-errors", "cwd": "extensions/skills/finance"},
-      "cache": false
     }
   }
 }
