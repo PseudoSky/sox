@@ -1,0 +1,21 @@
+{
+  "schema_version": 0,
+  "skill": "finance",
+  "version": "0.1.0",
+  "playbooks": [
+    {"id": "P0", "name": "portfolio-review", "stage": "portfolio", "status": "keep", "gate": "ungated", "reference": "references/playbooks/P0-portfolio-review.md"},
+    {"id": "P1", "name": "research-single-name", "stage": "research", "status": "keep", "gate": "ungated", "reference": "references/playbooks/P1-research-single-name.md"},
+    {"id": "P2", "name": "regime-posture", "stage": "assess", "status": "keyed", "gate": "ungated", "reference": "references/playbooks/P2-regime-posture.md"},
+    {"id": "P3", "name": "screen-candidates", "stage": "screen", "status": "keyed", "gate": "ungated", "reference": "references/playbooks/P3-screen-candidates.md"},
+    {"id": "P4", "name": "dividend-income", "stage": "screen/monitor", "status": "keyed", "gate": "ungated", "reference": "references/playbooks/P4-dividend-income.md"},
+    {"id": "P5", "name": "trade-plan", "stage": "plan", "status": "keep", "gate": "ungated", "reference": "references/playbooks/P5-trade-plan.md"},
+    {"id": "P6", "name": "position-size", "stage": "size", "status": "keep", "gate": "ungated", "reference": "references/playbooks/P6-position-size.md"},
+    {"id": "P7", "name": "validate-strategy", "stage": "validate", "status": "keep", "gate": "ungated", "reference": "references/playbooks/P7-validate-strategy.md"},
+    {"id": "P8", "name": "pine-authoring", "stage": "author", "status": "stub", "gate": "ungated", "reference": "references/playbooks/P8-pine-authoring.md"},
+    {"id": "P9", "name": "options-analysis", "stage": "analyze", "status": "keyed", "gate": "ungated", "reference": "references/playbooks/P9-options-analysis.md"},
+    {"id": "P10", "name": "strategy-discovery", "stage": "research", "status": "defer", "gate": "ungated", "reference": "references/playbooks/P10-strategy-discovery.md"},
+    {"id": "P11", "name": "intraday-options-rules", "stage": "analysis", "status": "stub", "gate": "ungated", "reference": "references/playbooks/P11-intraday-options-rules.md"},
+    {"id": "P12", "name": "portfolio-report", "stage": "report", "status": "keep", "gate": "ungated", "reference": "references/playbooks/P12-portfolio-report.md"},
+    {"id": "E", "name": "execute", "stage": "effect", "status": "gated", "gate": "live-effect", "reference": "references/playbooks/E-execute.md"}
+  ]
+}

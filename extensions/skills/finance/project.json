@@ -1,0 +1,33 @@
+{
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "name": "finance",
+  "projectType": "library",
+  "root": "extensions/skills/finance",
+  "sourceRoot": "extensions/skills/finance",
+  "tags": ["type:extension"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [],
+      "options": {"command": "echo 'finance: no build step (stdlib python core, declarative skill)'", "cwd": "."},
+      "cache": false
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {"command": "python3 -m py_compile scripts/finance_core/*.py", "cwd": "extensions/skills/finance"},
+      "cache": true
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "outputs": [],
+      "options": {"command": "python3 -m pytest -q tests", "cwd": "extensions/skills/finance/scripts"},
+      "cache": true
+    },
+    "test-sources": {
+      "executor": "nx:run-commands",
+      "outputs": [],
+      "options": {"command": "python3 -m pytest -q sources --continue-on-collection-errors", "cwd": "extensions/skills/finance"},
+      "cache": false
+    }
+  }
+}

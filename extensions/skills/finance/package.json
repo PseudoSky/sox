@@ -1,0 +1,16 @@
+{
+  "name": "@adhd/sox-extension-finance",
+  "version": "0.1.0",
+  "description": "Portfolio review, screening, trade plans, paper accounts and reports from any brokerage's holdings file.",
+  "private": true,
+  "author": "sox-ecosystem",
+  "keywords": [
+    "finance",
+    "portfolio",
+    "paper-trading",
+    "trade-plan",
+    "position-sizing",
+    "screening",
+    "reporting"
+  ]
+}

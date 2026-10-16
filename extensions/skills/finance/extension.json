@@ -1,0 +1,77 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "finance",
+  "type": "skill",
+  "version": "0.1.0",
+  "title": "Finance \u2014 portfolio review, research, screening, trade plans, paper accounts and reports",
+  "description": "Use this for any request about a portfolio, a single stock, the market regime, screening for candidates, sizing or planning a trade, validating a strategy, or a portfolio report. Imports a holdings file from any brokerage into a broker-neutral portfolio record, tracks it as a paper account (many accounts supported), and routes the request through non-overlapping playbooks (P0-P12). Trade plans are shared outputs that any playbook can emit and any later playbook can reuse. Live-account effects are gated per operation and are not implemented in this version.",
+  "author": "sox-ecosystem",
+  "sourceVersion": "813821810023+ff85a02aef",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "keywords": [
+    "finance",
+    "portfolio",
+    "paper-trading",
+    "trade-plan",
+    "position-sizing",
+    "screening",
+    "reporting",
+    "brokerage-inlet"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "dependencies": [],
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string",
+          "description": "What the user asked for, in their words."
+        },
+        "account_id": {
+          "type": "string",
+          "description": "Paper account id under .finance/accounts/. Optional for analysis of a single name."
+        },
+        "as_of": {
+          "type": "string",
+          "description": "ISO date for the analysis. Defaults to the snapshot date."
+        }
+      },
+      "required": [
+        "request"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "playbook": {
+          "type": "string",
+          "description": "The playbook id that ran, e.g. P0, P5, P12."
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Paths of receipts, plans and reports written."
+        },
+        "next": {
+          "type": "string",
+          "description": "The next stage the routing table allows, or none."
+        }
+      }
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode",
+      "codex"
+    ]
+  },
+  "license": "MIT"
+}
