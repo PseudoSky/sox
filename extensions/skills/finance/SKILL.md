@@ -1,5 +1,7 @@
 # Finance
 
+Skill version: 0.1.0.
+
 One entry point for portfolio, market, and trade work. A request is routed to the first stage it needs; no gate is skipped. Each playbook owns one stage and one output artifact, and consumes the previous stage's artifact by path. Playbook list and feed graph: `references/routing-table.md`. Per-playbook contracts: `references/playbooks/<id>.md`.
 
 ## Gates

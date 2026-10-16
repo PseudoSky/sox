@@ -198,6 +198,8 @@ def _build_position(row: dict[str, Any], fields: dict[str, Any], amap: dict[str,
         asset_type = amap.get(raw_type, raw_type if raw_type in ASSET_TYPES else None)
         if asset_type is None:
             raise FinanceError(f"{symbol}: unmapped asset type {raw_type!r}")
+    elif "asset_type" in fields:
+        raise FinanceError(f"{symbol}: asset_type column is mapped but the cell is blank")
     else:
         asset_type = "equity"
     option_vals = {k: get(k) for k in OPTION_FIELDS}

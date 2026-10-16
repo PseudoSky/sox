@@ -46,7 +46,7 @@ def csv_mapping(**over):
 def json_doc():
     return {"_note": "SYNTHETIC", "data": {"asof": "2026-02-03", "cash": "100.00",
             "positions": [
-                {"sym": "SYNA", "q": "2", "px": "50.5"},
+                {"sym": "SYNA", "q": "2", "px": "50.5", "kind": "STK"},
                 {"sym": "SYNA", "q": 1, "px": "50.5", "kind": "OPT", "und": "SYNA",
                  "exp": "2026-06-19", "k": "55", "cp": "c", "mult": "100"}]}}
 
@@ -61,7 +61,7 @@ def json_mapping(**over):
                    "option_underlying": {"path": "und"}, "option_expiry": {"path": "exp"},
                    "option_strike": {"path": "k"}, "option_right": {"path": "cp"},
                    "option_multiplier": {"path": "mult"}},
-        "asset_type_map": {"OPT": "option"},
+        "asset_type_map": {"STK": "equity", "OPT": "option"},
     }
     mapping.update(over)
     return mapping
@@ -270,3 +270,18 @@ def test_default_header_line_on_preamble_rejects_not_drops(env):
 def test_validate_mapping_rejects_bad_header_line():
     errors = validate_mapping(csv_mapping(header_line=0))
     assert any(e.startswith("header_line") for e in errors)
+
+
+def test_blank_asset_type_cell_rejected_when_mapped(env):
+    layout, put = env
+    csv_text = (
+        "Symbol,Quantity,Price,Cost,Type,Cash,AsOf,Acct,Total\n"
+        f'SYN1,10,5.00,4.00,,"$50.00",2026-01-02,{RAW_ACCT},100.00\n'
+    )
+    mapping = csv_mapping()
+    del mapping["control_total"]
+    mp, src = put("blank_type.csv", csv_text, mapping)
+    with pytest.raises(FinanceError) as exc:
+        ingest(layout, "syn", mp, src)
+    assert any("asset_type" in reason for reason in exc.value.reasons)
+    assert account_files(layout) == []
