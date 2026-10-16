@@ -1,7 +1,10 @@
-"""Keyless daily bars from Yahoo's public chart endpoint (unofficial, personal use only).
+"""Keyless daily bars: Yahoo's public chart endpoint, with Nasdaq's public historical-quotes
+endpoint as an automatic fallback. Both are unofficial and for personal use only.
 
-Bars are cached under `.finance/market/` (git-ignored). `YahooFMPAdapter` has the shape of the
-harvested screener's FMPClient so the screener runs without a key.
+Yahoo bars are split- and dividend-adjusted. Nasdaq bars are NOT adjusted (adj_close equals close,
+no dividends or splits); the cached record says which provider produced it. Bars are cached under
+`.finance/market/` (git-ignored). `YahooFMPAdapter` has the shape of the harvested screener's
+FMPClient so the screener runs without a key.
 """
 from __future__ import annotations
 
@@ -25,6 +28,11 @@ SYMBOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.^=-]{0,14}$")
 RANGES = ("1mo", "3mo", "6mo", "1y", "2y", "5y")
 RETRY_STATUS = {429, 500, 502, 503, 504}
 BACKOFF_SECONDS = (1, 2, 4)
+PROVIDERS = ("auto", "yahoo", "nasdaq")
+NASDAQ_HOST = "api.nasdaq.com"
+NASDAQ_CLASSES = ("stocks", "etf")
+YAHOO_BLOCK_MINUTES = 30
+RANGE_DAYS = {"1mo": 31, "3mo": 92, "6mo": 183, "1y": 366, "2y": 731, "5y": 1827}
 Opener = Callable[[str, dict[str, str]], "tuple[int, bytes]"]
 
 
@@ -112,22 +120,98 @@ def fetch_chart(symbol: str, range_: str = "1y", opener: Opener | None = None,
                        "or from another network.")
 
 
+def _num(text: str) -> Decimal:
+    return Decimal(re.sub(r"[$,\s]", "", text))
+
+
+def parse_nasdaq(payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
+    """Return a record, or None when Nasdaq says the symbol does not exist in this asset class."""
+    if payload.get("data") is None:
+        return None
+    rows = ((payload["data"].get("tradesTable") or {}).get("rows")) or []
+    bars = []
+    for row in reversed(rows):  # Nasdaq lists newest first
+        try:
+            o, h, l, c = (_num(row[k]) for k in ("open", "high", "low", "close"))
+            v = int(_num(row["volume"]))
+            day = datetime.strptime(row["date"], "%m/%d/%Y").strftime("%Y-%m-%d")
+        except (KeyError, ValueError, ArithmeticError):
+            continue  # "N/A" cells and malformed rows
+        bars.append({"date": day, "open": _money(o), "high": _money(h), "low": _money(l),
+                     "close": _money(c), "adj_close": _money(c), "volume": v})
+    if not bars:
+        raise FinanceError(f"market-data: {symbol}: Nasdaq returned no usable bars")
+    return {"symbol": symbol, "currency": "USD", "name": symbol, "bars": bars,
+            "dividends": [], "splits": [], "adjusted": False}
+
+
+def fetch_nasdaq(symbol: str, range_: str = "1y", opener: Opener | None = None,
+                 today: datetime | None = None) -> dict[str, Any]:
+    symbol = check_symbol(symbol)
+    if range_ not in RANGES:
+        raise FinanceError(f"range: must be one of {list(RANGES)}")
+    opener = opener or default_opener
+    end = (today or datetime.now(timezone.utc)).date()
+    start = end - timedelta(days=RANGE_DAYS[range_])
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json, text/plain, */*",
+               "Origin": "https://www.nasdaq.com", "Referer": "https://www.nasdaq.com/"}
+    for asset_class in NASDAQ_CLASSES:
+        query = urllib.parse.urlencode({"assetclass": asset_class, "fromdate": start.isoformat(),
+                                        "todate": end.isoformat(), "limit": 5000})
+        url = f"https://{NASDAQ_HOST}/api/quote/{urllib.parse.quote(symbol)}/historical?{query}"
+        status, body = opener(url, headers)
+        if status != 200:
+            raise FinanceError(f"market-data: {symbol}: Nasdaq returned HTTP {status}")
+        try:
+            record = parse_nasdaq(json.loads(body), symbol)
+        except json.JSONDecodeError as exc:
+            raise FinanceError(f"market-data: {symbol}: Nasdaq response is not JSON") from exc
+        if record is not None:
+            return record
+    raise FinanceError(f"market-data: {symbol}: not found on Nasdaq ({', '.join(NASDAQ_CLASSES)})")
+
+
 def _cache_path(layout: Layout, symbol: str):
     return layout.base / "market" / f"{symbol}.json"
 
 
 def get_bars(layout: Layout, symbol: str, range_: str = "1y", ttl_hours: float = 12,
              refresh: bool = False, opener: Opener | None = None,
-             sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+             sleep: Callable[[float], None] = time.sleep, provider: str = "auto") -> dict[str, Any]:
     symbol = check_symbol(symbol)
+    if provider not in PROVIDERS:
+        raise FinanceError(f"provider: must be one of {list(PROVIDERS)}")
     path = _cache_path(layout, symbol)
     if path.exists() and not refresh:
         cached = read_json(path)
         age = datetime.now(timezone.utc) - datetime.fromisoformat(cached["fetched_at"])
         if cached.get("range") == range_ and age < timedelta(hours=ttl_hours):
             return cached
-    record = fetch_chart(symbol, range_, opener=opener, sleep=sleep)
-    record.update({"range": range_, "source": "yahoo-chart (unofficial, personal use only)",
+    block = layout.base / "market" / "_yahoo_blocked.json"
+    yahoo_blocked = False
+    if provider == "auto" and block.exists():
+        since = datetime.fromisoformat(read_json(block)["at"])
+        yahoo_blocked = datetime.now(timezone.utc) - since < timedelta(minutes=YAHOO_BLOCK_MINUTES)
+    order = ("nasdaq",) if yahoo_blocked else ("yahoo", "nasdaq") if provider == "auto" else (provider,)
+    failures: list[str] = []
+    record = None
+    for name in order:
+        try:
+            if name == "yahoo":
+                record = fetch_chart(symbol, range_, opener=opener, sleep=sleep)
+                record["adjusted"] = True
+            else:
+                record = fetch_nasdaq(symbol, range_, opener=opener)
+            record["provider"] = name
+            break
+        except FinanceError as exc:
+            failures.append(f"{name}: {exc}")
+            if name == "yahoo" and provider == "auto" and "HTTP 429" in str(exc):
+                layout.ensure_base()
+                atomic_write_json(block, {"at": datetime.now(timezone.utc).isoformat(), "reason": str(exc)})
+    if record is None:
+        raise FinanceError("market-data: all providers failed: " + " | ".join(failures))
+    record.update({"range": range_, "source": f"{record['provider']} (unofficial, personal use only)",
                    "fetched_at": datetime.now(timezone.utc).isoformat()})
     layout.ensure_base()
     atomic_write_json(path, record)

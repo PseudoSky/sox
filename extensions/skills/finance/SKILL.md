@@ -20,7 +20,7 @@ This version connects no live broker. Live-capable capabilities are declared in 
 
 Playbooks name capabilities, not tools. The project's `AGENTS.md` `## Capabilities` table binds them. An absent row means the capability is unavailable and the playbook stops at its last ungated output. `market-data`, `inlet` and `paper-broker` are provided by the finance core itself and need no row.
 
-- `market-data`: daily bars (OHLCV, adjusted close, dividends, splits) for US stocks and ETFs from Yahoo's public chart endpoint. Keyless, unofficial, personal use only; cached under `.finance/market/`. Fundamentals, options chains and market-breadth feeds are not provided, so playbooks that need them report "unavailable". Required by P1, P2, P3, P6 input, P9.
+- `market-data`: daily bars for US stocks and ETFs, keyless, unofficial, personal use only, cached under `.finance/market/`. Yahoo's chart endpoint is tried first (adjusted close, dividends, splits); when Yahoo rate-limits, Nasdaq's public historical endpoint supplies unadjusted OHLCV with no dividends or splits, and the record's `provider` and `adjusted` fields say which one answered. Fundamentals, options chains and market-breadth feeds are not provided, so playbooks that need them report "unavailable". Required by P1, P2, P3, P6 input, P9.
 - `inlet`: reads a holdings file from outside the repo and returns a mapping proposal. Used by P0 import.
 - `paper-broker`: the local paper broker. Places orders, applies fills, cancels, reports positions. Always available.
 - `broker-read`: live read of a real brokerage account. Absent in this version.
@@ -30,7 +30,7 @@ Playbooks name capabilities, not tools. The project's `AGENTS.md` `## Capabiliti
 
 The deterministic core is `scripts/finance_core` (stdlib Python). Run it from the skill's `scripts/` directory: `cd <skill>/scripts && python3 -m finance_core --root <project> <group> <command>`. Output is JSON on stdout; a rejection is JSON on stderr with exit 2. `--root` is the directory holding `.finance/`.
 
-Market data and proposals: `market bars --symbol <S> [--range 1y]` fetches and caches bars. `market screen --symbols A,B,C` runs the VCP screener on those symbols. `breakout plan --account <id> --screen <file> [--write]` sizes against the account's equity, runs the breakout planner, and translates each actionable order into a plan; without `--write` it prints and stores nothing. Yahoo limits by network: a 429 after retries is reported with the cause; retry later or from another network.
+Market data and proposals: `market bars --symbol <S> [--range 1y]` fetches and caches bars. `market screen --symbols A,B,C` runs the VCP screener on those symbols. `breakout plan --account <id> --screen <file> [--write]` sizes against the account's equity, runs the breakout planner, and translates each actionable order into a plan; without `--write` it prints and stores nothing. `--provider yahoo|nasdaq` forces a source. After a Yahoo 429 the core skips Yahoo for 30 minutes and uses Nasdaq; if every provider fails the error lists each cause.
 
 ## Inlet: any brokerage's holdings file
 

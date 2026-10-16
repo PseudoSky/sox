@@ -146,3 +146,123 @@ def test_adapter_failure_returns_none_and_flags_rate_limit(tmp_path):
     assert adapter.get_historical_prices("SYN", days=260) is None
     assert adapter.get_batch_quotes(["SYN"]) == {}
     assert adapter.get_api_stats()["rate_limit_reached"] is True
+
+
+# ---------------------------------------------------------------- Nasdaq fallback
+
+def nasdaq_payload(rows):
+    return {"data": {"symbol": "SYN", "totalRecords": len(rows), "tradesTable": {"rows": rows}}, "status": None}
+
+
+NASDAQ_ROWS = [  # newest first, as Nasdaq lists them (SYNTHETIC values)
+    {"date": "10/15/2026", "close": "$12.00", "volume": "3,000", "open": "11.00", "high": "13.00", "low": "10.50"},
+    {"date": "10/14/2026", "close": "N/A", "volume": "N/A", "open": "N/A", "high": "N/A", "low": "N/A"},
+    {"date": "10/13/2026", "close": "10.50", "volume": "1,000", "open": "10.00", "high": "11.00", "low": "9.00"},
+]
+NASDAQ_NOT_FOUND = {"data": None, "message": None,
+                    "status": {"rCode": 400, "bCodeMessage": [{"code": 1001, "errorMessage": "Symbol not exists."}]}}
+
+
+class HostRouter:
+    """Routes by URL host; a value of (status, body) or a callable taking the URL."""
+
+    def __init__(self, yahoo, nasdaq):
+        self.yahoo, self.nasdaq, self.calls = yahoo, nasdaq, []
+
+    def __call__(self, url, headers):
+        self.calls.append(url)
+        target = self.nasdaq if "api.nasdaq.com" in url else self.yahoo
+        status, body = target(url) if callable(target) else target
+        return status, json.dumps(body).encode() if isinstance(body, dict) else body
+
+
+def test_parse_nasdaq_strips_symbols_skips_na_and_orders_ascending():
+    rec = marketdata.parse_nasdaq(nasdaq_payload(NASDAQ_ROWS), "SYN")
+    assert [b["date"] for b in rec["bars"]] == ["2026-10-13", "2026-10-15"]
+    assert rec["bars"][1]["close"] == "12.0000" and rec["bars"][1]["volume"] == 3000
+    assert all(b["adj_close"] == b["close"] for b in rec["bars"])
+    assert rec["adjusted"] is False and rec["dividends"] == [] and rec["splits"] == []
+
+
+def test_parse_nasdaq_returns_none_for_unknown_symbol_and_errors_on_empty():
+    assert marketdata.parse_nasdaq(NASDAQ_NOT_FOUND, "SYN") is None
+    with pytest.raises(FinanceError, match="no usable bars"):
+        marketdata.parse_nasdaq(nasdaq_payload([]), "SYN")
+
+
+def test_auto_falls_back_to_nasdaq_when_yahoo_is_rate_limited(tmp_path):
+    router = HostRouter((429, b"Too Many Requests"), (200, nasdaq_payload(NASDAQ_ROWS)))
+    rec = marketdata.get_bars(Layout(tmp_path), "SYN", opener=router, sleep=lambda s: None)
+    assert rec["provider"] == "nasdaq" and rec["adjusted"] is False and rec["source"].startswith("nasdaq")
+    cached = json.loads((tmp_path / ".finance" / "market" / "SYN.json").read_text())
+    assert cached["provider"] == "nasdaq" and cached["adjusted"] is False
+
+
+def test_yahoo_success_is_adjusted_and_never_touches_nasdaq(tmp_path):
+    router = HostRouter((200, payload(ROWS)), (500, b""))
+    rec = marketdata.get_bars(Layout(tmp_path), "SYN", opener=router, sleep=lambda s: None)
+    assert rec["provider"] == "yahoo" and rec["adjusted"] is True
+    assert not any("api.nasdaq.com" in u for u in router.calls)
+
+
+def test_nasdaq_retries_other_asset_class_when_symbol_not_in_first(tmp_path):
+    def nasdaq(url):
+        return (200, NASDAQ_NOT_FOUND) if "assetclass=stocks" in url else (200, nasdaq_payload(NASDAQ_ROWS))
+    router = HostRouter((429, b""), nasdaq)
+    rec = marketdata.get_bars(Layout(tmp_path), "SYN", opener=router, sleep=lambda s: None)
+    assert rec["provider"] == "nasdaq"
+    classes = [u.split("assetclass=")[1].split("&")[0] for u in router.calls if "api.nasdaq.com" in u]
+    assert classes == ["stocks", "etf"]
+
+
+def test_all_providers_failing_reports_each_cause(tmp_path):
+    router = HostRouter((429, b""), (200, NASDAQ_NOT_FOUND))
+    with pytest.raises(FinanceError) as exc:
+        marketdata.get_bars(Layout(tmp_path), "SYN", opener=router, sleep=lambda s: None)
+    message = str(exc.value)
+    assert "all providers failed" in message and "yahoo:" in message and "429" in message
+    assert "not found on Nasdaq" in message
+
+
+def test_explicit_provider_is_respected(tmp_path):
+    only_yahoo = HostRouter((429, b""), (200, nasdaq_payload(NASDAQ_ROWS)))
+    with pytest.raises(FinanceError, match="yahoo:"):
+        marketdata.get_bars(Layout(tmp_path), "SYN", provider="yahoo", opener=only_yahoo, sleep=lambda s: None)
+    assert not any("api.nasdaq.com" in u for u in only_yahoo.calls)
+    only_nasdaq = HostRouter((200, payload(ROWS)), (200, nasdaq_payload(NASDAQ_ROWS)))
+    rec = marketdata.get_bars(Layout(tmp_path), "SYN", provider="nasdaq", opener=only_nasdaq)
+    assert rec["provider"] == "nasdaq" and not any("yahoo.com" in u for u in only_nasdaq.calls)
+    with pytest.raises(FinanceError, match="provider"):
+        marketdata.get_bars(Layout(tmp_path), "SYN", provider="bogus")
+
+
+def test_nasdaq_http_error_is_reported(tmp_path):
+    router = HostRouter((429, b""), (503, b"down"))
+    with pytest.raises(FinanceError, match="Nasdaq returned HTTP 503"):
+        marketdata.get_bars(Layout(tmp_path), "SYN", opener=router, sleep=lambda s: None)
+
+
+def test_yahoo_rate_limit_is_remembered_so_later_symbols_skip_it(tmp_path):
+    layout = Layout(tmp_path)
+    router = HostRouter((429, b"Too Many Requests"), (200, nasdaq_payload(NASDAQ_ROWS)))
+    marketdata.get_bars(layout, "SYN", opener=router, sleep=lambda s: None)
+    assert (tmp_path / ".finance" / "market" / "_yahoo_blocked.json").exists()
+    before = len([u for u in router.calls if "yahoo.com" in u])
+    marketdata.get_bars(layout, "SYN2", opener=router, sleep=lambda s: None)
+    assert len([u for u in router.calls if "yahoo.com" in u]) == before  # no new Yahoo attempts
+
+
+def test_expired_block_marker_retries_yahoo_and_explicit_provider_bypasses_it(tmp_path):
+    layout = Layout(tmp_path)
+    router = HostRouter((429, b""), (200, nasdaq_payload(NASDAQ_ROWS)))
+    marketdata.get_bars(layout, "SYN", opener=router, sleep=lambda s: None)
+    marker = tmp_path / ".finance" / "market" / "_yahoo_blocked.json"
+    old = (datetime.now(timezone.utc) - timedelta(minutes=marketdata.YAHOO_BLOCK_MINUTES + 1)).isoformat()
+    marker.write_text(json.dumps({"at": old, "reason": "x"}))
+    healthy = HostRouter((200, payload(ROWS)), (500, b""))
+    rec = marketdata.get_bars(layout, "SYN3", opener=healthy, sleep=lambda s: None)
+    assert rec["provider"] == "yahoo"  # expired marker: Yahoo was tried again
+    fresh_block = {"at": datetime.now(timezone.utc).isoformat(), "reason": "x"}
+    marker.write_text(json.dumps(fresh_block))
+    forced = HostRouter((200, payload(ROWS)), (500, b""))
+    assert marketdata.get_bars(layout, "SYN4", provider="yahoo", opener=forced)["provider"] == "yahoo"

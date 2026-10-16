@@ -116,11 +116,12 @@ def cmd_plan(args: argparse.Namespace, layout: Layout) -> Any:
 
 def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "bars":
-        record = marketdata.get_bars(layout, args.symbol, args.range, refresh=args.refresh)
+        record = marketdata.get_bars(layout, args.symbol, args.range, refresh=args.refresh, provider=args.provider)
         bars = record["bars"]
         return {"symbol": record["symbol"], "range": record["range"], "bars": len(bars),
                 "first": bars[0]["date"], "last": bars[-1]["date"], "last_close": bars[-1]["close"],
                 "fetched_at": record["fetched_at"], "source": record["source"],
+                "provider": record["provider"], "adjusted": record["adjusted"],
                 "cache": str(layout.base / "market" / f"{record['symbol']}.json")}
     if args.action == "screen":
         return screen.run_screen(layout, [s for s in args.symbols.split(",") if s],
@@ -251,6 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     mb.add_argument("--symbol", required=True)
     mb.add_argument("--range", default="1y", choices=list(marketdata.RANGES))
     mb.add_argument("--refresh", action="store_true")
+    mb.add_argument("--provider", default="auto", choices=list(marketdata.PROVIDERS))
     ms = mk_sub.add_parser("screen")
     ms.add_argument("--symbols", required=True, help="comma list; the screener never needs a key")
     ms.add_argument("--max-candidates", type=int, default=100)
