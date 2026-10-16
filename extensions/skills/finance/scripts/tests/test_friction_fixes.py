@@ -137,3 +137,29 @@ def test_wrong_mask_rejected_with_fix_and_fixable_in_place(tmp_path, root, capsy
                       "--value", "496", capsys=capsys)
     assert code == 0
     assert ingest(layout, "syn", mp, src)["positions"] == 1
+
+
+def test_cash_equivalents_count_toward_cash_pct_like_a_brokerage_sweep(tmp_path, root):
+    layout = Layout(root)
+    accounts.create_account(layout, "syn", "USD", account_mask="7777")
+    src = tmp_path / "export.csv"
+    src.write_text("SYNTHETIC export. Not real data.\nAs of 10/16/2026\nAccount: SYN-0000-7777\n"
+                   "Symbol,Asset Type,Quantity,Last Price,Current Value\n"
+                   "AAA,Stock,20,45.00,900.00\n"
+                   "MMF,Money Market,100,1.00,100.00\n")
+    mp = tmp_path / "map.json"
+    mp.write_text(json.dumps({
+        "schema_version": 0, "broker_label": "synthetic-broker", "format": "csv", "header_line": 4,
+        "as_of": {"regex": r"As of (\d{2}/\d{2}/\d{4})", "group": 1}, "as_of_format": "%m/%d/%Y",
+        "cash": {"value": "100.00"}, "account_number": {"regex": r"Account: (\S+)", "group": 1},
+        "control_total": {"value": "1100.00"},
+        "fields": {"symbol": {"column": "Symbol"}, "quantity": {"column": "Quantity"},
+                   "last_price": {"column": "Last Price"}, "asset_type": {"column": "Asset Type"}},
+        "asset_type_map": {"Stock": "equity", "Money Market": "cash_equivalent"},
+    }))
+    assert ingest(layout, "syn", mp, src)["reconciled"] is True
+    result = analyze_account(layout, "syn")
+    assert result["equity"] == "1100.00"
+    assert result["cash_equivalents"] == "100.00"
+    assert result["cash_pct"] == "18.18"
+    assert result["allocation"]["by_asset_type"]["cash_equivalent"] == "9.09"

@@ -57,6 +57,7 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
         if pad and (as_of_date - date.fromisoformat(pad)).days > STALE_DAYS:
             warnings.append(f"stale price: {key}")
     equity = cash + sum((v for _, _, v in valued), Decimal(0))
+    cash_equivalents = sum((v for _, p, v in valued if p["asset_type"] == "cash_equivalent"), Decimal(0))
     by_type: dict[str, Decimal] = {}
     by_ccy: dict[str, Decimal] = {account["base_currency"]: cash}
     for _, pos, value in valued:
@@ -72,13 +73,14 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
         "as_of": as_of,
         "snapshot_as_of": record["as_of"],
         "cash": _cents(cash),
+        "cash_equivalents": _cents(cash_equivalents),
         "equity": _cents(equity),
         "equity_complete": complete,
         "allocation": {
             "by_asset_type": {k: _pct(v, equity) for k, v in sorted(by_type.items())},
             "by_currency": {k: _pct(v, equity) for k, v in sorted(by_ccy.items())},
         },
-        "cash_pct": _pct(cash, equity),
+        "cash_pct": _pct(cash + cash_equivalents, equity),
         "positions": [{"key": k, "qty": p["qty"], "last_price": p["last_price"],
                        "market_value": _cents(v)} for k, p, v in valued],
         "top_concentration": [{"key": k, "pct": _pct(abs(v), equity)} for k, _, v in top],

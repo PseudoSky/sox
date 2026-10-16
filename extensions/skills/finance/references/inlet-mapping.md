@@ -31,7 +31,7 @@ Top-level keys:
 - `header_line` (csv, 1-based, default 1): the line holding the column header. Brokers put preambles above it; the header of a preamble-heavy file is usually not line 1.
 - `rows.row_filter`: `{column, equals}` keeps matching rows; `{column, not_equals}` drops them. Use `not_equals` to drop summary rows that share a column.
 - `rows.require_numeric` (csv): columns that must parse as numbers. A row failing this is skipped with a named warning, which is how totals and footers drop out.
-- `fields.asset_type` values in `asset_type_map` must be `equity`, `etf`, `option`, or `other`. A mapped asset_type column with a blank cell rejects the file; it never defaults to equity.
+- `fields.asset_type` values in `asset_type_map` must be `equity`, `etf`, `option`, `cash_equivalent`, or `other`. Use `cash_equivalent` for money-market and sweep funds: they count toward `cash_pct` as a brokerage cash balance does, and are reported separately as `cash_equivalents`. A mapped asset_type column with a blank cell rejects the file; it never defaults to equity.
 
 Scalars (`as_of`, `cash`, `control_total`, `account_number`) read any row: a regex over the raw text. For a summary row, anchor on its label and capture the value column, e.g. `{"regex": "Cash & Cash Investments,[^,]*,[^,]*,[^,]*,([-0-9,.]+)", "group": 1}` for a row laid out as label, type, quantity, price, value. Adjust the `[^,]*` count to the row's real column count.
 

@@ -21,7 +21,7 @@ from .errors import FinanceError
 from .layout import Layout, check_id
 from .money import money_str, parse_money, parse_qty
 
-ASSET_TYPES = {"equity", "etf", "option", "other"}
+ASSET_TYPES = {"equity", "etf", "option", "cash_equivalent", "other"}
 OPTION_FIELDS = ("option_underlying", "option_expiry", "option_strike", "option_right",
                  "option_multiplier")
 OPTIONAL_FIELDS = ("avg_cost", "last_price", "asset_type", "currency")
