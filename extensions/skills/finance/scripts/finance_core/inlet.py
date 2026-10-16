@@ -5,11 +5,12 @@ Never guesses. Everything is built and validated in memory; only a clean record 
 
 from __future__ import annotations
 
+import re
+
 import csv
 import hashlib
 import io
 import json
-import re
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -25,6 +26,14 @@ OPTION_FIELDS = ("option_underlying", "option_expiry", "option_strike", "option_
                  "option_multiplier")
 OPTIONAL_FIELDS = ("avg_cost", "last_price", "asset_type", "currency")
 TOLERANCE = Decimal("0.05")
+
+
+def _is_number(value: Any) -> bool:
+    try:
+        parse_money(value, "value")
+    except FinanceError:
+        return False
+    return True
 
 
 def _blank(value: Any) -> bool:
@@ -49,6 +58,14 @@ def _dig(obj: Any, dotted: str) -> Any:
 
 def mask_account_number(raw: str) -> str:
     return "****" + raw.strip()[-4:]
+
+
+def _mask_matches(raw: str, mask: str) -> bool:
+    """Compare the trailing characters both sides show, up to four, so a file showing only "496" matches mask "0496"."""
+    found = re.search(r"[0-9A-Za-z]+$", raw.strip())
+    shown, stored = (found.group(0) if found else ""), mask.strip()
+    n = min(len(shown), len(stored), 4)
+    return n > 0 and shown[-n:] == stored[-n:]
 
 
 # ---------------------------------------------------------------- mapping validation
@@ -99,8 +116,12 @@ def validate_mapping(mapping: Any) -> list[str]:
         errors.append("rows.rows_path: required for json")
     if fmt == "csv" and rows.get("row_filter") is not None:
         flt = rows["row_filter"]
-        if not (isinstance(flt, dict) and "column" in flt and "equals" in flt):
-            errors.append("rows.row_filter: needs column and equals")
+        if not (isinstance(flt, dict) and "column" in flt and ("equals" in flt or "not_equals" in flt)):
+            errors.append("rows.row_filter: needs column and one of equals / not_equals")
+    if fmt == "csv" and rows.get("require_numeric") is not None:
+        cols = rows["require_numeric"]
+        if not (isinstance(cols, list) and cols and all(isinstance(c, str) for c in cols)):
+            errors.append("rows.require_numeric: must be a non-empty list of column names")
     row_kinds = {"column", "value"} if fmt == "csv" else {"column", "path", "value"}
     fields = mapping.get("fields")
     if not isinstance(fields, dict):
@@ -289,10 +310,12 @@ def ingest(layout: Layout, account_id: str, mapping_path: str | Path, source_pat
         raw_number = attempt(lambda: _text(_scalar(mapping["account_number"], "account_number",
                                                    text, data, first)))
         mask = account.get("account_mask")
-        if raw_number and mask and mask_account_number(raw_number) != mask_account_number(mask):
-            reasons.append(f"account_number: file account {mask_account_number(raw_number)} "
-                           f"does not match account mask {mask}")
+        if raw_number and mask and not _mask_matches(raw_number, mask):
+            reasons.append(f"account_number: file shows {mask_account_number(raw_number)}, which does not match "
+                           f"account mask {mask}; fix with: account config --account {account_id} "
+                           f"--key account_mask --value <visible digits>")
 
+    non_numeric: list[str] = []
     if mapping["format"] == "json":
         rows = _dig(data, mapping["rows"]["rows_path"])
         if not isinstance(rows, list):
@@ -300,9 +323,21 @@ def ingest(layout: Layout, account_id: str, mapping_path: str | Path, source_pat
             rows = []
     else:
         rows = csv_rows or []
-        flt = (mapping.get("rows") or {}).get("row_filter")
-        if flt:
+        rows_spec = mapping.get("rows") or {}
+        flt = rows_spec.get("row_filter")
+        if flt and "equals" in flt:
             rows = [r for r in rows if _text(r.get(flt["column"])) == _text(flt["equals"])]
+        elif flt:
+            rows = [r for r in rows if _text(r.get(flt["column"])) != _text(flt["not_equals"])]
+        for col in rows_spec.get("require_numeric") or []:
+            kept = []
+            for r in rows:
+                if _is_number(r.get(col)):
+                    kept.append(r)
+                else:
+                    label = _text(r.get("Symbol") or r.get("symbol") or "?")
+                    non_numeric.append(f"{label}[{col}={_text(r.get(col))!r}]")
+            rows = kept
 
     fields, amap = mapping["fields"], mapping.get("asset_type_map", {})
     positions: list[dict[str, Any]] = []
@@ -321,6 +356,8 @@ def ingest(layout: Layout, account_id: str, mapping_path: str | Path, source_pat
         seen.add(pos["key"])
         positions.append(pos)
 
+    if not positions and not reasons:
+        reasons.append("no position rows found: check header_line and the rows filter")
     if control is not None and cash is not None and not reasons:
         problem = _reconcile(positions, cash, control)
         if problem:
@@ -331,6 +368,8 @@ def ingest(layout: Layout, account_id: str, mapping_path: str | Path, source_pat
     warnings: list[str] = []
     if skipped:
         warnings.append(f"skipped {skipped} rows with no symbol")
+    if non_numeric:
+        warnings.append(f"skipped {len(non_numeric)} non-position rows (require_numeric): {', '.join(non_numeric)}")
     if ledger_positions is not None:
         statement = {p["key"]: Decimal(p["qty"]) for p in positions}
         for key in sorted(set(statement) | set(ledger_positions)):

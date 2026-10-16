@@ -28,7 +28,7 @@ Playbooks name capabilities, not tools. The project's `AGENTS.md` `## Capabiliti
 
 ## Core commands
 
-The deterministic core is `scripts/finance_core` (stdlib Python). Run it from the skill directory: `python3 -m finance_core --root <project> <group> <command>`. Output is JSON on stdout; a rejection is JSON on stderr with exit 2. `--root` is the directory holding `.finance/`.
+The deterministic core is `scripts/finance_core` (stdlib Python). Run it from the skill's `scripts/` directory: `cd <skill>/scripts && python3 -m finance_core --root <project> <group> <command>`. Output is JSON on stdout; a rejection is JSON on stderr with exit 2. `--root` is the directory holding `.finance/`.
 
 ## Inlet: any brokerage's holdings file
 
@@ -37,10 +37,14 @@ The agent reads the file and writes a mapping JSON, then the core does the rest.
 1. Save the source export outside the repo. The core refuses sources inside a git repository.
 2. Author a mapping: `schema_version: 0`, `broker_label`, `format` (csv or json), refs for `as_of`, `cash`, each field, optional `control_total` and `account_number`. Refs are `{column}`, `{path}`, `{value}`, or for scalars `{regex, group}` against the raw text. Read `references/inlet-mapping.md` for the full shape before writing one.
 3. `python3 -m finance_core --root <project> inlet check-mapping --mapping <file>`; fix until `valid: true`.
-4. `python3 -m finance_core --root <project> account create ...` once per account, then `inlet ingest --account <id> --mapping <file> --source <file>`.
+4. `python3 -m finance_core --root <project> account create --account <id> --base-currency <ccy> [--account-mask <tail>]` once per account, then `inlet ingest --account <id> --mapping <file> --source <file>`. `--account-mask` is the visible tail the broker shows (`496` for `****496`); the mapping's `account_number` is compared against it on the trailing characters both sides show. The raw number is never stored. A wrong mask is fixed with `account config --account <id> --key account_mask --value <tail>`; the rejection prints this command.
 5. The ingest prints the summary and any warnings. A rejection lists every reason and writes nothing. Never guess a value to get past a rejection: ask the user.
 
 Target record: `account_id`, `as_of`, `base_currency`, `cash`, `positions[]`, `source{file_sha256, imported_at}`, `warnings[]`. Account numbers are masked before anything is written.
+
+Paper orders: `paper order --account <id> --order <json>` with `symbol`, `side` (buy|sell), `qty` (not `quantity`), `type` (market|limit|stop_entry|stop_loss), and `limit_price` or `stop_price` where the type needs one. `paper reconcile --statement` takes a snapshot file from `.finance/accounts/<id>/snapshots/`, not `current.json`.
+
+Breakout: `breakout translate --item <json>` takes one planner actionable item: the object with `symbol`, `sector`, `plan_valid_for_session`, and a nested `trade_plan` (`signal_entry`, `worst_entry`, `stop_loss_price`, `risk_per_share`, `target_price`, `shares`, `risk_dollars`, `position_value`, `cumulative_risk_pct`, `binding_constraint`). Add `--write` to store the plan.
 
 ## Trade plans are shared outputs
 

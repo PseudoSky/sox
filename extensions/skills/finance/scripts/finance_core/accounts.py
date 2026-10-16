@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -103,6 +105,10 @@ def update_config(layout: Layout, account_id: str, key: str, value: Any) -> dict
         account[key] = {f: str(value.get(f, "0")) for f in ("per_share", "per_contract")}
     elif key == "fill_rules":
         account[key] = _merge_rules(value)
+    elif key == "account_mask":
+        if not re.fullmatch(r"[0-9A-Za-z]{1,8}", str(value)):
+            raise FinanceError("account_mask: 1 to 8 letters or digits, the visible tail shown by the broker")
+        account[key] = str(value)
     elif key == "import_formats":
         if not set(value) <= FORMATS:
             raise FinanceError(f"import_formats: subset of {sorted(FORMATS)} required")

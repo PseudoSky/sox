@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import plans
+from . import paper, plans
 from .accounts import list_accounts, load_account, load_current
 from .errors import FinanceError
 from .layout import Layout, atomic_write_json, check_id
@@ -15,6 +15,11 @@ from .money import money_str, parse_money
 
 STALE_DAYS = 5
 PCT = Decimal("0.01")
+CENT = Decimal("0.01")
+
+
+def _cents(value: Decimal) -> str:
+    return money_str(value.quantize(CENT))
 
 
 def _pct(part: Decimal, equity: Decimal) -> str | None:
@@ -35,11 +40,12 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
     record, _ = load_current(layout, account_id)
     as_of = as_of or record["as_of"]
     as_of_date = date.fromisoformat(as_of)
-    cash = parse_money(record["cash"], "cash")
+    state = paper.positions_now(layout, account_id)
+    cash = state["cash"]
     warnings: list[str] = []
     valued: list[tuple[str, dict[str, Any], Decimal]] = []
     complete = True
-    for pos in record.get("positions", []):
+    for pos in state["positions"].values():
         key = pos["symbol"]
         if pos.get("last_price") is None:
             warnings.append(f"missing last_price: {key}")
@@ -47,7 +53,7 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
             continue
         value = parse_money(pos["qty"], "qty") * parse_money(pos["last_price"], "last_price") * _multiplier(pos)
         valued.append((key, pos, value))
-        pad = pos.get("price_as_of")
+        pad = (pos.get("price_as_of") or "")[:10]
         if pad and (as_of_date - date.fromisoformat(pad)).days > STALE_DAYS:
             warnings.append(f"stale price: {key}")
     equity = cash + sum((v for _, _, v in valued), Decimal(0))
@@ -65,8 +71,8 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
         "base_currency": account["base_currency"],
         "as_of": as_of,
         "snapshot_as_of": record["as_of"],
-        "cash": money_str(cash),
-        "equity": money_str(equity),
+        "cash": _cents(cash),
+        "equity": _cents(equity),
         "equity_complete": complete,
         "allocation": {
             "by_asset_type": {k: _pct(v, equity) for k, v in sorted(by_type.items())},
@@ -74,7 +80,7 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
         },
         "cash_pct": _pct(cash, equity),
         "positions": [{"key": k, "qty": p["qty"], "last_price": p["last_price"],
-                       "market_value": money_str(v)} for k, p, v in valued],
+                       "market_value": _cents(v)} for k, p, v in valued],
         "top_concentration": [{"key": k, "pct": _pct(abs(v), equity)} for k, _, v in top],
         "open_risk": money_str(risk),
         "open_risk_pct": _pct(risk, equity),
@@ -91,7 +97,7 @@ def consolidated(layout: Layout, account_ids: list[str] | None = None) -> dict[s
         grp["accounts"].append(account_id)
         grp["_eq"] += parse_money(result["equity"], "equity")
         grp["equity_complete"] = grp["equity_complete"] and result["equity_complete"]
-    return {"groups": {c: {"accounts": g["accounts"], "equity": money_str(g["_eq"]),
+    return {"groups": {c: {"accounts": g["accounts"], "equity": _cents(g["_eq"]),
                            "equity_complete": g["equity_complete"]} for c, g in sorted(groups.items())}}
 
 

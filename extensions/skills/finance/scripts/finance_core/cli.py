@@ -57,14 +57,17 @@ def cmd_account(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "show":
         return accounts.load_account(layout, args.account)
     if args.action == "config":
-        return accounts.update_config(layout, args.account, args.key, _load_json_arg(args.value))
+        literal = args.value if args.key == "account_mask" else _load_json_arg(args.value)
+        return accounts.update_config(layout, args.account, args.key, literal)
     raise FinanceError(f"unknown account action {args.action}")
 
 
 def cmd_inlet(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "check-mapping":
         errors = inlet.validate_mapping(_load_json_arg(args.mapping))
-        return {"valid": not errors, "errors": errors}
+        if errors:
+            raise FinanceError("mapping invalid", errors)
+        return {"valid": True, "errors": []}
     if args.action == "ingest":
         ledger = None
         if (layout.account_dir(args.account) / "current.json").exists():
@@ -78,6 +81,8 @@ def cmd_inlet(args: argparse.Namespace, layout: Layout) -> Any:
 def cmd_paper(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "order":
         order = _load_json_arg(args.order)
+        if "quantity" in order and "qty" not in order:
+            raise FinanceError("order: the quantity field is 'qty', not 'quantity'")
         return {"order_id": paper.place_order(layout, args.account, order)}
     if args.action == "fill":
         return paper.fill_bar(layout, args.account, args.order_id, _load_json_arg(args.bar))

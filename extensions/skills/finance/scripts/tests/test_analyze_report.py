@@ -69,7 +69,7 @@ def test_complete_book_and_stale_price(tmp_path):
     accounts.write_snapshot(layout, "acc1", snapshot("acc1", "100", [
         pos("AAA", "1", "10", price_as_of="2026-02-20")]))
     a = analyze.analyze_account(layout, "acc1")
-    assert a["equity_complete"] is True and a["equity"] == "110"
+    assert a["equity_complete"] is True and a["equity"] == "110.00"
     assert a["warnings"] == ["stale price: AAA"]
 
 
@@ -92,8 +92,8 @@ def test_consolidated_groups_by_currency_without_fx(tmp_path):
         accounts.create_account(layout, acct, ccy)
         accounts.write_snapshot(layout, acct, snapshot(acct, cash, [], ccy=ccy))
     groups = analyze.consolidated(layout)["groups"]
-    assert groups["USD"] == {"accounts": ["a1", "a2"], "equity": "150.5", "equity_complete": True}
-    assert groups["CAD"]["equity"] == "70"
+    assert groups["USD"] == {"accounts": ["a1", "a2"], "equity": "150.50", "equity_complete": True}
+    assert groups["CAD"]["equity"] == "70.00"
 
 
 def test_write_analysis_receipt(tmp_path):
