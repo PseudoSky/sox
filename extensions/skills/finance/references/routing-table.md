@@ -22,7 +22,7 @@ P4 dividend and P9 options are side branches. P8 and P11 are stubs. P10 is defer
 | P7 validate-strategy | validate | keep | backtest-expert, strategy-pivot-designer, signal-postmortem, quant-feature-engineer | plan or strategy | validation receipt |
 | P8 pine-authoring | author | stub | mph-pine, pine-to-python (not in sources/) | strategy | blocked: copies missing |
 | P9 options-analysis | analyze | keyed | options-strategy-advisor | market-data | options receipt |
-| P10 strategy-discovery | research | defer | edge-* (8 skills) | — | — |
+| P10 strategy-discovery | research | defer | edge-* (8 skills, not harvested into sources/) | — | — |
 | P11 intraday-options-rules | analysis | stub | 0dte-flow, ghost-auto-trader (not in sources/) | market-data | blocked: copies missing |
 | P12 portfolio-report | report | keep | none (renders) | P0 receipts, plan index, P2, P4, P9 | report md and json |
 | E execute | effect | GATED | broker-mcp-selector, webull-openapi (gated, not harvested) | plan | live effect, not in this version |
