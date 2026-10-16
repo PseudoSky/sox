@@ -1,3 +1,3 @@
 # P8 pine-authoring (stub)
 
-Status: stub. Pending user decision 1 on the divergent copies (`mph-pine`, `pine-to-python`). The source copies are present but not wired into the router. Do not route requests here until the decision is recorded.
+Status: stub. The source copies (`mph-pine`, `pine-to-python`) are not in `sources/` and were not found in any installed skill directory. Do not route requests here until the copies are supplied and a canonical one is chosen.
