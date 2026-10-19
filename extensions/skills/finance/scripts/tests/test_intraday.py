@@ -62,3 +62,9 @@ def test_bad_inputs_are_named():
         intraday.check_exit("1", "Z", False, "10:00")
     with pytest.raises(FinanceError, match="HH:MM"):
         intraday.check_entry(**{**OK, "time_et": "10am"})
+
+
+def test_fading_without_an_entry_grade_follows_the_source_table():
+    """0dte-flow P2 reads 'gain >= 30% AND grade -> C'; an unknown entry grade must not disable it."""
+    assert intraday.check_exit("30", "C", False, "10:00")["rule"] == "P2"
+    assert intraday.check_exit("30", "B", False, "10:00")["action"] == "hold"

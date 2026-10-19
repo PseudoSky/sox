@@ -72,8 +72,8 @@ def run_edge(layout: Layout, symbols: list[str], range_: str = "1y", dry_run: bo
     if done.returncode != 0 and NO_TICKETS in (done.stderr + done.stdout) and tickets_manifest.is_file():
         found = json.loads(tickets_manifest.read_text(encoding="utf-8"))
         return {"output_dir": str(out_dir / "pipeline"), "dry_run": dry_run, "input": summary,
-                "candidates": 0, "regime": found.get("regime"), "as_of": found.get("as_of"),
-                "note": "detection ran and found no edge candidates in this universe; add symbols or widen the range",
+                "candidates": 0, "adjusted_prices": "nasdaq" not in summary["providers"], "regime": found.get("regime"), "as_of": found.get("as_of"),
+                "note": "detection ran and found no edge candidates in this universe; that is a valid result",
                 "report": str(out_dir / "pipeline" / "tickets" / "daily_report.md")}
     if done.returncode != 0:
         raise FinanceError(f"edge: orchestrator exited {done.returncode}", (done.stderr or done.stdout).strip().splitlines()[-8:])
@@ -82,5 +82,5 @@ def run_edge(layout: Layout, symbols: list[str], range_: str = "1y", dry_run: bo
         raise FinanceError("edge: pipeline_run_manifest.json not written")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     return {"output_dir": str(out_dir / "pipeline"), "manifest": str(manifest_path), "dry_run": dry_run,
-            "input": summary, "adjusted_prices": False not in summary["providers"] and "nasdaq" not in summary["providers"],
+            "input": summary, "adjusted_prices": "nasdaq" not in summary["providers"],
             "manifest_summary": {k: manifest[k] for k in manifest if k in ("status", "stages", "summary", "counts")}}

@@ -84,7 +84,7 @@ def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int
 def check_exit(pnl_pct: Any, grade: str, signal_flipped: bool, time_et: str, entry_grade: str | None = None) -> dict[str, Any]:
     """Walk the cascade in order; the first match wins. `hold` when nothing matches."""
     pnl, now, g = _dec(pnl_pct, "pnl_pct"), _minutes(time_et), _grade(grade)
-    faded = entry_grade is not None and g >= _grade("C") and g > _grade(entry_grade)
+    faded = g >= _grade("C") and (entry_grade is None or g > _grade(entry_grade))
     cascade = [
         ("S1", "hard stop", pnl <= Decimal("-50")),
         ("S2", "grade death", g >= _grade("D")),
