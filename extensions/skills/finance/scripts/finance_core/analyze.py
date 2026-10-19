@@ -59,10 +59,20 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
             warnings.append(f"stale price: {key}")
     equity = cash + sum((v for _, _, v in valued), Decimal(0))
     cash_equivalents = sum((v for _, p, v in valued if p["asset_type"] == "cash_equivalent"), Decimal(0))
-    by_type: dict[str, Decimal] = {}
+    by_type: dict[str, Decimal] = {"cash": cash} if cash else {}
+    cost_total = Decimal(0)
+    value_total = Decimal(0)
+    pnl_rows: dict[str, dict[str, str | None]] = {}
     by_ccy: dict[str, Decimal] = {account["base_currency"]: cash}
     for _, pos, value in valued:
         by_type[pos["asset_type"]] = by_type.get(pos["asset_type"], Decimal(0)) + value
+        avg = pos.get("avg_cost")
+        if avg is not None and pos["asset_type"] != "cash_equivalent":
+            cost = parse_money(pos["qty"], "qty") * parse_money(avg, "avg_cost") * _multiplier(pos)
+            cost_total += cost
+            value_total += value
+            pnl_rows[pos["symbol"]] = {"cost_basis": _cents(cost), "unrealized_pnl": _cents(value - cost),
+                                       "unrealized_pct": _pct(value - cost, cost)}
         ccy = pos.get("currency", account["base_currency"])
         by_ccy[ccy] = by_ccy.get(ccy, Decimal(0)) + value
     top = sorted(valued, key=lambda t: (-abs(t[2]), t[0]))[:5]
@@ -85,7 +95,11 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
         },
         "cash_pct": _pct(cash + cash_equivalents, equity),
         "positions": [{"key": k, "qty": p["qty"], "last_price": p["last_price"],
-                       "market_value": _cents(v)} for k, p, v in valued],
+                       "market_value": _cents(v), "avg_cost": p.get("avg_cost"), **pnl_rows.get(p["symbol"], {})}
+                      for k, p, v in valued],
+        "unrealized": {"cost_basis": _cents(cost_total), "market_value": _cents(value_total),
+                       "pnl": _cents(value_total - cost_total), "pnl_pct": _pct(value_total - cost_total, cost_total),
+                       "basis": "average cost from the broker snapshot; cash equivalents excluded; not tax advice"},
         "concentration_flags": sorted(flags, key=lambda f: -Decimal(f["pct"])),
         "top_concentration": [{"key": k, "pct": _pct(abs(v), equity)} for k, _, v in top],
         "open_risk": money_str(risk),

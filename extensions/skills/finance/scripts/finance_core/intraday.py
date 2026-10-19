@@ -55,10 +55,11 @@ def _grade(value: str) -> int:
 
 
 def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int, weekday: int,
-                open_positions: int = 0, trades_today: int = 0, day_pnl: Any = 0,
+                open_positions: int = 0, trades_today: int = 0, day_pnl: Any = None,
                 account_size: Any = None, symbol: str | None = None) -> dict[str, Any]:
     """Return every rule with its observed value; `allowed` only when all hold."""
-    now, rv, pnl = _minutes(time_et), _dec(rvol, "rvol"), _dec(day_pnl, "day_pnl")
+    now, rv = _minutes(time_et), _dec(rvol, "rvol")
+    pnl = _dec(day_pnl, "day_pnl") if day_pnl is not None else None
     size = _dec(account_size, "account_size") if account_size is not None else None
     loss_cap = size * DAILY_LOSS_FRACTION if size is not None else None
     rules = [
@@ -73,7 +74,7 @@ def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int
     ]
     if symbol is not None:
         rules.append(("signal_on_spy", symbol.upper() == SIGNAL_UNDERLYING, symbol))
-    if loss_cap is not None:
+    if loss_cap is not None and pnl is not None:
         rules.append(("daily_loss_not_reached", pnl > -loss_cap, str(pnl)))
     failed = [name for name, ok, _ in rules if not ok]
     out: dict[str, Any] = {"allowed": not failed, "failed": failed,
@@ -81,7 +82,11 @@ def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int
     if size is not None:
         out["max_per_trade"] = str((size * TRADE_FRACTION).quantize(Decimal("0.01")))
         out["max_daily_loss"] = str(loss_cap.quantize(Decimal("0.01")))
-        out["warnings"] = [f"caps are the source's $75 example ratios (40% per trade, 80% daily loss) scaled to this account: "
+        out["warnings"] = []
+        if pnl is None:
+            out["warnings"].append("--day-pnl was not supplied, so the daily-loss rule was NOT evaluated; supply it "
+                                   "(0 on a fresh day) to include it")
+        out["warnings"] += [f"caps are the source's $75 example ratios (40% per trade, 80% daily loss) scaled to this account: "
                            f"a full daily loss is {DAILY_LOSS_FRACTION * 100:.0f}% of it. They are the playbook's numbers, "
                            f"not a recommendation; size smaller if that loss is not acceptable."]
     return out

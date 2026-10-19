@@ -21,6 +21,8 @@ BLOCK_DRAWDOWN_PCT = Decimal("10")
 MIN_INDICES_ABOVE_SLOW = 2
 HIGH_WINDOW = 252
 PCT = Decimal("0.01")
+REDUCED_RISK_FACTOR = Decimal("0.5")  # reduced posture sizes new entries at half the normal risk
+RECEIPT_MAX_AGE_DAYS = 3
 
 
 def _signal(layout: Layout, symbol: str) -> dict[str, Any]:
@@ -70,6 +72,20 @@ def compute_posture(layout: Layout, symbols: tuple[str, ...] = DEFAULT_INDICES) 
     if flagged:
         result["warnings"] = [{"symbols": flagged, "warning": UNADJUSTED_WARNING}]
     return result
+
+
+def latest_posture(layout: Layout, today: date | None = None) -> dict[str, Any] | None:
+    """The newest posture receipt no older than RECEIPT_MAX_AGE_DAYS, else None."""
+    folder = layout.base / "posture"
+    if not folder.is_dir():
+        return None
+    newest = sorted(folder.glob("*.json"))
+    if not newest:
+        return None
+    from .layout import read_json
+    receipt = read_json(newest[-1])
+    age = ((today or date.today()) - date.fromisoformat(receipt["as_of"])).days
+    return receipt if age <= RECEIPT_MAX_AGE_DAYS else None
 
 
 def write_posture(layout: Layout, result: dict[str, Any]) -> str:

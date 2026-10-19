@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import accounts, analyze, breakout, edge, income, inlet, intraday, marketdata, paper, plans, posture, report, screen
+from . import accounts, analyze, breakout, edge, income, inlet, intraday, marketdata, paper, plans, posture, recommend, report, screen
 from .errors import FinanceError
 from .layout import Layout, read_json
 
@@ -147,9 +147,19 @@ def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
 
 def _plan_breakouts(args: argparse.Namespace, layout: Layout) -> Any:
     equity = analyze.analyze_account(layout, args.account)["equity"]
-    planner = screen.run_planner(layout, args.screen, equity, args.risk_pct)
+    risk_pct, state = args.risk_pct, None
+    current = None if args.ignore_posture else posture.latest_posture(layout)
+    if current is not None:
+        state = {"posture": current["posture"], "as_of": current["as_of"]}
+        if current["posture"] == "no-new-entries":
+            raise FinanceError(f"posture is no-new-entries ({current['as_of']}): new entries stop at P5; "
+                               "pass --ignore-posture to size anyway", current["reasons"])
+        if current["posture"] == "reduced":
+            risk_pct = str(Decimal(risk_pct) * posture.REDUCED_RISK_FACTOR)
+            state["risk_pct_used"] = risk_pct
+    planner = screen.run_planner(layout, args.screen, equity, risk_pct)
     built = screen.plans_from_planner(layout, args.account, planner, write=args.write)
-    return {"account_equity": equity, "planner_output": planner["planner_output"],
+    return {"account_equity": equity, "posture": state, "planner_output": planner["planner_output"],
             "summary": planner["result"]["summary"],
             "plans": [{"plan_id": p["plan_id"], "symbol": p["symbol"], "status": p["status"]} for p in built],
             "written": args.write}
@@ -170,10 +180,19 @@ def cmd_analyze(args: argparse.Namespace, layout: Layout) -> Any:
     if args.consolidated:
         return analyze.consolidated(layout)
     if args.income:
-        return income.income_for_account(layout, args.account, as_of=args.as_of)
+        result = income.income_for_account(layout, args.account, as_of=args.as_of)
+        if args.write:
+            result["receipt"] = income.write_income(layout, result)
+        return result
     result = analyze.analyze_account(layout, args.account, as_of=args.as_of)
     if args.write:
         result["receipt"] = analyze.write_analysis(layout, result)
+    return result
+
+
+def cmd_recommend(args: argparse.Namespace, layout: Layout) -> Any:
+    result = recommend.recommend_for_account(layout, args.account, args.screen, args.limit_pct)
+    result["receipt"] = recommend.write_recommendations(layout, result)
     return result
 
 
@@ -263,6 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     bp.add_argument("--screen", required=True, help="screener JSON from `market screen`")
     bp.add_argument("--risk-pct", default="0.5")
     bp.add_argument("--write", action="store_true", help="store the plans (default: print only)")
+    bp.add_argument("--ignore-posture", action="store_true", help="size even when the latest posture is no-new-entries")
 
     mk = groups.add_parser("market")
     mk_sub = mk.add_subparsers(dest="action", required=True)
@@ -296,7 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
     ie.add_argument("--weekday", type=int, help="0=Mon..4=Fri; default today")
     ie.add_argument("--open-positions", type=int, default=0)
     ie.add_argument("--trades-today", type=int, default=0)
-    ie.add_argument("--day-pnl", default="0")
+    ie.add_argument("--day-pnl", help="today's realized P&L in account currency, 0 on a fresh day; omitted = rule not evaluated")
     ie.add_argument("--account-size")
     ie.add_argument("--symbol", help="underlying the signal fired on; the playbook requires SPY")
     ix = it_sub.add_parser("exit")
@@ -313,6 +333,11 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--income", action="store_true", help="P4: trailing-12-month dividend income per position")
     an.add_argument("--write", action="store_true", help="write the analysis receipt")
 
+    rc = groups.add_parser("recommend", help="decision support: trims, entry policy, watchlist, sized proposals")
+    rc.add_argument("--account", required=True)
+    rc.add_argument("--screen", help="screener JSON from `market screen`; adds the watchlist and sized proposals")
+    rc.add_argument("--limit-pct", default="25", help="single-position limit used for trims")
+
     rp = groups.add_parser("report")
     rp.add_argument("--as-of")
     return parser
@@ -320,7 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 DISPATCH = {
     "account": cmd_account, "inlet": cmd_inlet, "paper": cmd_paper, "plan": cmd_plan,
-    "breakout": cmd_breakout, "market": cmd_market, "intraday": cmd_intraday, "analyze": cmd_analyze, "report": cmd_report,
+    "breakout": cmd_breakout, "recommend": cmd_recommend, "market": cmd_market, "intraday": cmd_intraday, "analyze": cmd_analyze, "report": cmd_report,
 }
 
 

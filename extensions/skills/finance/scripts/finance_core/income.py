@@ -8,12 +8,21 @@ from typing import Any
 from . import paper
 from .accounts import load_current
 from .errors import FinanceError
-from .layout import Layout
+from .layout import Layout, atomic_write_json
 from .marketdata import get_bars
 from .money import money_str, parse_money
 
 CENT = Decimal("0.01")
 YIELD_PLACES = Decimal("0.01")
+
+
+def write_income(layout: Layout, result: dict[str, Any]) -> str:
+    layout.ensure_base()
+    folder = layout.base / "income"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{result['account_id']}-{result['as_of']}.json"
+    atomic_write_json(path, result)
+    return str(path)
 
 
 def income_for_account(layout: Layout, account_id: str, as_of: str | None = None) -> dict[str, Any]:

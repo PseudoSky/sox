@@ -28,7 +28,7 @@ The agent writes this file for each brokerage export. The core validates it with
 
 Top-level keys:
 
-- `header_line` (csv, 1-based, default 1): the line holding the column header. Brokers put preambles above it; the header of a preamble-heavy file is usually not line 1.
+- `header_line` (csv, 1-based, default 1): the physical line holding the column header, counting blank lines. A wrong value produces a rejection that lists the columns it read. Brokers put preambles above it; the header of a preamble-heavy file is usually not line 1.
 - `rows.row_filter`: `{column, equals}` keeps matching rows; `{column, not_equals}` drops them. Use `not_equals` to drop summary rows that share a column.
 - `rows.require_numeric` (csv): columns that must parse as numbers. A row failing this is skipped with a named warning, which is how totals and footers drop out.
 - `fields.asset_type` values in `asset_type_map` must be `equity`, `etf`, `option`, `cash_equivalent`, or `other`. Map mutual funds that are neither stocks nor ETFs to `other`; allocation reports them as their own bucket. Use `cash_equivalent` for money-market and sweep funds: they count toward `cash_pct` as a brokerage cash balance does, and are reported separately as `cash_equivalents`. A mapped asset_type column with a blank cell rejects the file; it never defaults to equity.

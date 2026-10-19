@@ -285,3 +285,22 @@ def test_blank_asset_type_cell_rejected_when_mapped(env):
         ingest(layout, "syn", mp, src)
     assert any("asset_type" in reason for reason in exc.value.reasons)
     assert account_files(layout) == []
+
+
+def test_wrong_header_line_lists_the_columns_it_read(env):
+    layout, put = env
+    mp, src = put("a.csv", CSV_TEXT, csv_mapping(header_line=200, as_of={"value": "2026-01-02"}, cash={"value": "0"},
+                                        account_number={"value": "1012"}, control_total={"value": "0"}))
+    with pytest.raises(FinanceError) as caught:
+        ingest(layout, "syn", mp, src)
+    text = " ".join([str(caught.value)] + caught.value.reasons)
+    assert "header_line 200" in text and "blanks included" in text and "0 data rows" in text
+
+
+def test_missing_scalar_names_the_pattern_that_matched_nothing(env):
+    layout, put = env
+    mp, src = put("a.csv", CSV_TEXT, csv_mapping(control_total={"regex": r"NoSuchTotal:(\d+)", "group": 1}))
+    with pytest.raises(FinanceError) as caught:
+        ingest(layout, "syn", mp, src)
+    text = " ".join([str(caught.value)] + caught.value.reasons)
+    assert "NoSuchTotal" in text and "matched nothing" in text

@@ -171,7 +171,9 @@ def _scalar(ref: dict[str, Any], name: str, text: str, data: Any, first_row: dic
         except IndexError as exc:
             raise FinanceError(f"{name}: regex has no group {ref.get('group')}") from exc
     if _blank(got):
-        raise FinanceError(f"{name}: not found in the file")
+        where = (f"regex {ref['regex']!r}" if "regex" in ref else f"path {ref['path']!r}" if "path" in ref
+                 else f"column {ref['column']!r}")
+        raise FinanceError(f"{name}: {where} matched nothing in the file")
     return got
 
 
@@ -357,7 +359,10 @@ def ingest(layout: Layout, account_id: str, mapping_path: str | Path, source_pat
         positions.append(pos)
 
     if not positions and not reasons:
-        reasons.append("no position rows found: check header_line and the rows filter")
+        seen_cols = sorted(rows[0]) if rows and isinstance(rows[0], dict) else []
+        reasons.append(f"no position rows found: header_line {mapping.get('header_line', 1)} (counts every physical "
+                       f"line, blanks included) gave columns {seen_cols} and {len(rows)} data rows after the rows "
+                       f"filter; the symbol mapping is {fields['symbol']}")
     if control is not None and cash is not None and not reasons:
         problem = _reconcile(positions, cash, control)
         if problem:

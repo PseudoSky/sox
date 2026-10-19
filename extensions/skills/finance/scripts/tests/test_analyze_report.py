@@ -48,7 +48,7 @@ def test_equity_math_hand_computed(tmp_path):
     a = analyze.analyze_account(setup_book(tmp_path), "acc1")
     assert a["equity"] == "17705.00"
     assert a["cash_pct"] == "56.48"
-    assert a["allocation"]["by_asset_type"] == {"equity": "11.32", "etf": "28.24", "option": "3.95"}
+    assert a["allocation"]["by_asset_type"] == {"cash": "56.48", "equity": "11.32", "etf": "28.24", "option": "3.95"}
     assert a["allocation"]["by_currency"] == {"USD": "100.00"}
     assert a["top_concentration"] == [{"key": "AAA", "pct": "28.24"}, {"key": "BBB", "pct": "11.32"},
                                       {"key": "BBB260619C210", "pct": "3.95"}]
