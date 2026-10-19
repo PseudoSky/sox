@@ -494,7 +494,11 @@ importers:
         specifier: workspace:^
         version: link:../listen-guard
 
-  libs/install-engine: {}
+  libs/install-engine:
+    dependencies:
+      '@decimalturn/toml-patch':
+        specifier: ^3.3.1
+        version: 3.3.1
 
   libs/listen-guard: {}
 
@@ -1335,6 +1339,10 @@ packages:
         optional: true
       conventional-commits-parser:
         optional: true
+
+  '@decimalturn/toml-patch@3.3.1':
+    resolution: {integrity: sha512-bevRGAUJonKWPBEY0tmn6HxEsPS1hJquwoIRNg/WTJnN+/0J6nfomSkn4FBtGlw1dUEt8tkS97oR0wwy3bo2HQ==}
+    engines: {node: '>=16'}
 
   '@drizzle-team/brocli@0.10.2':
     resolution: {integrity: sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w==}
@@ -3522,6 +3530,7 @@ packages:
 
   fastembed@2.1.0:
     resolution: {integrity: sha512-oQkpcRHBppJ3+a3w9dU0uytSY0N1cnEa/iVMc8AXEd+tvT529GekOEFhNviJy89R3lvQXF6cdIMTXHj1Gi00xQ==}
+    deprecated: fastembed@v2 is deprecated. Please update to fastembed@v3.
 
   fastq@1.20.1:
     resolution: {integrity: sha512-GGToxJ/w1x32s/D2EKND7kTil4n8OVk/9mycTc4VDza13lOvpUZTGX3mFSCtV9ksdGBVzvsyAVLM6mHFThxXxw==}
@@ -6182,6 +6191,8 @@ snapshots:
       semver: 7.8.2
     optionalDependencies:
       conventional-commits-parser: 6.4.0
+
+  '@decimalturn/toml-patch@3.3.1': {}
 
   '@drizzle-team/brocli@0.10.2': {}
 
