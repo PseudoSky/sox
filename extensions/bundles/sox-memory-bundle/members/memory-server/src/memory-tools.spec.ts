@@ -795,13 +795,14 @@ describe('backward compat — existing tools unbroken', () => {
   });
 });
 
-// ── memory_curate recluster — filtered (synchronous subset) wiring ───────────────
+// ── memory_curate recluster — filtered (background subset job) wiring ────────────
 // The deep clustering / scoped-persist / UID-collision correctness is covered by
 // the unit tests in @adhd/sox-memory-core (cluster-subset.spec.ts) with controlled
 // embeddings. These integration tests verify only the SERVER WIRING: that
-// `recluster` with `filters` routes to the synchronous subset path, selects the
-// right candidate set, honours dry_run for persistence, and returns the generic
-// response shape. The server carries no knowledge of what the tags mean.
+// `recluster` with `filters` enqueues a background subset job and returns its
+// handle, that the job selects the right candidate set, honours dry_run for
+// persistence, and reports through recluster_status. The server carries no
+// knowledge of what the tags mean.
 
 describe('memory_curate recluster — filtered subset', () => {
   const UNIQ = 'synthtest';
