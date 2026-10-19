@@ -361,7 +361,7 @@ class TestValidation:
 
     def test_risk_pct_and_kelly_mutual_exclusive(self):
         """Both risk_pct and win_rate via CLI -> SystemExit (argparse error)."""
-        script = "skills/position-sizer/scripts/position_sizer.py"
+        script = str(Path(__file__).resolve().parents[1] / "position_sizer.py")  # finance patch: layout-independent
         result = subprocess.run(
             [
                 sys.executable,
@@ -383,7 +383,6 @@ class TestValidation:
             ],
             capture_output=True,
             text=True,
-            cwd=str(Path(__file__).resolve().parents[4]),
         )
         assert result.returncode != 0
 
@@ -428,7 +427,7 @@ class TestOutput:
 
     def test_cli_arguments(self):
         """Verify argparse works for standard cases."""
-        script = "skills/position-sizer/scripts/position_sizer.py"
+        script = str(Path(__file__).resolve().parents[1] / "position_sizer.py")  # finance patch: layout-independent
         result = subprocess.run(
             [
                 sys.executable,
@@ -446,14 +445,13 @@ class TestOutput:
             ],
             capture_output=True,
             text=True,
-            cwd=str(Path(__file__).resolve().parents[4]),
         )
         assert result.returncode == 0
         assert "153 shares" in result.stdout
 
     def test_cli_missing_required(self):
         """Missing --account-size -> SystemExit."""
-        script = "skills/position-sizer/scripts/position_sizer.py"
+        script = str(Path(__file__).resolve().parents[1] / "position_sizer.py")  # finance patch: layout-independent
         result = subprocess.run(
             [
                 sys.executable,
@@ -467,6 +465,5 @@ class TestOutput:
             ],
             capture_output=True,
             text=True,
-            cwd=str(Path(__file__).resolve().parents[4]),
         )
         assert result.returncode != 0

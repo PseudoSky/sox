@@ -1,3 +1,11 @@
-# P10 strategy-discovery (deferred)
+# P10 strategy-discovery
 
-Status: deferred, out of v0.1. Covers the eight edge-* skills. Filed for a later version; not routed.
+Stage: research. Reads: bars from `market-data` for a universe of at least three symbols. Emits: edge tickets, hints, concepts and reviewed strategy drafts under `.finance/edge/<stamp>/pipeline/`.
+
+Run: `market edge --symbols A,B,C,... [--range 1y] [--as-of YYYY-MM-DD] [--export]`. Without `--export` the run is a dry run. It needs `pandas` and `pyarrow` (`python3 -m pip install pandas pyarrow`); a missing dependency is reported, not skipped.
+
+The chain is the harvested edge-* skills in order: `edge-candidate-agent` (detects candidates from the bars), `edge-hint-extractor`, `edge-concept-synthesizer`, `edge-strategy-designer`, `edge-strategy-reviewer` (at most two revise iterations), then export of passing drafts. `edge-pipeline-orchestrator` runs them. `edge-signal-aggregator` merges outputs from several skills into one ranked signal list and is run by hand with its own `SKILL.source.md`.
+
+- A result of `candidates: 0` is a valid answer: the detector ran and nothing in the universe qualified. Report it as such and do not lower thresholds to produce one.
+- Bars from the Nasdaq fallback are unadjusted, so the run reports `adjusted_prices: false`; treat gap and return features near splits and dividends as unreliable.
+- Drafts are hypotheses. Send any draft to P7 for a backtest before it reaches P5.

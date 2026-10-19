@@ -172,7 +172,7 @@ class TestFMPEndpointFallback:
 
         result = scanner._fmp_request("quote", "AAPL")
         assert result is None
-        assert scanner._stats["fmp_failures"] == 2
+        assert scanner.backend_stats()["fmp_failures"] == 2  # finance patch: stats are nested per context
 
 
 # ---------------------------------------------------------------------------

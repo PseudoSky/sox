@@ -10,11 +10,12 @@ import argparse
 import hashlib
 import json
 import sys
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import accounts, analyze, breakout, inlet, marketdata, paper, plans, report, screen
+from . import accounts, analyze, breakout, edge, inlet, intraday, marketdata, paper, plans, report, screen
 from .errors import FinanceError
 from .layout import Layout, read_json
 
@@ -114,6 +115,14 @@ def cmd_plan(args: argparse.Namespace, layout: Layout) -> Any:
     raise FinanceError(f"unknown plan action {args.action}")
 
 
+def cmd_intraday(args: argparse.Namespace, layout: Layout) -> Any:
+    if args.action == "entry":
+        weekday = args.weekday if args.weekday is not None else datetime.now().weekday()
+        return intraday.check_entry(args.grade, args.signal, args.rvol, args.time, args.trend_age, weekday,
+                                    args.open_positions, args.trades_today, args.day_pnl, args.account_size)
+    return intraday.check_exit(args.pnl_pct, args.grade, args.signal_flipped, args.time, args.entry_grade)
+
+
 def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "bars":
         record = marketdata.get_bars(layout, args.symbol, args.range, refresh=args.refresh, provider=args.provider)
@@ -126,6 +135,9 @@ def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "screen":
         return screen.run_screen(layout, [s for s in args.symbols.split(",") if s],
                                  max_candidates=args.max_candidates, top=args.top)
+    if args.action == "edge":
+        return edge.run_edge(layout, [x for x in args.symbols.split(",") if x], args.range,
+                             dry_run=not args.export, as_of=args.as_of)
     raise FinanceError(f"unknown market action {args.action}")
 
 
@@ -258,6 +270,32 @@ def build_parser() -> argparse.ArgumentParser:
     ms.add_argument("--max-candidates", type=int, default=100)
     ms.add_argument("--top", type=int, default=20)
 
+    me = mk_sub.add_parser("edge", help="P10: run the edge research pipeline on cached bars")
+    me.add_argument("--symbols", required=True, help="comma list, at least three")
+    me.add_argument("--range", default="1y", choices=list(marketdata.RANGES))
+    me.add_argument("--as-of")
+    me.add_argument("--export", action="store_true", help="export eligible strategies (default: dry run)")
+
+    it = groups.add_parser("intraday", help="P11: 0DTE entry gate and exit cascade (decision support)")
+    it_sub = it.add_subparsers(dest="action", required=True)
+    ie = it_sub.add_parser("entry")
+    ie.add_argument("--grade", required=True)
+    ie.add_argument("--signal", required=True, help="mega_bull | mega_bear | other")
+    ie.add_argument("--rvol", required=True)
+    ie.add_argument("--time", required=True, help="HH:MM Eastern, 24-hour")
+    ie.add_argument("--trend-age", type=int, required=True)
+    ie.add_argument("--weekday", type=int, help="0=Mon..4=Fri; default today")
+    ie.add_argument("--open-positions", type=int, default=0)
+    ie.add_argument("--trades-today", type=int, default=0)
+    ie.add_argument("--day-pnl", default="0")
+    ie.add_argument("--account-size")
+    ix = it_sub.add_parser("exit")
+    ix.add_argument("--pnl-pct", required=True)
+    ix.add_argument("--grade", required=True)
+    ix.add_argument("--entry-grade")
+    ix.add_argument("--signal-flipped", action="store_true")
+    ix.add_argument("--time", required=True)
+
     an = groups.add_parser("analyze")
     an.add_argument("--account")
     an.add_argument("--as-of")
@@ -271,7 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 DISPATCH = {
     "account": cmd_account, "inlet": cmd_inlet, "paper": cmd_paper, "plan": cmd_plan,
-    "breakout": cmd_breakout, "market": cmd_market, "analyze": cmd_analyze, "report": cmd_report,
+    "breakout": cmd_breakout, "market": cmd_market, "intraday": cmd_intraday, "analyze": cmd_analyze, "report": cmd_report,
 }
 
 
