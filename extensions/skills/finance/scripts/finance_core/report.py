@@ -80,6 +80,9 @@ def render_markdown(report: dict[str, Any]) -> str:
                     str(p["quantity"]), p["valid_until"]] for p in report["plans"]])
     out += ["", f"## {SECTIONS[5]}", ""]
     items = [f"- Resolve: {w}" for w in report["warnings"]]
+    items += [f"- Concentration: {a['account_id']} holds {f['key']} at {f['pct']}% of equity, above the "
+              f"{analyze.CONCENTRATION_LIMIT_PCT}% single-position limit"
+              for a in report["accounts"] for f in a.get("concentration_flags", [])]
     items += [f"- Plan {p['plan_id']} ({p['symbol']}) expires {p['valid_until']}" for p in _expiring(report)]
     out += items or ["- None"]
     out += ["", f"## {SECTIONS[6]}", ""]

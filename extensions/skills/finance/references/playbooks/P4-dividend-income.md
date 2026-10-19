@@ -1,3 +1,3 @@
 # P4 dividend-income
 
-Side branch from screen/monitor. Reads: `market-data`. Emits: a dividend candidate list or a monitor receipt. Tax-accounting content from `kanchi-dividend-us-tax-accounting` is informational, not tax advice.
+Side branch from screen/monitor. Reads: `market-data`. Emits: a dividend candidate list or a monitor receipt. `analyze --account <id> --income` reports trailing-12-month dividends per held position from the cached market-data history (paid dividends in the last 365 days times the current quantity; a record of what was paid, not a forecast). It warns on a position with a single payment (history may be partial, or the payer is annual) and on one with none. A yield printed by the broker can use a different basis, for example the last payment times 12, so compare it with `trailing_yield_pct` rather than treating them as the same number. Tax-accounting content from `kanchi-dividend-us-tax-accounting` is informational, not tax advice.

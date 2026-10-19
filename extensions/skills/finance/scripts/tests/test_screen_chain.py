@@ -129,7 +129,8 @@ def test_real_screener_runs_through_adapter_without_key_or_network(tmp_path):
     _seed(layout, "SPY", 0.0012)
     result = screen.run_screen(layout, ["SYN"])
     assert result["schema_version"] == "1.0" and Path(result["screen"]).is_file()
-    assert result["universe"] == ["SYN"] and result["candidates"] >= 0
+    assert result["universe"] == ["SYN"] and result["results"] >= 0 and result["valid_vcp"] <= result["results"]
+    assert "fundamentals are not provided" in result["note"]
 
 
 def test_screen_rejects_bad_symbols_before_spawning(tmp_path):

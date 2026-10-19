@@ -32,7 +32,9 @@ The deterministic core is `scripts/finance_core` (stdlib Python). Run it from th
 
 Market data and proposals: `market bars --symbol <S> [--range 1y]` fetches and caches bars. `market screen --symbols A,B,C` runs the VCP screener on those symbols. `breakout plan --account <id> --screen <file> [--write]` sizes against the account's equity, runs the breakout planner, and translates each actionable order into a plan; without `--write` it prints and stores nothing. `--provider yahoo|nasdaq` forces a source. After a Yahoo 429 the core skips Yahoo for 30 minutes and uses Nasdaq; if every provider fails the error lists each cause.
 
-Edge discovery and intraday rules: `market edge --symbols A,B,C,...` runs the edge research pipeline on cached bars (needs pandas and pyarrow; dry run unless `--export`). `intraday entry|exit` checks the 0DTE entry gate and exit cascade from values you observe; it places nothing.
+Posture and income: `market posture` gives `full`, `reduced` or `no-new-entries` from index trend and drawdown (P2). `analyze --account <id> --income` reports trailing-12-month dividends per position (P4). The report flags any non-cash position above 25% of equity.
+
+Edge discovery and intraday rules: `market edge --symbols A,B,C,...` runs the edge research pipeline on cached bars (needs pandas and pyarrow; dry run unless `--export`). `intraday entry|exit` checks the 0DTE entry gate and exit cascade from values you observe (`--symbol SPY` checks the signal's underlying); it places nothing.
 
 ## Inlet: any brokerage's holdings file
 

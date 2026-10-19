@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import accounts, analyze, breakout, edge, inlet, intraday, marketdata, paper, plans, report, screen
+from . import accounts, analyze, breakout, edge, income, inlet, intraday, marketdata, paper, plans, posture, report, screen
 from .errors import FinanceError
 from .layout import Layout, read_json
 
@@ -119,7 +119,7 @@ def cmd_intraday(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "entry":
         weekday = args.weekday if args.weekday is not None else datetime.now().weekday()
         return intraday.check_entry(args.grade, args.signal, args.rvol, args.time, args.trend_age, weekday,
-                                    args.open_positions, args.trades_today, args.day_pnl, args.account_size)
+                                    args.open_positions, args.trades_today, args.day_pnl, args.account_size, args.symbol)
     return intraday.check_exit(args.pnl_pct, args.grade, args.signal_flipped, args.time, args.entry_grade)
 
 
@@ -135,6 +135,10 @@ def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "screen":
         return screen.run_screen(layout, [s for s in args.symbols.split(",") if s],
                                  max_candidates=args.max_candidates, top=args.top)
+    if args.action == "posture":
+        result = posture.compute_posture(layout, tuple(s for s in args.symbols.split(",") if s))
+        result["receipt"] = posture.write_posture(layout, result)
+        return result
     if args.action == "edge":
         return edge.run_edge(layout, [x for x in args.symbols.split(",") if x], args.range,
                              dry_run=not args.export, as_of=args.as_of)
@@ -165,6 +169,8 @@ def cmd_breakout(args: argparse.Namespace, layout: Layout) -> Any:
 def cmd_analyze(args: argparse.Namespace, layout: Layout) -> Any:
     if args.consolidated:
         return analyze.consolidated(layout)
+    if args.income:
+        return income.income_for_account(layout, args.account, as_of=args.as_of)
     result = analyze.analyze_account(layout, args.account, as_of=args.as_of)
     if args.write:
         result["receipt"] = analyze.write_analysis(layout, result)
@@ -270,6 +276,9 @@ def build_parser() -> argparse.ArgumentParser:
     ms.add_argument("--max-candidates", type=int, default=100)
     ms.add_argument("--top", type=int, default=20)
 
+    mp = mk_sub.add_parser("posture", help="P2: full / reduced / no-new-entries from index trend and drawdown")
+    mp.add_argument("--symbols", default=",".join(posture.DEFAULT_INDICES))
+
     me = mk_sub.add_parser("edge", help="P10: run the edge research pipeline on cached bars")
     me.add_argument("--symbols", required=True, help="comma list, at least three")
     me.add_argument("--range", default="1y", choices=list(marketdata.RANGES))
@@ -289,6 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     ie.add_argument("--trades-today", type=int, default=0)
     ie.add_argument("--day-pnl", default="0")
     ie.add_argument("--account-size")
+    ie.add_argument("--symbol", help="underlying the signal fired on; the playbook requires SPY")
     ix = it_sub.add_parser("exit")
     ix.add_argument("--pnl-pct", required=True)
     ix.add_argument("--grade", required=True)
@@ -300,6 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--account")
     an.add_argument("--as-of")
     an.add_argument("--consolidated", action="store_true")
+    an.add_argument("--income", action="store_true", help="P4: trailing-12-month dividend income per position")
     an.add_argument("--write", action="store_true", help="write the analysis receipt")
 
     rp = groups.add_parser("report")

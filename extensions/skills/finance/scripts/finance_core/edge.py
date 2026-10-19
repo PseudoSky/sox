@@ -83,6 +83,14 @@ def run_edge(layout: Layout, symbols: list[str], range_: str = "1y", dry_run: bo
     if not manifest_path.is_file():
         raise FinanceError("edge: pipeline_run_manifest.json not written")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    stages = manifest.get("stages", {})
+    review, export = stages.get("review_loop", {}), stages.get("export", {})
+    not_exportable = export.get("skipped_not_eligible", [])
     return {"output_dir": str(out_dir / "pipeline"), "manifest": str(manifest_path), "dry_run": dry_run, "warnings": warnings,
+            "review": {"passed": review.get("passed_count", 0), "rejected": review.get("rejected_count", 0),
+                       "downgraded": review.get("downgraded_count", 0), "export_status": export.get("status"), "export_listed": len(export.get("exported", [])),
+                       "not_export_eligible": not_exportable,
+                       "meaning": "passed means the draft survived review; only export-eligible drafts can be exported. "
+                                  "A passed draft that is not export-eligible is a research hypothesis: backtest it in P7 first."},
             "input": summary, "adjusted_prices": not flagged,
             "manifest_summary": {k: manifest[k] for k in manifest if k in ("status", "stages", "summary", "counts")}}

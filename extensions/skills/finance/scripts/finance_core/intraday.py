@@ -17,6 +17,7 @@ ENTRY_OPEN, ENTRY_CLOSE = (9, 30), (11, 30)
 HARD_CLOSE = (14, 30)
 NOON = (12, 0)
 AFTERNOON = (13, 0)
+SIGNAL_UNDERLYING = "SPY"
 MIN_RVOL = Decimal("1.2")
 MAX_TREND_AGE = 15
 MAX_TRADES_PER_DAY = 2
@@ -55,7 +56,7 @@ def _grade(value: str) -> int:
 
 def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int, weekday: int,
                 open_positions: int = 0, trades_today: int = 0, day_pnl: Any = 0,
-                account_size: Any = None) -> dict[str, Any]:
+                account_size: Any = None, symbol: str | None = None) -> dict[str, Any]:
     """Return every rule with its observed value; `allowed` only when all hold."""
     now, rv, pnl = _minutes(time_et), _dec(rvol, "rvol"), _dec(day_pnl, "day_pnl")
     size = _dec(account_size, "account_size") if account_size is not None else None
@@ -70,6 +71,8 @@ def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int
         ("under_two_trades_today", trades_today < MAX_TRADES_PER_DAY, trades_today),
         ("no_friday_0dte", weekday != FRIDAY, weekday),
     ]
+    if symbol is not None:
+        rules.append(("signal_on_spy", symbol.upper() == SIGNAL_UNDERLYING, symbol))
     if loss_cap is not None:
         rules.append(("daily_loss_not_reached", pnl > -loss_cap, str(pnl)))
     failed = [name for name, ok, _ in rules if not ok]
@@ -78,6 +81,9 @@ def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int
     if size is not None:
         out["max_per_trade"] = str((size * TRADE_FRACTION).quantize(Decimal("0.01")))
         out["max_daily_loss"] = str(loss_cap.quantize(Decimal("0.01")))
+        out["warnings"] = [f"caps are the source's $75 example ratios (40% per trade, 80% daily loss) scaled to this account: "
+                           f"a full daily loss is {DAILY_LOSS_FRACTION * 100:.0f}% of it. They are the playbook's numbers, "
+                           f"not a recommendation; size smaller if that loss is not acceptable."]
     return out
 
 

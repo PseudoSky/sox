@@ -72,8 +72,12 @@ def run_screen(layout: Layout, symbols: list[str], max_candidates: int = 100, to
     stdout = _run([sys.executable, "-I", "-c", _BOOTSTRAP, json.dumps(spec)], "screen")
     path = _reported_path(stdout, r"JSON Report:\s+(\S+\.json)", "screen")
     data = json.loads(path.read_text(encoding="utf-8"))
-    out = {"screen": str(path), "universe": symbols, "candidates": len(data.get("results", [])),
-           "schema_version": data.get("schema_version")}
+    results = data.get("results", [])
+    out = {"screen": str(path), "universe": symbols, "results": len(results),
+           "valid_vcp": sum(1 for r in results if r.get("valid_vcp")),
+           "schema_version": data.get("schema_version"),
+           "note": "results are every symbol that passed the trend filter; only valid_vcp ones can become "
+                   "trade candidates. Sector and market cap read Unknown and 0 because fundamentals are not provided."}
     flagged = unadjusted_symbols(layout, symbols)
     if flagged:
         out["warnings"] = [{"symbols": flagged, "warning": UNADJUSTED_WARNING}]

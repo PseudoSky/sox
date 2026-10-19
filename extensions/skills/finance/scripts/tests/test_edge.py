@@ -58,6 +58,8 @@ def test_pipeline_runs_through_every_stage_on_a_universe_with_candidates(tmp_pat
     assert manifest  # sibling edge-* scripts were all located and chained
     assert list((Path(result["output_dir"]) / "drafts").glob("*.yaml"))
     assert result["adjusted_prices"] is False and result["warnings"][0]["symbols"] == SYMBOLS
+    review = result["review"]
+    assert review["passed"] >= 1 and review["export_status"] == "skipped_dry_run" and "backtest it in P7" in review["meaning"]
 
 
 def test_empty_detection_is_a_clean_result_not_an_error(tmp_path):

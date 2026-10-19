@@ -14,6 +14,7 @@ from .layout import Layout, atomic_write_json, check_id
 from .money import money_str, parse_money
 
 STALE_DAYS = 5
+CONCENTRATION_LIMIT_PCT = Decimal("25")
 PCT = Decimal("0.01")
 CENT = Decimal("0.01")
 
@@ -65,6 +66,8 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
         ccy = pos.get("currency", account["base_currency"])
         by_ccy[ccy] = by_ccy.get(ccy, Decimal(0)) + value
     top = sorted(valued, key=lambda t: (-abs(t[2]), t[0]))[:5]
+    flags = [{"key": k, "pct": _pct(abs(v), equity)} for k, p, v in valued
+             if p["asset_type"] != "cash_equivalent" and equity != 0 and abs(v) / equity * 100 > CONCENTRATION_LIMIT_PCT]
     risk = plans.open_risk(layout, account_id, as_of)
     active = plans.list_plans(layout, account_id=account_id, status="active", as_of=as_of)
     return {
@@ -83,6 +86,7 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
         "cash_pct": _pct(cash + cash_equivalents, equity),
         "positions": [{"key": k, "qty": p["qty"], "last_price": p["last_price"],
                        "market_value": _cents(v)} for k, p, v in valued],
+        "concentration_flags": sorted(flags, key=lambda f: -Decimal(f["pct"])),
         "top_concentration": [{"key": k, "pct": _pct(abs(v), equity)} for k, _, v in top],
         "open_risk": money_str(risk),
         "open_risk_pct": _pct(risk, equity),
