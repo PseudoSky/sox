@@ -309,7 +309,7 @@ describe('90ba140a AC-B4 outcomes settle and are never silent', () => {
   it('90ba140a AC-B4: a refused fork (one-holder child still busy) hands the subset job back to pending instead of failing it', async () => {
     const j = await enqueueReclusterJob(db, { scope: 'subset', subset: { filters: { topic: 't' }, persist: true } });
     const out = await runPendingSubsetReclusterJob(db, {
-      runIsolated: vi.fn().mockResolvedValue({ ok: false, error: 'previous enrich child still running (pid 1); not forking a second holder for this store' }),
+      runIsolated: vi.fn().mockResolvedValue({ ok: false, code: 'holder_busy', error: 'previous enrich child still running (pid 1); not forking a second holder for this store' }),
       describeDegradation: () => '', owner: 'o', leaseMs: 60_000,
     });
     expect(out).toEqual({ ran: false });

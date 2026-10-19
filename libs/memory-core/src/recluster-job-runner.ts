@@ -27,14 +27,13 @@ import {
   type ReclusterJobState,
   type SubsetSettleOutcome,
 } from './recluster-job.js';
+import { ENRICH_ERR_HOLDER_BUSY } from './enrich-isolation.js';
 import { log } from './telemetry.js';
-
-/** Prefix of the isolation layer's refusal when the one-holder child is still alive. */
-const HOLDER_BUSY_PREFIX = 'previous enrich child still running';
 
 export type SubsetIsolatedOutcome =
   | { ok: true; result: BatchEnrichResult }
-  | { ok: false; error: string };
+  /** `code` is the isolation layer's structured signal (90ba140a AC-D1); `error` is for humans only. */
+  | { ok: false; error: string; code?: string };
 
 export interface SubsetRunDeps {
   /** Runs one isolated enrich pass with `opts` (the real one forks a child). */
@@ -77,7 +76,7 @@ export async function runPendingSubsetReclusterJob(
         ...(typeof job.request.threshold === 'number' ? { threshold: job.request.threshold } : {}),
       },
     });
-    if (!isolated.ok && isolated.error.startsWith(HOLDER_BUSY_PREFIX)) {
+    if (!isolated.ok && isolated.code === ENRICH_ERR_HOLDER_BUSY) {
       // This process's one-holder child is still busy: the pass never started.
       // Not a failure of the job — hand it back so a later tick runs it.
       await releaseSubsetReclusterJob(adapter, job.job_id, deps.owner, now());

@@ -104,9 +104,23 @@ export function reclusterJobState(status: ReclusterJobStatus): ReclusterJobState
     case 'skipped':
       return 'degraded';
     case 'failed':
-    default:
       return 'failed';
+    default:
+      return unknownReclusterStatus(status);
   }
+}
+
+/**
+ * Explicit runtime fallback for a stored status outside {@link ReclusterJobStatus}
+ * (a corrupt or newer-writer envelope; `parseJobEnvelope` casts the stored string).
+ * The `never` parameter makes `reclusterJobState`'s switch exhaustive at compile
+ * time: adding a status member without a case is a type error here (90ba140a
+ * AC-D2). At runtime the value reads as `failed` — terminal, so pollers stop —
+ * and is traced so it never passes silently.
+ */
+function unknownReclusterStatus(status: never): ReclusterJobState {
+  log.warn('recluster_job.unknown_status', { status: String(status) });
+  return 'failed';
 }
 
 /** A terminal state is final: nothing transitions out of it. */
