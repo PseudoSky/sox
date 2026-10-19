@@ -116,6 +116,8 @@ describe('90ba140a AC-B3 the full pass is single-flight across servers', () => {
     gatedMock.mockResolvedValue({ ok: true, result: { ...BASE } });
     await runEnrichPassOnDb(adapter, dbPath, { acquireHealSlot: false });
     // no full pass was forked from this server
+    // 90ba140a AC-C10: the loop below is only evidence if the child was actually asked to run.
+    expect(gatedMock.mock.calls.length).toBeGreaterThan(0);
     for (const call of gatedMock.mock.calls) expect(call[1]).toMatchObject({ incrementalCluster: true });
     const st = await status(dbPath, job_id);
     expect(st['state']).toBe('running');
@@ -198,6 +200,22 @@ describe('90ba140a AC-B1 AC-B2 AC-B4 filtered job runs through the isolated chil
     gatedMock.mockResolvedValueOnce({ ok: false, error: 'exit:1' });
     await runReclusterSubsetJobOnDb(adapter, dbPath);
     expect(await status(dbPath, job_id)).toMatchObject({ state: 'failed', reason: 'child_failed', error: 'exit:1' });
+    await closeCachedAdapter(dbPath);
+  });
+});
+
+describe('90ba140a AC-C5 an orphaned job reports its effective state without any tick', () => {
+  it('90ba140a AC-C5: recluster_status, latest:true and memory_ping all read failed/owner_lost for an expired lease; no tick ran', async () => {
+    const dbPath = tmpStore();
+    const adapter = await getDb(dbPath);
+    const { job_id, seq } = await curate(dbPath, { op: 'recluster' }) as { job_id: string; seq: number };
+    // The owner claimed a minute ago with a 1 s lease and then died.
+    await claimGlobalReclusterJobs(adapter, { maxSeq: seq, owner: 'dead-host:1:x', leaseMs: 1000, nowMs: Date.now() - 60_000 });
+
+    expect(await status(dbPath, job_id)).toMatchObject({ state: 'failed', reason: 'owner_lost' });
+    expect(await curate(dbPath, { op: 'recluster_status', latest: true })).toMatchObject({ job_id, state: 'failed', reason: 'owner_lost' });
+    expect((await ping(dbPath)).cluster?.recluster_job).toMatchObject({ job_id, state: 'failed', status: 'failed', reason: 'owner_lost' });
+    expect(gatedMock).not.toHaveBeenCalled(); // no tick, no child: purely the read path
     await closeCachedAdapter(dbPath);
   });
 });

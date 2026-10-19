@@ -14,8 +14,24 @@
  * with a larger value; each run prints one `E2E_METRICS {json}` line with node
  * count, wall times, load average and the observed state transitions.
  *
+ * Failure mode: the background recluster is correct against mocks but never
+ * actually begins or completes for real: the forked child cannot open the store,
+ * the claim/lease/settle round-trip across the process boundary loses the job,
+ * a persisted lens is not visible through the tools, or a filtered pass leaks
+ * into the global partition.
+ * Tier: H/X. A real forked enrich child (runEnrichIsolated) on a real sqlite
+ * store in a unique temp dir, driven through the real handleToolCall surface.
+ * Fidelity gap: the store is synthetic (random-cluster unit vectors written
+ * straight into vec_node, no embedding model and no real text semantics), a
+ * single process plays both the requesting server and the consuming tick, and
+ * the machine is whatever the CI/dev host is; so wall-clock numbers are
+ * indicative, not a benchmark, and cross-PROCESS contention (two servers on one
+ * store) is covered at the store-claim level in
+ * recluster-job-background.90ba140a.spec.ts and the wiring spec, not here.
+ *
  * Item: 90ba140a / 2f998081 AC-B7 (also exercises AC-B1 prompt return, AC-B2
- * begin->complete states, AC-B3 single-flight on a real store).
+ * begin->complete states, AC-B3 single-flight on a real store; AC-C3
+ * through-the-tool lens visibility and global-partition isolation).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
@@ -166,6 +182,7 @@ describe('90ba140a AC-B7 a recluster begins and completes on a synthetic store',
   }, T);
 
   it('90ba140a AC-B7: a FILTERED recluster runs in the isolated child and completes with a persisted lens', async () => {
+    const globalBefore = parse(await handleToolCall('memory_stats', { db_path: dbPath }))['cluster_count'] as number;
     const reqStart = performance.now();
     const req = parse(await handleToolCall('memory_curate', {
       db_path: dbPath, op: 'recluster', filters: { project_path: '/proj/a' },
@@ -198,6 +215,14 @@ describe('90ba140a AC-B7 a recluster begins and completes on a synthetic store',
     expect(result.persisted).toBe(true);
     expect(result.candidate_count).toBe(Math.ceil(N / 2));
     expect(result.cluster_count).toBeGreaterThan(0);
+
+    // AC-C3, through the tools: the job-persisted lens is listed, and persisting it
+    // did not touch the global partition.
+    const provenance = (st['result'] as { provenance_hash?: string }).provenance_hash;
+    expect(typeof provenance).toBe('string');
+    const lenses = parse(await handleToolCall('memory_curate', { db_path: dbPath, op: 'list_lenses' }));
+    expect((lenses['lenses'] as Array<{ provenance_hash: string }>).some((l) => l.provenance_hash === provenance)).toBe(true);
+    expect(parse(await handleToolCall('memory_stats', { db_path: dbPath }))['cluster_count']).toBe(globalBefore);
   }, T);
 
   it('90ba140a AC-B3 AC-B7: once settled, a new request mints a fresh job (not joined to the finished one)', async () => {

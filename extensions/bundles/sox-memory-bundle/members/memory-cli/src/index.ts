@@ -1078,31 +1078,45 @@ export async function runReclusterCommand(
   let pollMs = 2000;
   let threshold: number | undefined;
   const filters: Record<string, unknown> = {};
+  // 90ba140a AC-C7: every value is validated BEFORE the store is opened, so a bad
+  // flag can never enqueue anything. A flag with no value (`--project-path` as
+  // the last token, or followed by another flag) used to become a filter with an
+  // undefined value — a whole-store subset pass — and `--importance-min abc`
+  // stored NaN.
+  const usage = (msg: string): number => {
+    err(`[recluster] ${msg}`);
+    return RECLUSTER_EXIT.USAGE;
+  };
+  const parseNumber = (raw: string): number | null => {
+    const n = Number(raw);
+    return raw.trim() !== '' && Number.isFinite(n) ? n : null;
+  };
   for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    const next = (): string | undefined => args[++i];
-    if (a === '--wait') wait = true;
-    else if (a === '--json') json = true;
-    else if (a === '--timeout') timeoutSec = Number(next());
-    else if (a === '--poll-ms') pollMs = Number(next());
-    else if (a === '--threshold') threshold = Number(next());
-    else if (a === '--project-path') filters['project_path'] = next();
-    else if (a === '--topic') filters['topic'] = next();
-    else if (a === '--tag') filters['tags'] = (next() ?? '').split(',').filter(Boolean);
-    else if (a === '--importance-min') filters['importance_min'] = Number(next());
-    else {
-      err(`[recluster] unknown argument: ${a}`);
-      return RECLUSTER_EXIT.USAGE;
+    const a = args[i]!;
+    if (a === '--wait') { wait = true; continue; }
+    if (a === '--json') { json = true; continue; }
+    const valued = ['--timeout', '--poll-ms', '--threshold', '--project-path', '--topic', '--tag', '--importance-min'];
+    if (!valued.includes(a)) return usage(`unknown argument: ${a}`);
+    const raw = args[i + 1];
+    if (raw === undefined || raw.startsWith('--')) return usage(`${a} requires a value`);
+    i++;
+    if (a === '--project-path' || a === '--topic') {
+      if (raw.trim() === '') return usage(`${a} requires a non-empty value`);
+      filters[a === '--topic' ? 'topic' : 'project_path'] = raw;
+    } else if (a === '--tag') {
+      const tags = raw.split(',').map((t) => t.trim()).filter(Boolean);
+      if (tags.length === 0) return usage('--tag requires at least one tag (comma-separated)');
+      filters['tags'] = tags;
+    } else {
+      const n = parseNumber(raw);
+      if (n === null) return usage(`${a} must be a number, got '${raw}'`);
+      if (a === '--timeout') timeoutSec = n;
+      else if (a === '--poll-ms') pollMs = n;
+      else if (a === '--threshold') threshold = n;
+      else filters['importance_min'] = n;
     }
   }
-  if (!Number.isFinite(timeoutSec) || timeoutSec <= 0 || !Number.isFinite(pollMs) || pollMs <= 0) {
-    err('[recluster] --timeout and --poll-ms must be positive numbers');
-    return RECLUSTER_EXIT.USAGE;
-  }
-  if (threshold !== undefined && !Number.isFinite(threshold)) {
-    err('[recluster] --threshold must be a number');
-    return RECLUSTER_EXIT.USAGE;
-  }
+  if (timeoutSec <= 0 || pollMs <= 0) return usage('--timeout and --poll-ms must be positive numbers');
 
   const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
   const rawDb = dbPathOverride || path.join(home, '.memory', 'memory.db');
@@ -1130,12 +1144,25 @@ export async function runReclusterCommand(
       return RECLUSTER_EXIT.COMPLETED;
     }
     const jobId = req.job_id;
+    const joined = req.joined === true;
+    const jobScope = req.job_scope ?? req.scope;
+    // 90ba140a AC-C6: single-flight hands a request the OPEN job's handle even when
+    // that job does not carry the request (a filtered request joining a whole-store
+    // job, or vice versa). Say so, in every output mode, and again after --wait.
+    const honored = !joined || (jobScope === req.scope && (req.scope !== 'subset' || req.filters_applied !== false));
+    const notice = honored
+      ? null
+      : `this request was NOT honored as asked: it joined the open ${jobScope} job ${jobId} (single-flight per store), ` +
+        `so ${Object.keys(filters).length > 0 ? 'your filters were NOT applied' : 'no whole-store pass was queued'}; ` +
+        'request again once that job settles';
     if (!json) {
       out(
-        `[recluster] ${req.joined ? 'joined the open job' : 'job queued'}: ${jobId} ` +
-        `(scope=${req.job_scope ?? req.scope}, state=${req.state ?? 'queued'})`,
+        `[recluster] ${joined ? 'joined the open job' : 'job queued'}: ${jobId} ` +
+        `(joined=${joined}, job_scope=${jobScope}, state=${req.state ?? 'queued'})`,
       );
+      if (notice) out(`[recluster] NOTICE: ${notice}`);
     }
+    const handleFields = { joined, job_scope: jobScope, filters_applied: honored, ...(notice ? { notice } : {}) };
 
     const poll = async (): Promise<CurateReclusterStatusResult | null> => {
       const st = (await memoryCurate(adapter, { op: 'recluster_status', job_id: jobId })) as
@@ -1149,7 +1176,7 @@ export async function runReclusterCommand(
     };
 
     if (!wait) {
-      if (json) out(JSON.stringify({ job_id: jobId, state: req.state, joined: req.joined, scope: req.job_scope }));
+      if (json) out(JSON.stringify({ job_id: jobId, state: req.state, scope: jobScope, ...handleFields }));
       return RECLUSTER_EXIT.COMPLETED;
     }
 
@@ -1172,7 +1199,7 @@ export async function runReclusterCommand(
       }
       await sleep(pollMs);
     }
-    if (json) out(JSON.stringify(last));
+    if (json) out(JSON.stringify({ ...last, ...handleFields }));
     else {
       out(
         `[recluster] ${last.state}: job ${jobId}` +
@@ -1184,6 +1211,7 @@ export async function runReclusterCommand(
         out(`  partition: communities=${last.partition.community_count} clustered=${last.partition.clustered_episodes}/${last.partition.live_episodes}`);
       }
       if (last.result) out(`  result: clusters=${last.result.cluster_count} candidates=${last.result.candidate_count} persisted=${last.result.persisted}`);
+      if (notice) out(`[recluster] NOTICE: ${notice}`);
     }
     return last.state === 'completed'
       ? RECLUSTER_EXIT.COMPLETED

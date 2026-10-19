@@ -20,7 +20,7 @@
  * 'auto' | 'real' only, and both resolve to the same real model; see embed.ts).
  */
 
-import { clusterStore, openDb } from '@adhd/sox-memory-core';
+import { clusterStore, getDb, openDb, runBatchEnrich, runPendingSubsetReclusterJob } from '@adhd/sox-memory-core';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -897,6 +897,84 @@ describe('memory_curate recluster — filtered subset', () => {
     );
     expect(st['job_id']).toBe(out['job_id']);
     expect(['queued', 'running', 'completed', 'degraded', 'failed']).toContain(st['state']);
+  });
+
+  // 90ba140a AC-C3: through-the-tool coverage the background rewrite dropped. The
+  // consumer side of the job runs here with the process boundary replaced by an
+  // in-process call of the REAL batch pass (nothing is forked); everything the
+  // caller sees goes through handleToolCall('memory_curate' | 'memory_stats').
+  async function drainSubsetJobs(): Promise<void> {
+    const adapter = await getDb(DB_PATH);
+    for (let i = 0; i < 10; i++) {
+      const out = await runPendingSubsetReclusterJob(adapter, {
+        runIsolated: async (opts) => ({ ok: true, result: await runBatchEnrich(adapter, opts) }),
+        describeDegradation: (d) => d.reason,
+        owner: 'memory-tools-spec',
+        leaseMs: 60_000,
+      });
+      if (!out.ran) return;
+    }
+    throw new Error('drainSubsetJobs: more than 10 subset jobs were pending');
+  }
+
+  /** Request a fresh filtered job (earlier tests may have left one open: single-flight per store), run it, return its status. */
+  async function runFilteredJob(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    await drainSubsetJobs();
+    const req = parseResult(await handleToolCall('memory_curate', { db_path: DB_PATH, op: 'recluster', ...args }));
+    expect(req['joined']).toBe(false);
+    await drainSubsetJobs();
+    return parseResult(
+      await handleToolCall('memory_curate', { db_path: DB_PATH, op: 'recluster_status', job_id: req['job_id'] as string }),
+    );
+  }
+
+  it('90ba140a AC-C3: a filtered dry_run job selects only the matching episodes and persists nothing', async () => {
+    const st = await runFilteredJob({ filters: { tags: [UNIQ] }, dry_run: true });
+    expect(st['state']).toBe('completed');
+    const result = st['result'] as { persisted: boolean; candidate_count: number; provenance_hash: string };
+    expect(result.persisted).toBe(false); // dry_run never writes
+    expect(result.candidate_count).toBe(2); // the two uniquely-tagged episodes
+    expect(typeof result.provenance_hash).toBe('string');
+    expect(result.provenance_hash.length).toBeGreaterThan(0);
+  });
+
+  it('90ba140a AC-C3: a non-matching filter yields an empty subset', async () => {
+    const st = await runFilteredJob({ filters: { tags: ['no-such-tag-xyz'] }, dry_run: true });
+    expect(st['state']).toBe('completed');
+    expect(st['result']).toMatchObject({ candidate_count: 0, cluster_count: 0 });
+  });
+
+  it('90ba140a AC-C3: the same filter derives the same provenance_hash', async () => {
+    const a = await runFilteredJob({ filters: { tags: [UNIQ] }, dry_run: true });
+    const b = await runFilteredJob({ filters: { tags: [UNIQ] }, dry_run: true });
+    const hashA = (a['result'] as { provenance_hash: string }).provenance_hash;
+    expect(hashA.length).toBeGreaterThan(0);
+    expect((b['result'] as { provenance_hash: string }).provenance_hash).toBe(hashA);
+  });
+
+  it('90ba140a AC-C3: dry_run:false persists a lens visible in list_lenses, droppable, and global cluster_count never moves (BL-27 LOW-3)', async () => {
+    await drainSubsetJobs();
+    const globalBefore = parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }))['cluster_count'] as number;
+
+    const st = await runFilteredJob({ filters: { tags: [UNIQ] }, dry_run: false });
+    expect(st['state']).toBe('completed');
+    const result = st['result'] as { persisted: boolean; provenance_hash: string };
+    expect(result.persisted).toBe(true);
+
+    const lenses = parseResult(await handleToolCall('memory_curate', { db_path: DB_PATH, op: 'list_lenses' }));
+    expect(lenses['op']).toBe('list_lenses');
+    expect((lenses['lenses'] as Array<{ provenance_hash: string }>).some((l) => l.provenance_hash === result.provenance_hash)).toBe(true);
+    // Persisting the subset must not inflate the global partition.
+    expect(parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }))['cluster_count']).toBe(globalBefore);
+
+    const dropped = parseResult(
+      await handleToolCall('memory_curate', { db_path: DB_PATH, op: 'drop_lens', provenance_hash: result.provenance_hash }),
+    );
+    expect(dropped['op']).toBe('drop_lens');
+    expect(dropped['communities_dropped'] as number).toBeGreaterThan(0);
+    expect(parseResult(await handleToolCall('memory_stats', { db_path: DB_PATH }))['cluster_count']).toBe(globalBefore);
+    const after = parseResult(await handleToolCall('memory_curate', { db_path: DB_PATH, op: 'list_lenses' }));
+    expect((after['lenses'] as Array<{ provenance_hash: string }>).some((l) => l.provenance_hash === result.provenance_hash)).toBe(false);
   });
 });
 

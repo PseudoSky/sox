@@ -4395,7 +4395,14 @@ export async function pollReclusterRequestsOnce(): Promise<boolean> {
     try {
       const adapter = await getDb(dbPath);
       if (await hasPendingReclusterRequest(adapter)) {
-        void runPeriodicEnrichPassGuarded();
+        // 90ba140a AC-C9: fire-and-forget, but never an unhandled rejection — a
+        // tick that throws is traced and the next watcher poll retries.
+        runPeriodicEnrichPassGuarded().catch((err: unknown) => {
+          log.error('recluster.watch.tick_failed', {
+            db_path: dbPath,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
         return true;
       }
     } catch (err) {
