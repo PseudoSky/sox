@@ -115,6 +115,13 @@ export interface CurateReclusterSubsetResult {
   joined: boolean;
   /** The scope of the job the handle belongs to (differs from `scope` when joined). */
   job_scope: ReclusterJobScope;
+  /**
+   * 90ba140a AC-C6: false when the request joined an open job that does not
+   * carry its filters (other scope, other filters / dry_run) — the caller's
+   * filters were NOT applied and will run only if it requests again once the
+   * open job settles.
+   */
+  filters_applied: boolean;
 }
 
 export interface CurateReclusterGlobalResult {
@@ -587,6 +594,7 @@ async function curateRecluster(
       state: job.state,
       joined: job.joined,
       job_scope: job.scope,
+      filters_applied: job.request_honored,
     };
   }
 

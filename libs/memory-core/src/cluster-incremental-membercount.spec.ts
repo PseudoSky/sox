@@ -15,6 +15,27 @@
  * Owner ruling K0 (32a2a24e): the first-minted community uid stays stable and a
  * join must not mint, re-derive or supersede a uid; singletons stay suppressed.
  *
+ * Red run (recorded 2026-10-19, worktree recluster-bg-c1):
+ *   Fault seeded: cluster.ts incrementalJoin, the `UPDATE node SET meta =
+ *   json_set(... '$.member_count' ...)` statement deleted from the per-join
+ *   transaction (the pre-fix behaviour: the edge lands, the count never moves).
+ *   Command: npx nx test memory-core -- libs/memory-core/src/cluster-incremental-membercount.spec.ts
+ *   Exit 1 (3 failed, 3 passed): `AC-050.1 a join into an existing community
+ *   updates member_count to the live count` AssertionError: expected 3 to be 4;
+ *   `AC-050.1 repeated joins across ticks keep member_count equal to the live
+ *   count` AssertionError: expected 3 to be 5; `AC-050.3 after joins no live
+ *   community drifts` AssertionError: expected [ { rowid: 8, ... } ] to deeply
+ *   equal []. The uid-stability, join-counter and singleton tests stay green by
+ *   design (they do not read member_count).
+ *   Restored byte-identical (cmp) and re-run green: 6 passed, exit 0.
+ *
+ * Red run, 90ba140a AC-C8 (recorded 2026-10-19, same worktree):
+ *   Fault seeded: cluster.ts incrementalJoin, the MEMBER_OF INSERT moved out of
+ *   the transaction (executed before it) so only the recount is transactional.
+ *   Exit 1 (1 failed, 6 passed): `a failure between the MEMBER_OF insert and the
+ *   recount rolls the join back` AssertionError: expected 4 to be 3 (the edge
+ *   survived the failed recount). Restored byte-identical and green: 7 passed.
+ *
  * Light risk map:
  *  - join updates member_count ............ AC-050.1 tests 1, 2
  *  - repeated joins accumulate ............ AC-050.1 test 2
@@ -27,7 +48,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import type { AdapterTransaction, StoreAdapter } from '@adhd/sox-store-adapter';
 import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
 import { runBatchEnrich } from './enrich-batch.js';
@@ -124,7 +145,7 @@ describe('050ba52f — incremental join keeps meta.member_count equal to live ME
 
       const after = (await communities(adapter)).find((c) => c.rowid === seed.rowid)!;
       expect(after.live).toBe(SEED.length + 1);
-      // RED arm before the fix: stays at SEED.length (stale).
+      // Pre-fix this stayed at SEED.length (stale); see the red run in the header.
       expect(after.member_count).toBe(after.live);
     });
   });
@@ -216,3 +237,48 @@ describe('050ba52f — incremental join keeps meta.member_count equal to live ME
     });
   });
 });
+
+describe('90ba140a AC-C8 the join edge and the member_count recount commit together', () => {
+  it('90ba140a AC-C8: a failure between the MEMBER_OF insert and the recount rolls the join back (no edge counted as absent)', async () => {
+    await withStore(async (adapter) => {
+      const seed = await setup(adapter);
+      await writeAll(adapter, [alpha('five')]);
+
+      const wrapTx = (tx: AdapterTransaction): AdapterTransaction => ({
+        executeGet: (q, a) => tx.executeGet(q, a),
+        executeAll: (q, a) => tx.executeAll(q, a),
+        exec: (q) => tx.exec(q),
+        executeRun: async (q, a) => {
+          if (q.includes("'$.member_count'")) throw new Error('injected: crash between edge insert and recount');
+          return tx.executeRun(q, a);
+        },
+      });
+      const faulty = new Proxy(adapter, {
+        get(target, prop) {
+          if (prop === 'transaction') {
+            return (fn: (tx: AdapterTransaction) => unknown, opts?: unknown) =>
+              (target.transaction as (f: (t: AdapterTransaction) => unknown, o?: unknown) => Promise<unknown>)
+                .call(target, (tx) => fn(wrapTx(tx)), opts);
+          }
+          const v = Reflect.get(target, prop, target) as unknown;
+          return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+        },
+      });
+
+      await runBatchEnrich(faulty, { incrementalCluster: true, storeKey: STORE_KEY }).catch(() => undefined);
+
+      // The join's edge rolled back with the failed recount: stored == live == SEED.length.
+      const after = (await communities(adapter)).find((c) => c.rowid === seed.rowid)!;
+      expect(after.live).toBe(SEED.length);
+      expect(after.member_count).toBe(after.live);
+
+      // And the next clean tick joins it and the count follows.
+      const clean = await runBatchEnrich(adapter, { incrementalCluster: true, storeKey: STORE_KEY });
+      expect(clean.incremental_joined).toBe(1);
+      const healed = (await communities(adapter)).find((c) => c.rowid === seed.rowid)!;
+      expect(healed.live).toBe(SEED.length + 1);
+      expect(healed.member_count).toBe(healed.live);
+    });
+  });
+});
+

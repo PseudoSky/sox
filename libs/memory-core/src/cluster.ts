@@ -799,8 +799,9 @@ function communityScopeClause(salt: string): string {
  *
  * Does not create new communities (that remains a full/subset pass's job).
  *
- * 050ba52f: after the join loop, `meta.member_count` of every community that
- * received a member is rewritten to its live MEMBER_OF count, because
+ * 050ba52f: in the same transaction as each join's MEMBER_OF insert,
+ * `meta.member_count` of the receiving community is rewritten to its live
+ * MEMBER_OF count, because
  * `memory_get_community` reads `memberCount` straight from `meta`. The
  * community uid is deliberately NOT recomputed (owner ruling K0 32a2a24e: the
  * first-minted uid stays stable; member overlap inherits it), so a join never
@@ -1040,12 +1041,27 @@ async function incrementalJoin(
       continue;
     }
 
-    await adapter.executeRun(
-      `INSERT INTO edge (src, dst, rel, origin, weight, t_created)
-       VALUES (?, ?, 'MEMBER_OF', 'inferred', 1.0, ?)
-       ON CONFLICT(src, dst, rel) DO UPDATE SET t_invalid = NULL`,
-      [vRow.node_id, bestCommunityRowid, now],
-    );
+    // 050ba52f: the MEMBER_OF insert and the community's member_count recount
+    // commit in ONE transaction, so a crash or a failed UPDATE can never leave
+    // an edge counted by `memory_get_community` as absent. The count is
+    // recomputed from live edges (not incremented): a revived edge (the ON
+    // CONFLICT branch) and any earlier drift converge on the truth.
+    const joinedCommunityRowid = bestCommunityRowid;
+    await adapter.transaction(async (tx) => {
+      await tx.executeRun(
+        `INSERT INTO edge (src, dst, rel, origin, weight, t_created)
+         VALUES (?, ?, 'MEMBER_OF', 'inferred', 1.0, ?)
+         ON CONFLICT(src, dst, rel) DO UPDATE SET t_invalid = NULL`,
+        [vRow.node_id, joinedCommunityRowid, now],
+      );
+      await tx.executeRun(
+        `UPDATE node SET meta = json_set(COALESCE(meta, '{}'), '$.member_count',
+                (SELECT COUNT(*) FROM edge
+                  WHERE dst = ? AND rel = 'MEMBER_OF' AND t_invalid IS NULL))
+          WHERE rowid = ?`,
+        [joinedCommunityRowid, joinedCommunityRowid],
+      );
+    });
     joinedThisPass.set(bestCommunityRowid, alreadyJoinedThisPass + 1);
     recordJoinOutcome(storeKey, 'joined');
     // The MEMBER_OF insert above is the exact moment this episode becomes
@@ -1070,20 +1086,6 @@ async function incrementalJoin(
     // still converges, just one tick later, with a materially smaller blob
     // risk per pass.
     joined++;
-  }
-
-  // 050ba52f: refresh the stored member_count of each community that grew.
-  // Recounted from live edges rather than incremented, so a revived edge (the
-  // ON CONFLICT branch above) and any prior drift both converge on the truth.
-  for (const communityRowid of joinedThisPass.keys()) {
-    const live = await adapter.executeGet<{ cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM edge WHERE dst = ? AND rel = 'MEMBER_OF' AND t_invalid IS NULL`,
-      [communityRowid],
-    );
-    await adapter.executeRun(
-      `UPDATE node SET meta = json_set(COALESCE(meta, '{}'), '$.member_count', ?) WHERE rowid = ?`,
-      [live?.cnt ?? 0, communityRowid],
-    );
   }
 
   // Advance the watermark past every candidate decided this pass, stopping just

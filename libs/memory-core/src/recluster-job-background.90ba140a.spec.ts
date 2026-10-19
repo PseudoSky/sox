@@ -10,9 +10,27 @@
  * `runIsolated` mock — nothing is forked.
  * Items: 90ba140a / 2f998081 AC-B1 .. AC-B4 (+ AC-B6 citation rule).
  *
- * Seeded-fault red runs (see the bucket return): AC-B1 restore the inline
- * `clusterSubset` call in curateRecluster; AC-B3 drop the `NOT EXISTS` from the
- * enqueue INSERT / the owner guard from the claim UPDATE.
+ * Recorded red runs (2026-10-19, worktree recluster-bg-c1; each fault seeded in
+ * the named source file, spec run via `npx nx test memory-core -- <this file>`,
+ * file restored byte-identical (cmp) afterwards):
+ *   AC-B1  curate.ts curateRecluster: add `await clusterSubset(adapter, {filter,
+ *          persist})` before enqueueing (the old inline pass).
+ *          Exit 1, 3 failed / 16 passed. `a FILTERED recluster returns a queued
+ *          job handle and never calls clusterSubset in the tool call`:
+ *          AssertionError: expected 'TIMED_OUT' not to be 'TIMED_OUT';
+ *          `filtered dry_run is deferred too`: AssertionError: expected
+ *          "vi.fn()" to not be called at all, but actually been called 1 times.
+ *   AC-B3  recluster-job.ts enqueue INSERT: `WHERE NOT EXISTS (...)` -> `WHERE 1`.
+ *          Exit 1, 5 failed / 14 passed. `a second request returns the open job
+ *          handle and adds no row` and `concurrent requests from two independent
+ *          connections yield exactly one job`: AssertionError: expected 4 to be 1.
+ *   AC-B3  recluster-job.ts claim UPDATE owner guard: `owner = ?` -> `owner IS
+ *          NOT ?`. Exit 1, 2 failed / 17 passed. `the owner re-claims its own
+ *          running job`: AssertionError: expected { proceed: false, ... } to
+ *          deeply equal { proceed: true, claimed: 1 }.
+ *   Restored: 19 passed (19), exit 0.
+ * The claim's foreign-lease NOT EXISTS guard has its own red run in
+ * recluster-job-corrections.90ba140a.spec.ts (AC-B3).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
@@ -127,7 +145,8 @@ describe('90ba140a AC-B2 job state survives the request and is observable', () =
       maxSeq: job.seq, owner: 'o1', leaseMs: 60_000, nowMs: Date.parse('2026-10-15T10:00:05Z'),
     });
     expect(claim).toEqual({ proceed: true, claimed: 1 });
-    const running = await readReclusterJob(observer, job.job_id);
+    // Reads take the same clock as the claim: the lease is live at 10:00:06 (AC-C5 maps an expired lease to failed).
+    const running = await readReclusterJob(observer, job.job_id, Date.parse('2026-10-15T10:00:06Z'));
     expect(running!.state).toBe('running');
     expect(running!.started_at).toBe('2026-10-15T10:00:05.000Z');
     expect(running!.owner).toBe('o1');

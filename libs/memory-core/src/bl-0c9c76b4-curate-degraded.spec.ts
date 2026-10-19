@@ -13,6 +13,17 @@
  * the background job contract of 90ba140a AC-B4: the request returns a job
  * handle, the isolated pass settles the job, and `recluster_status` reports
  * `state: degraded` with the degradation reason.
+ *
+ * Red run (recorded 2026-10-19, worktree recluster-bg-c1):
+ *   Fault seeded: recluster-job-runner.ts, the `else if
+ *   (isolated.result.cluster_degraded)` branch disabled, so a degraded child
+ *   result falls through to the `completed` settle.
+ *   Command: npx nx test memory-core -- libs/memory-core/src/bl-0c9c76b4-curate-degraded.spec.ts
+ *   Exit 1 (2 failed, 1 passed): `a nodeCap-degraded subset pass settles
+ *   degraded with reason nodeCap` and `a budget-degraded subset pass settles
+ *   degraded with reason budget`, both AssertionError: expected 'completed' to
+ *   be 'degraded'. The un-degraded test stays green by design.
+ *   Restored byte-identical (cmp) and re-run green: 3 passed, exit 0.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';

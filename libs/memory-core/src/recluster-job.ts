@@ -232,6 +232,14 @@ export interface EnqueueReclusterJobResult {
    * no second pass will run, and this is that job's handle.
    */
   joined: boolean;
+  /**
+   * 90ba140a AC-C6: false when this request JOINED an open job that does not
+   * carry it — a filtered request that joined a global job (or a subset job with
+   * different filters / persist), or a global request that joined a subset job.
+   * The caller's filters were then NOT applied; it received the open job's
+   * handle. Always true for a fresh enqueue.
+   */
+  request_honored: boolean;
 }
 
 /** The `payload.job` envelope stored on the organizer_queue trigger row. */
@@ -315,15 +323,60 @@ export async function readPartition(adapter: StoreAdapter): Promise<ReclusterPar
 // never settle its job, so an expired lease is reaped to `failed`
 // (`owner_lost`) by the next enqueue/claim — the feature cannot wedge.
 
-/** An open (not yet terminal) job row: pending or running. */
-const OPEN_JOB_SQL = `json_extract(payload, '$.job.job_id') IS NOT NULL
+/**
+ * An open (not yet terminal) job row: pending or running.
+ *
+ * 90ba140a AC-C4: `done_at IS NULL` is part of the predicate so SQLite can
+ * answer it from the partial index `ix_q_open` (schema.ts, `WHERE done_at IS
+ * NULL`). Without it every enqueue / reap / claim scanned the whole
+ * organizer_queue with json_extract, and done rows are never deleted. A row
+ * whose trigger was already closed (`done_at` set) can no longer run, so it is
+ * not "open" even if a failed settle left its status pending/running — the tick
+ * closes the trigger row just before settling the job. Reads of such a zombie
+ * by handle still report it (an expired lease reads `failed`/`owner_lost`).
+ */
+export const OPEN_JOB_SQL = `done_at IS NULL
+   AND json_extract(payload, '$.job.job_id') IS NOT NULL
    AND json_extract(payload, '$.job.status') IN ('pending', 'running')`;
+
+/** Error text of a job whose owner died before settling it. */
+const OWNER_LOST_ERROR =
+  'owner lost: the lease expired before the job settled; request recluster again';
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-function rowToJob(seq: number, rawPayload: string | null): ReclusterJob | null {
-  const env = parseJobEnvelope(rawPayload);
-  if (!env) return null;
+/**
+ * 90ba140a AC-C5: the EFFECTIVE view of a stored envelope. A `running` job whose
+ * lease has lapsed has no live owner — it can never settle itself — yet its
+ * stored status stays `running` until some server's next claim/enqueue reaps it
+ * ({@link reapStaleReclusterJobs}). A reader (recluster_status, `latest`, the
+ * ping block) must not wait for that tick to be told the truth, so every read
+ * maps such a job to `failed`/`owner_lost` exactly as the reap will write it.
+ * Pure: it never writes (a read stays a read); the reap persists it later.
+ */
+function effectiveEnvelope(env: JobEnvelope, nowMs: number): JobEnvelope {
+  if (env.status !== 'running' || env.lease_expires_at === null) return env;
+  const leaseMs = Date.parse(env.lease_expires_at);
+  if (!Number.isFinite(leaseMs) || leaseMs > nowMs) return env;
+  return {
+    ...env,
+    status: 'failed',
+    reason: 'owner_lost',
+    error: OWNER_LOST_ERROR,
+    finished_at: env.lease_expires_at,
+    updated_at: env.lease_expires_at,
+    lease_expires_at: null,
+  };
+}
+
+function rowToJob(
+  seq: number,
+  rawPayload: string | null,
+  nowMs: number = Date.now(),
+): ReclusterJob | null {
+  const stored = parseJobEnvelope(rawPayload);
+  if (!stored) return null;
+  const env = effectiveEnvelope(stored, nowMs);
   return {
     job_id: env.job_id,
     seq,
@@ -362,12 +415,13 @@ export async function reapStaleReclusterJobs(
         SET payload = json_set(payload,
               '$.job.status', 'failed',
               '$.job.reason', 'owner_lost',
-              '$.job.error', 'owner lost: the lease expired before the job settled; request recluster again',
+              '$.job.error', '${OWNER_LOST_ERROR}',
               '$.job.finished_at', ?,
               '$.job.updated_at', ?),
             claimed_at = COALESCE(claimed_at, ?),
             done_at = COALESCE(done_at, ?)
-      WHERE json_extract(payload, '$.job.job_id') IS NOT NULL
+      WHERE done_at IS NULL
+        AND json_extract(payload, '$.job.job_id') IS NOT NULL
         AND json_extract(payload, '$.job.status') = 'running'
         AND json_extract(payload, '$.job.lease_expires_at') <= ?`,
     [now, now, now, now, now],
@@ -376,18 +430,26 @@ export async function reapStaleReclusterJobs(
 }
 
 /** The currently open job on this store (pending or running), or null. */
-export async function readOpenReclusterJob(adapter: StoreAdapter): Promise<ReclusterJob | null> {
+export async function readOpenReclusterJob(
+  adapter: StoreAdapter,
+  nowMs: number = Date.now(),
+): Promise<ReclusterJob | null> {
   const row = await adapter.executeGet<{ seq: number; payload: string | null }>(
     `SELECT seq, payload FROM organizer_queue WHERE ${OPEN_JOB_SQL} ORDER BY seq LIMIT 1`,
   );
-  return row ? rowToJob(row.seq, row.payload) : null;
+  const job = row ? rowToJob(row.seq, row.payload, nowMs) : null;
+  // A job with a lapsed lease reads `failed` (AC-C5): it is not open.
+  return job && (job.status === 'pending' || job.status === 'running') ? job : null;
 }
 
 /** sox_store_meta key of the latest-job pointer (O(1) read for ping / status). */
 export const RECLUSTER_LATEST_KEY = 'recluster_job_latest';
 
 /** The most recently requested job on this store, or null if none was recorded. */
-export async function readLatestReclusterJob(adapter: StoreAdapter): Promise<ReclusterJob | null> {
+export async function readLatestReclusterJob(
+  adapter: StoreAdapter,
+  nowMs: number = Date.now(),
+): Promise<ReclusterJob | null> {
   const ptr = await adapter.executeGet<{ value: string }>(
     `SELECT value FROM sox_store_meta WHERE key = ?`,
     [RECLUSTER_LATEST_KEY],
@@ -404,7 +466,7 @@ export async function readLatestReclusterJob(adapter: StoreAdapter): Promise<Rec
     `SELECT seq, payload FROM organizer_queue WHERE seq = ?`,
     [seq],
   );
-  return row ? rowToJob(row.seq, row.payload) : null;
+  return row ? rowToJob(row.seq, row.payload, nowMs) : null;
 }
 
 // ── Producer ──────────────────────────────────────────────────────────────────
@@ -463,20 +525,31 @@ export async function enqueueReclusterJob(
     const payload = JSON.stringify(
       scope === 'global' ? { full: true, reason, job } : { subset: true, reason, job },
     );
-    const info = await adapter.executeRun(
-      `INSERT INTO organizer_queue (op, payload, priority, enqueued)
-       SELECT ?, ?, 1, ?
-        WHERE NOT EXISTS (SELECT 1 FROM organizer_queue WHERE ${OPEN_JOB_SQL})`,
-      [op, payload, now],
-    );
-    if (info.rowsAffected > 0) {
-      const seq = Number(info.lastInsertRowid);
-      await adapter.executeRun(
+    // 90ba140a AC-C8: the guarded insert and the `latest` pointer commit in ONE
+    // transaction. Two statements left a crash window in which the job existed
+    // but `latest` (and so `recluster_status {latest:true}` / the ping block)
+    // still named the previous job.
+    const seq = await adapter.transaction(async (tx): Promise<number | null> => {
+      const info = await tx.executeRun(
+        `INSERT INTO organizer_queue (op, payload, priority, enqueued)
+         SELECT ?, ?, 1, ?
+          WHERE NOT EXISTS (SELECT 1 FROM organizer_queue WHERE ${OPEN_JOB_SQL})`,
+        [op, payload, now],
+      );
+      if (info.rowsAffected === 0) return null;
+      const insertedSeq = Number(info.lastInsertRowid);
+      await tx.executeRun(
         `INSERT INTO sox_store_meta (key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-        [RECLUSTER_LATEST_KEY, JSON.stringify({ job_id: jobId, seq })],
+        [RECLUSTER_LATEST_KEY, JSON.stringify({ job_id: jobId, seq: insertedSeq })],
       );
-      return { job_id: jobId, seq, status: 'pending', state: 'queued', scope, joined: false };
+      return insertedSeq;
+    }, { mode: 'immediate' });
+    if (seq !== null) {
+      return {
+        job_id: jobId, seq, status: 'pending', state: 'queued', scope, joined: false,
+        request_honored: true,
+      };
     }
     const open = await readOpenReclusterJob(adapter);
     if (open) {
@@ -499,11 +572,29 @@ export async function enqueueReclusterJob(
         state: open.state,
         scope: open.scope,
         joined: true,
+        request_honored: sameRequest(scope, opts.subset, open),
       };
     }
     // The open job settled between our insert and our read — go again.
   }
   throw new Error('enqueueReclusterJob: could not enqueue a job or join the open one');
+}
+
+/** Does the open job carry the request being made? (AC-C6) */
+function sameRequest(
+  scope: ReclusterJobScope,
+  subset: ReclusterSubsetRequest | undefined,
+  open: ReclusterJob,
+): boolean {
+  if (open.scope !== scope) return false;
+  if (scope === 'global') return true;
+  const canon = (r: ReclusterSubsetRequest | null | undefined): string =>
+    JSON.stringify([
+      r?.persist ?? null,
+      r?.threshold ?? null,
+      Object.entries(r?.filters ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    ]);
+  return canon(subset) === canon(open.request);
 }
 
 // ── Read surface (the poll) ───────────────────────────────────────────────────
@@ -570,6 +661,7 @@ function parsePartition(raw: string | null): ReclusterPartition | null {
 export async function readReclusterJob(
   adapter: StoreAdapter,
   jobId: string,
+  nowMs: number = Date.now(),
 ): Promise<ReclusterJob | null> {
   if (typeof jobId !== 'string' || jobId.length === 0) return null;
   const row = await adapter.executeGet<{ seq: number; payload: string | null }>(
@@ -578,7 +670,7 @@ export async function readReclusterJob(
     [jobId],
   );
   if (!row) return null;
-  return rowToJob(row.seq, row.payload);
+  return rowToJob(row.seq, row.payload, nowMs);
 }
 
 /**
@@ -652,7 +744,7 @@ export async function claimGlobalReclusterJobs(
               '$.job.lease_expires_at', ?,
               '$.job.updated_at', ?),
             claimed_at = COALESCE(claimed_at, ?)
-      WHERE seq <= ? AND op = 'enrich'
+      WHERE done_at IS NULL AND seq <= ? AND op = 'enrich'
         AND json_extract(payload, '$.job.job_id') IS NOT NULL
         AND json_extract(payload, '$.job.scope') IS NOT 'subset'
         AND (json_extract(payload, '$.job.status') = 'pending'
@@ -662,7 +754,8 @@ export async function claimGlobalReclusterJobs(
              OR json_extract(payload, '$.job.next_retry_at') <= ?)
         AND NOT EXISTS (
           SELECT 1 FROM organizer_queue o2
-           WHERE json_extract(o2.payload, '$.job.status') = 'running'
+           WHERE o2.done_at IS NULL
+             AND json_extract(o2.payload, '$.job.status') = 'running'
              AND json_extract(o2.payload, '$.job.owner') IS NOT ?
              AND json_extract(o2.payload, '$.job.lease_expires_at') > ?)`,
     [opts.owner, now, iso(nowMs + opts.leaseMs), now, now, opts.maxSeq, opts.owner, now, opts.owner, now],
@@ -671,7 +764,7 @@ export async function claimGlobalReclusterJobs(
 
   const managed = await adapter.executeGet<{ c: number }>(
     `SELECT COUNT(*) AS c FROM organizer_queue
-      WHERE seq <= ? AND op = 'enrich'
+      WHERE done_at IS NULL AND seq <= ? AND op = 'enrich'
         AND json_extract(payload, '$.job.job_id') IS NOT NULL
         AND json_extract(payload, '$.job.scope') IS NOT 'subset'
         AND json_extract(payload, '$.job.status') IN ('pending', 'running')`,
@@ -681,7 +774,8 @@ export async function claimGlobalReclusterJobs(
 
   const heldRow = await adapter.executeGet<{ seq: number }>(
     `SELECT seq FROM organizer_queue
-      WHERE json_extract(payload, '$.job.status') = 'running'
+      WHERE done_at IS NULL
+        AND json_extract(payload, '$.job.status') = 'running'
         AND json_extract(payload, '$.job.owner') IS NOT ?
         AND json_extract(payload, '$.job.lease_expires_at') > ?
       LIMIT 1`,
@@ -795,7 +889,8 @@ export async function claimSubsetReclusterJob(
                       AND json_extract(payload, '$.job.status') = 'pending')
         AND NOT EXISTS (
           SELECT 1 FROM organizer_queue o2
-           WHERE json_extract(o2.payload, '$.job.status') = 'running'
+           WHERE o2.done_at IS NULL
+             AND json_extract(o2.payload, '$.job.status') = 'running'
              AND json_extract(o2.payload, '$.job.owner') IS NOT ?
              AND json_extract(o2.payload, '$.job.lease_expires_at') > ?)`,
     [opts.owner, now, iso(nowMs + opts.leaseMs), now, now, opts.owner, now],
