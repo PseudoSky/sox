@@ -22,6 +22,9 @@ from .errors import FinanceError
 from .layout import Layout, atomic_write_json, read_json
 
 HOSTS = ("query2.finance.yahoo.com", "query1.finance.yahoo.com")
+# Yahoo answers HTTP 200 to exactly this bare token and HTTP 429 to curl, python-urllib, and
+# full browser strings, measured 2026-10-19 from one network; the value is deliberate.
+YAHOO_USER_AGENT = "Mozilla/5.0"
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 SYMBOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.^=-]{0,14}$")
@@ -97,7 +100,7 @@ def fetch_chart(symbol: str, range_: str = "1y", opener: Opener | None = None,
     opener = opener or default_opener
     query = urllib.parse.urlencode({"interval": "1d", "range": range_, "events": "div,split",
                                     "includeAdjustedClose": "true"})
-    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    headers = {"User-Agent": YAHOO_USER_AGENT, "Accept": "application/json"}
     last = 0
     for host in HOSTS:
         url = f"https://{host}/v8/finance/chart/{urllib.parse.quote(symbol)}?{query}"
@@ -216,6 +219,20 @@ def get_bars(layout: Layout, symbol: str, range_: str = "1y", ttl_hours: float =
     layout.ensure_base()
     atomic_write_json(path, record)
     return record
+
+
+def unadjusted_symbols(layout: Layout, symbols: list[str]) -> list[str]:
+    """Symbols whose cached bars came from a provider without adjusted closes, dividends or splits."""
+    out = []
+    for symbol in symbols:
+        path = _cache_path(layout, symbol)
+        if path.exists() and read_json(path).get("adjusted") is False:
+            out.append(symbol)
+    return out
+
+
+UNADJUSTED_WARNING = ("these symbols use unadjusted prices (no dividends or splits): returns, gaps and "
+                      "moving averages near a split or ex-dividend date are unreliable; rerun when Yahoo answers")
 
 
 class YahooFMPAdapter:

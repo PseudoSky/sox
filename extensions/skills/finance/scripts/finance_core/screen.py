@@ -17,7 +17,7 @@ from typing import Any
 from .breakout import translate_breakout
 from .errors import FinanceError
 from .layout import Layout
-from .marketdata import check_symbol
+from .marketdata import UNADJUSTED_WARNING, check_symbol, unadjusted_symbols
 from .plans import put_plan
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
@@ -72,8 +72,12 @@ def run_screen(layout: Layout, symbols: list[str], max_candidates: int = 100, to
     stdout = _run([sys.executable, "-I", "-c", _BOOTSTRAP, json.dumps(spec)], "screen")
     path = _reported_path(stdout, r"JSON Report:\s+(\S+\.json)", "screen")
     data = json.loads(path.read_text(encoding="utf-8"))
-    return {"screen": str(path), "universe": symbols, "candidates": len(data.get("results", [])),
-            "schema_version": data.get("schema_version")}
+    out = {"screen": str(path), "universe": symbols, "candidates": len(data.get("results", [])),
+           "schema_version": data.get("schema_version")}
+    flagged = unadjusted_symbols(layout, symbols)
+    if flagged:
+        out["warnings"] = [{"symbols": flagged, "warning": UNADJUSTED_WARNING}]
+    return out
 
 
 def run_planner(layout: Layout, screen_path: str | Path, account_size: str, risk_pct: str = "0.5") -> dict[str, Any]:

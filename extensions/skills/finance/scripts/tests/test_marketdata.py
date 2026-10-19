@@ -266,3 +266,23 @@ def test_expired_block_marker_retries_yahoo_and_explicit_provider_bypasses_it(tm
     marker.write_text(json.dumps(fresh_block))
     forced = HostRouter((200, payload(ROWS)), (500, b""))
     assert marketdata.get_bars(layout, "SYN4", provider="yahoo", opener=forced)["provider"] == "yahoo"
+
+
+def test_yahoo_requests_send_the_bare_user_agent_that_yahoo_accepts():
+    seen = []
+
+    def opener(url, headers):
+        seen.append((url, headers["User-Agent"]))
+        return 200, json.dumps(payload(ROWS)).encode()
+
+    marketdata.fetch_chart("SYN", "1mo", opener=opener, sleep=lambda s: None)
+    assert seen and all(agent == "Mozilla/5.0" for _, agent in seen)
+
+
+def test_unadjusted_symbols_lists_only_cached_bars_without_adjustments(tmp_path):
+    layout = Layout(tmp_path)
+    router = HostRouter((429, b""), (200, nasdaq_payload(NASDAQ_ROWS)))
+    marketdata.get_bars(layout, "SYN", opener=router, sleep=lambda s: None)
+    healthy = HostRouter((200, payload(ROWS, adj=[10.0, None, 11.0, 12.0])), (500, b""))
+    marketdata.get_bars(layout, "GOOD", provider="yahoo", opener=healthy, sleep=lambda s: None)
+    assert marketdata.unadjusted_symbols(layout, ["SYN", "GOOD", "NEVER"]) == ["SYN"]

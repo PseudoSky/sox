@@ -7,5 +7,5 @@ Run: `market edge --symbols A,B,C,... [--range 1y] [--as-of YYYY-MM-DD] [--expor
 The chain is the harvested edge-* skills in order: `edge-candidate-agent` (detects candidates from the bars), `edge-hint-extractor`, `edge-concept-synthesizer`, `edge-strategy-designer`, `edge-strategy-reviewer` (at most two revise iterations), then export of passing drafts. `edge-pipeline-orchestrator` runs them. `edge-signal-aggregator` merges outputs from several skills into one ranked signal list and is run by hand with its own `SKILL.source.md`.
 
 - A result of `candidates: 0` is a valid answer: the detector ran and nothing in the universe qualified. Report it as such and do not lower thresholds to produce one.
-- Bars from the Nasdaq fallback are unadjusted, so the run reports `adjusted_prices: false`; treat gap and return features near splits and dividends as unreliable.
+- Bars normally come from Yahoo (adjusted). If any symbol fell back to unadjusted Nasdaq prices, the run reports `adjusted_prices: false` and a `warnings` entry naming them; treat gap and return features near splits and dividends as unreliable and rerun when Yahoo answers.
 - Drafts are hypotheses. Send any draft to P7 for a backtest before it reaches P5.

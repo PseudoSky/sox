@@ -57,6 +57,7 @@ def test_pipeline_runs_through_every_stage_on_a_universe_with_candidates(tmp_pat
     assert (Path(result["output_dir"]) / "tickets").is_dir()
     assert manifest  # sibling edge-* scripts were all located and chained
     assert list((Path(result["output_dir"]) / "drafts").glob("*.yaml"))
+    assert result["adjusted_prices"] is False and result["warnings"][0]["symbols"] == SYMBOLS
 
 
 def test_empty_detection_is_a_clean_result_not_an_error(tmp_path):
@@ -66,6 +67,7 @@ def test_empty_detection_is_a_clean_result_not_an_error(tmp_path):
     seed(layout, breakout=False)
     result = edge.run_edge(layout, SYMBOLS)
     assert result["candidates"] == 0 and "no edge candidates" in result["note"]
+    assert result["warnings"] and result["adjusted_prices"] is False
 
 
 def test_fewer_than_three_symbols_is_refused(tmp_path):

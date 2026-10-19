@@ -15,7 +15,7 @@ from typing import Any
 
 from .errors import FinanceError
 from .layout import Layout
-from .marketdata import get_bars
+from .marketdata import UNADJUSTED_WARNING, get_bars, unadjusted_symbols
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
 CONVERTER = SKILL_ROOT / "scripts" / "edge_support" / "to_parquet.py"
@@ -68,11 +68,13 @@ def run_edge(layout: Layout, symbols: list[str], range_: str = "1y", dry_run: bo
         done = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_SECONDS, check=False)
     except subprocess.TimeoutExpired as exc:
         raise FinanceError(f"edge: timed out after {TIMEOUT_SECONDS}s") from exc
+    flagged = unadjusted_symbols(layout, symbols)
+    warnings = [{"symbols": flagged, "warning": UNADJUSTED_WARNING}] if flagged else []
     tickets_manifest = out_dir / "pipeline" / "tickets" / "run_manifest.json"
     if done.returncode != 0 and NO_TICKETS in (done.stderr + done.stdout) and tickets_manifest.is_file():
         found = json.loads(tickets_manifest.read_text(encoding="utf-8"))
         return {"output_dir": str(out_dir / "pipeline"), "dry_run": dry_run, "input": summary,
-                "candidates": 0, "adjusted_prices": "nasdaq" not in summary["providers"], "regime": found.get("regime"), "as_of": found.get("as_of"),
+                "candidates": 0, "warnings": warnings, "adjusted_prices": not flagged, "regime": found.get("regime"), "as_of": found.get("as_of"),
                 "note": "detection ran and found no edge candidates in this universe; that is a valid result",
                 "report": str(out_dir / "pipeline" / "tickets" / "daily_report.md")}
     if done.returncode != 0:
@@ -81,6 +83,6 @@ def run_edge(layout: Layout, symbols: list[str], range_: str = "1y", dry_run: bo
     if not manifest_path.is_file():
         raise FinanceError("edge: pipeline_run_manifest.json not written")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return {"output_dir": str(out_dir / "pipeline"), "manifest": str(manifest_path), "dry_run": dry_run,
-            "input": summary, "adjusted_prices": "nasdaq" not in summary["providers"],
+    return {"output_dir": str(out_dir / "pipeline"), "manifest": str(manifest_path), "dry_run": dry_run, "warnings": warnings,
+            "input": summary, "adjusted_prices": not flagged,
             "manifest_summary": {k: manifest[k] for k in manifest if k in ("status", "stages", "summary", "counts")}}
