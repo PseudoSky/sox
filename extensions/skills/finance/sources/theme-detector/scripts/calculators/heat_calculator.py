@@ -31,11 +31,11 @@ def momentum_strength_score(weighted_return_pct: float) -> float:
     Log transform compresses extreme values for better mid-range separation.
 
     Examples:
-        |0%|  -> ~3
-        |5%|  -> ~27
+        |0%|  -> ~0.4
+        |5%|  -> ~12
         |15%| -> 50 (midpoint)
-        |30%| -> ~73
-        |50%| -> ~86
+        |30%| -> ~79
+        |50%| -> ~91
     """
     x = abs(weighted_return_pct)
     log_x = math.log(1.0 + x)
@@ -51,7 +51,7 @@ def volume_intensity_score(vol_20d: Optional[float], vol_60d: Optional[float]) -
     Ceiling at ratio=2.0 instead of 1.2, with better mid-range separation.
 
     Examples:
-        ratio=1.0  -> ~37
+        ratio=1.0  -> ~41
         ratio=1.2  -> ~58
         ratio=1.5  -> ~76
         ratio=2.0  -> 100
