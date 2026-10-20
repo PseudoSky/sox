@@ -9,3 +9,5 @@ The chain is the harvested edge-* skills in order: `edge-candidate-agent` (detec
 - A result of `candidates: 0` is a valid answer: the detector ran and nothing in the universe qualified. Report it as such and do not lower thresholds to produce one.
 - Bars normally come from Yahoo (adjusted). If any symbol fell back to unadjusted Nasdaq prices, the run reports `adjusted_prices: false` and a `warnings` entry naming them; treat gap and return features near splits and dividends as unreliable and rerun when Yahoo answers.
 - Drafts are hypotheses. Send any draft to P7 for a backtest before it reaches P5.
+
+`market edge` also returns `drafts` (the draft files) and `notes`. Anomalies in `tickets/anomalies.json` are outliers on single symbols, not signals. Draft conditions can hold placeholder zeros when few events fed them, so open each draft and check its conditions before a P7 backtest.

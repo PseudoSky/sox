@@ -20,13 +20,18 @@ def _latest(folder: Path, pattern: str) -> dict[str, Any] | None:
     return read_json(found[-1]) if found else None
 
 
-def build_report(layout: Layout, as_of: str | None = None) -> dict[str, Any]:
+def build_report(layout: Layout, as_of: str | None = None, account_id: str | None = None,
+                 today: date | None = None) -> dict[str, Any]:
     accounts, receipts, warnings = [], [], []
-    for account_id in list_accounts(layout):
-        result = analyze.analyze_account(layout, account_id, as_of)
+    ref = date.fromisoformat(as_of) if as_of else (today or date.today())
+    for acct in ([account_id] if account_id else list_accounts(layout)):
+        result = analyze.analyze_account(layout, acct, as_of)
         receipts.append(str(analyze.write_analysis(layout, result)))
         accounts.append(result)
-        warnings.extend(f"{account_id}: {w}" for w in result["warnings"])
+        warnings.extend(f"{acct}: {w}" for w in result["warnings"])
+        age = analyze.snapshot_age_warning(result["snapshot_as_of"], ref)
+        if age:
+            warnings.append(f"{acct}: {age}")
     report_as_of = as_of or max((a["as_of"] for a in accounts), default=date.today().isoformat())
     return {
         "as_of": report_as_of,
@@ -67,11 +72,19 @@ def render_markdown(report: dict[str, Any]) -> str:
     out += [f"## {SECTIONS[1]}", ""]
     for a in report["accounts"]:
         out += [f"### {a['account_id']}", ""]
-        out += _table(["key", "qty", "last_price", "market value", "cost basis", "unrealized", "unrealized %"],
-                      [[p["key"], p["qty"], _s(p["last_price"]), p["market_value"], _s(p.get("cost_basis")),
-                        _s(p.get("unrealized_pnl")), _s(p.get("unrealized_pct"))] for p in a["positions"]])
+        out += _table(["key", "qty", "last_price", "price as of", "market value", "cost basis", "unrealized", "unrealized %"],
+                      [[p["key"], p["qty"], _s(p["last_price"]), _s(p.get("price_as_of")), p["market_value"],
+                        _s(p.get("cost_basis")), _s(p.get("unrealized_pnl")), _s(p.get("unrealized_pct"))]
+                       for p in a["positions"]])
         u = a["unrealized"]
-        out += ["", f"Unrealized P&L {u['pnl']} on cost {u['cost_basis']} ({_s(u['pnl_pct'])}%); {u['basis']}.", ""]
+        out += ["", f"Unrealized P&L {u['pnl']} on cost {u['cost_basis']} ({_s(u['pnl_pct'])}%); {u['basis']}."]
+        r = a.get("realized")
+        if r and r["fills"]:
+            out += ["", f"Realized on paper fills since the snapshot: {r['realized_pnl']} over {len(r['fills'])} sale(s); "
+                    f"{r['basis']}."]
+            out += _table(["seq", "symbol", "qty", "price", "realized"],
+                          [[str(x["seq"]), x["symbol"], x["qty"], x["price"], _s(x["realized_pnl"])] for x in r["fills"]])
+        out.append("")
     out += [f"## {SECTIONS[2]}", ""]
     for a in report["accounts"]:
         out += [f"### {a['account_id']}", ""]
@@ -110,13 +123,15 @@ def render_markdown(report: dict[str, Any]) -> str:
             out += [f"- {acct}: no recommendations receipt. Run `recommend --account {acct}`."]
             continue
         out += [f"### {acct} (decision support, not advice)", ""]
+        current = next((a for a in report["accounts"] if a["account_id"] == acct), None)
+        if current is not None and rec.get("positions_seq") != current.get("ledger_seq"):
+            out += [f"- STALE: positions changed after this recommendation (paper ledger {rec.get('positions_seq')} "
+                    f"-> {current.get('ledger_seq')}). Run `recommend --account {acct}` again before acting on it.", ""]
         for item in rec["items"]:
             if item["type"] == "trim":
-                pr = item["proposal"]
-                out += [f"- Trim {item['symbol']}: {item['reason']}. Proposal: {pr['side']} {pr['qty']} at about "
-                        f"{pr['reference_price']} for {pr['est_proceeds']}; leaves {item['after']['position_pct']}%. "
-                        f"Estimated realized gain {_s(item['est_realized_gain'])}. Alternative: add "
-                        f"{item['alternative']['keep_position_and_add_other_assets']} to other holdings instead. {item['caveat']}."]
+                out += [f"- Trim {item['symbol']}: {item['reason']}. {item['text']} Instead of selling, adding "
+                        f"{item['alternative']['new_money_in_other_holdings']} of new money to other holdings brings it "
+                        f"to the limit. {item['caveat']}"]
             else:
                 out += [f"- Entry policy: {item['action']}."]
         out += [f"- Entry proposals: {len(rec['proposals'])}."]
@@ -129,6 +144,10 @@ def render_markdown(report: dict[str, Any]) -> str:
                     str(p["quantity"]), p["valid_until"]] for p in report["plans"]])
     out += ["", f"## {SECTIONS[8]}", ""]
     items = [f"- Resolve: {w}" for w in report["warnings"]]
+    items += [f"- Re-run `recommend --account {acct}`: its receipt predates the latest paper fills"
+              for acct, rec in report["recommendations"].items()
+              if rec is not None and any(a["account_id"] == acct and rec.get("positions_seq") != a.get("ledger_seq")
+                                         for a in report["accounts"])]
     items += [f"- Concentration: {a['account_id']} holds {f['key']} at {f['pct']}% of equity, above the "
               f"{analyze.CONCENTRATION_LIMIT_PCT}% single-position limit"
               for a in report["accounts"] for f in a.get("concentration_flags", [])]

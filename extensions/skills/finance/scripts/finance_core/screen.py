@@ -73,11 +73,18 @@ def run_screen(layout: Layout, symbols: list[str], max_candidates: int = 100, to
     path = _reported_path(stdout, r"JSON Report:\s+(\S+\.json)", "screen")
     data = json.loads(path.read_text(encoding="utf-8"))
     results = data.get("results", [])
+    funnel = (data.get("metadata") or {}).get("funnel") or {}
+    found = funnel.get("vcp_candidates", len(results))
     out = {"screen": str(path), "universe": symbols, "results": len(results),
            "valid_vcp": sum(1 for r in results if r.get("valid_vcp")),
-           "schema_version": data.get("schema_version"),
-           "note": "results are every symbol that passed the trend filter; only valid_vcp ones can become "
-                   "trade candidates. Sector and market cap read Unknown and 0 because fundamentals are not provided."}
+           "schema_version": data.get("schema_version"), "funnel": funnel,
+           "truncated": found > len(results),
+           "note": f"results holds the {len(results)} best-scoring of {found} symbols that passed the trend filter "
+                   f"(--top {top}); the rest are not in the file. Only valid_vcp ones can become trade candidates. "
+                   "Sector and market cap read Unknown and 0 because fundamentals are not provided."}
+    if len(symbols) > max_candidates:
+        out["pre_filter_cap"] = (f"only the {max_candidates} highest Stage 2 likelihood symbols of {len(symbols)} were "
+                                 "analysed in full (--max-candidates)")
     flagged = unadjusted_symbols(layout, symbols)
     if flagged:
         out["warnings"] = [{"symbols": flagged, "warning": UNADJUSTED_WARNING}]

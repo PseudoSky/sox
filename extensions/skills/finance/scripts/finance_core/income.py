@@ -8,7 +8,7 @@ from typing import Any
 from . import paper
 from .accounts import load_current
 from .errors import FinanceError
-from .layout import Layout, atomic_write_json
+from .layout import Layout, write_receipt
 from .marketdata import get_bars
 from .money import money_str, parse_money
 
@@ -21,7 +21,7 @@ def write_income(layout: Layout, result: dict[str, Any]) -> str:
     folder = layout.base / "income"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{result['account_id']}-{result['as_of']}.json"
-    atomic_write_json(path, result)
+    write_receipt(path, result)
     return str(path)
 
 

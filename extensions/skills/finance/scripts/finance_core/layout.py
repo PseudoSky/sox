@@ -6,6 +6,7 @@ import json
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,15 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 def atomic_write_json(path: Path, obj: Any) -> None:
     atomic_write_text(path, json.dumps(obj, indent=2, sort_keys=True, default=str) + "\n")
+
+
+def write_receipt(path: Path, obj: Any) -> None:
+    """Write a receipt. A changed receipt moves the previous one to history/ first, so no run is lost."""
+    new = json.dumps(obj, indent=2, sort_keys=True, default=str) + "\n"
+    if path.exists() and path.read_text(encoding="utf-8") != new:
+        stamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        atomic_write_text(path.parent / "history" / f"{path.stem}-{stamp}.json", path.read_text(encoding="utf-8"))
+    atomic_write_text(path, new)
 
 
 def read_json(path: Path) -> Any:

@@ -22,8 +22,10 @@ MIN_RVOL = Decimal("1.2")
 MAX_TREND_AGE = 15
 MAX_TRADES_PER_DAY = 2
 FRIDAY = 4
-# The skill's worked example is a $75 account: $30 per trade, $60 daily loss.
+# The source's worked example is a $75 account: $30 per trade, $60 daily loss. Those ratios are a
+# small-account all-in rule, so they apply by default only up to this size; above it the caller states limits.
 TRADE_FRACTION, DAILY_LOSS_FRACTION = Decimal("0.4"), Decimal("0.8")
+SOURCE_EXAMPLE_MAX_ACCOUNT = Decimal("1000")
 
 
 def _minutes(value: str) -> int:
@@ -56,12 +58,18 @@ def _grade(value: str) -> int:
 
 def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int, weekday: int,
                 open_positions: int = 0, trades_today: int = 0, day_pnl: Any = None,
-                account_size: Any = None, symbol: str | None = None) -> dict[str, Any]:
+                account_size: Any = None, symbol: str | None = None, max_trade_pct: Any = None,
+                max_daily_loss_pct: Any = None) -> dict[str, Any]:
     """Return every rule with its observed value; `allowed` only when all hold."""
     now, rv = _minutes(time_et), _dec(rvol, "rvol")
     pnl = _dec(day_pnl, "day_pnl") if day_pnl is not None else None
     size = _dec(account_size, "account_size") if account_size is not None else None
-    loss_cap = size * DAILY_LOSS_FRACTION if size is not None else None
+    trade_frac = _dec(max_trade_pct, "max_trade_pct") / 100 if max_trade_pct is not None else None
+    loss_frac = _dec(max_daily_loss_pct, "max_daily_loss_pct") / 100 if max_daily_loss_pct is not None else None
+    small = size is not None and size <= SOURCE_EXAMPLE_MAX_ACCOUNT
+    trade_frac = trade_frac if trade_frac is not None else TRADE_FRACTION if small else None
+    loss_frac = loss_frac if loss_frac is not None else DAILY_LOSS_FRACTION if small else None
+    loss_cap = size * loss_frac if size is not None and loss_frac is not None else None
     rules = [
         ("grade_at_least_B", _grade(grade) <= _grade(MIN_GRADE), grade),
         ("signal_is_mega", signal in MEGA, signal),
@@ -80,15 +88,22 @@ def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int
     out: dict[str, Any] = {"allowed": not failed, "failed": failed,
                            "rules": [{"rule": n, "ok": ok, "observed": v} for n, ok, v in rules]}
     if size is not None:
-        out["max_per_trade"] = str((size * TRADE_FRACTION).quantize(Decimal("0.01")))
-        out["max_daily_loss"] = str(loss_cap.quantize(Decimal("0.01")))
         out["warnings"] = []
-        if pnl is None:
-            out["warnings"].append("--day-pnl was not supplied, so the daily-loss rule was NOT evaluated; supply it "
-                                   "(0 on a fresh day) to include it")
-        out["warnings"] += [f"caps are the source's $75 example ratios (40% per trade, 80% daily loss) scaled to this account: "
-                           f"a full daily loss is {DAILY_LOSS_FRACTION * 100:.0f}% of it. They are the playbook's numbers, "
-                           f"not a recommendation; size smaller if that loss is not acceptable."]
+        if trade_frac is not None:
+            out["max_per_trade"] = str((size * trade_frac).quantize(Decimal("0.01")))
+        if loss_cap is not None:
+            out["max_daily_loss"] = str(loss_cap.quantize(Decimal("0.01")))
+        if trade_frac is None or loss_frac is None:
+            out["warnings"].append(
+                f"no dollar caps: the source's 40% per trade and 80% daily loss come from a $75 example account and "
+                f"are applied only to accounts up to ${SOURCE_EXAMPLE_MAX_ACCOUNT}. State your own limits with "
+                "--max-trade-pct and --max-daily-loss-pct (percent of the account).")
+        elif max_trade_pct is None or max_daily_loss_pct is None:
+            out["warnings"].append("caps use the source's small-account ratios (40% per trade, 80% daily loss); "
+                                   "override with --max-trade-pct and --max-daily-loss-pct")
+        if pnl is None or loss_cap is None:
+            out["warnings"].append("the daily-loss rule was NOT evaluated: it needs --day-pnl (0 on a fresh day) "
+                                   "and a daily-loss limit")
     return out
 
 

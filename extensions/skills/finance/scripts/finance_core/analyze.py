@@ -10,7 +10,7 @@ from typing import Any
 from . import paper, plans
 from .accounts import list_accounts, load_account, load_current
 from .errors import FinanceError
-from .layout import Layout, atomic_write_json, check_id
+from .layout import Layout, check_id, write_receipt
 from .money import money_str, parse_money
 
 STALE_DAYS = 5
@@ -57,6 +57,11 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
         pad = (pos.get("price_as_of") or "")[:10]
         if pad and (as_of_date - date.fromisoformat(pad)).days > STALE_DAYS:
             warnings.append(f"stale price: {key}")
+    marks = sorted({(p.get("price_as_of") or "")[:10] for _, p, _ in valued} - {""})
+    if len(marks) > 1:
+        newer = [k for k, p, _ in valued if (p.get("price_as_of") or "")[:10] == marks[-1]]
+        warnings.append(f"mixed price dates {', '.join(marks)}: {', '.join(newer)} marked {marks[-1]}, "
+                        "the other positions keep their earlier marks; equity moves with the re-mark")
     equity = cash + sum((v for _, _, v in valued), Decimal(0))
     cash_equivalents = sum((v for _, p, v in valued if p["asset_type"] == "cash_equivalent"), Decimal(0))
     by_type: dict[str, Decimal] = {"cash": cash} if cash else {}
@@ -95,11 +100,14 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
         },
         "cash_pct": _pct(cash + cash_equivalents, equity),
         "positions": [{"key": k, "qty": p["qty"], "last_price": p["last_price"],
-                       "market_value": _cents(v), "avg_cost": p.get("avg_cost"), **pnl_rows.get(p["symbol"], {})}
+                       "market_value": _cents(v), "price_as_of": (p.get("price_as_of") or "")[:10] or None,
+                       "avg_cost": p.get("avg_cost"), **pnl_rows.get(p["symbol"], {})}
                       for k, p, v in valued],
         "unrealized": {"cost_basis": _cents(cost_total), "market_value": _cents(value_total),
                        "pnl": _cents(value_total - cost_total), "pnl_pct": _pct(value_total - cost_total, cost_total),
                        "basis": "average cost from the broker snapshot; cash equivalents excluded; not tax advice"},
+        "realized": paper.realized_fills(layout, account_id),
+        "ledger_seq": paper.ledger_seq(layout, account_id),
         "concentration_flags": sorted(flags, key=lambda f: -Decimal(f["pct"])),
         "top_concentration": [{"key": k, "pct": _pct(abs(v), equity)} for k, _, v in top],
         "open_risk": money_str(risk),
@@ -107,6 +115,18 @@ def analyze_account(layout: Layout, account_id: str, as_of: str | None = None) -
         "active_plans": [{"plan_id": p["plan_id"], "symbol": p["symbol"], "status": p["status"]} for p in active],
         "warnings": warnings,
     }
+
+
+SNAPSHOT_WARN_DAYS = 2
+
+
+def snapshot_age_warning(snapshot_as_of: str, ref: date) -> str | None:
+    """Warn when the imported snapshot is at least two days older than the reference date."""
+    age = (ref - date.fromisoformat(snapshot_as_of)).days
+    if age < SNAPSHOT_WARN_DAYS:
+        return None
+    return (f"snapshot is {age} days old ({snapshot_as_of}, reference {ref.isoformat()}): positions and prices "
+            "may have moved; re-ingest a fresh export before acting")
 
 
 def consolidated(layout: Layout, account_ids: list[str] | None = None) -> dict[str, Any]:
@@ -127,5 +147,5 @@ def write_analysis(layout: Layout, analysis: dict[str, Any]) -> Path:
         raise FinanceError("analysis: as_of required")
     layout.ensure_base()
     path = layout.analysis_dir() / f"{analysis['account_id']}-{analysis['as_of']}.json"
-    atomic_write_json(path, analysis)
+    write_receipt(path, analysis)
     return path

@@ -114,10 +114,11 @@ def test_zero_dte_warns_about_scaled_caps_and_checks_the_underlying():
     ok = dict(grade="A", signal="mega_bull", rvol="1.4", time_et="10:15", trend_age=6, weekday=1)
     r = intraday.check_entry(**ok, account_size="500", symbol="spy", day_pnl="0")
     assert r["allowed"] and r["max_daily_loss"] == "400.00" and "80%" in r["warnings"][0]
+    assert r["max_per_trade"] == "200.00"
     assert any(x["rule"] == "daily_loss_not_reached" for x in r["rules"])
     silent = intraday.check_entry(**ok, account_size="500")
     assert not any(x["rule"] == "daily_loss_not_reached" for x in silent["rules"])
-    assert "NOT evaluated" in silent["warnings"][0]
+    assert any("NOT evaluated" in w for w in silent["warnings"])
     wrong = intraday.check_entry(**ok, symbol="TSLA")
     assert wrong["failed"] == ["signal_on_spy"]
 
@@ -158,7 +159,9 @@ def test_trim_proposal_is_hand_computed_and_cash_equivalents_never_flagged(tmp_p
     assert [i["symbol"] for i in out["items"] if i["type"] == "trim"] == ["BIG"]
     assert trim["proposal"]["qty"] == "70" and trim["proposal"]["est_proceeds"] == "7000.00"
     assert trim["after"]["position_pct"] == "25.00" and trim["est_realized_gain"] == "2800.00"
-    assert trim["alternative"]["keep_position_and_add_other_assets"] == "28000.00"
+    assert trim["alternative"]["new_money_in_other_holdings"] == "28000.00"
+    assert trim["text"].startswith("Sell 70 BIG at about 100 for roughly $7,000.00") and "$2,800.00" in trim["text"]
+    assert trim["caveat"].startswith("The gain is an estimate")
     assert out["items"][-1]["posture"] is None and "market posture" in out["items"][-1]["action"]
 
 

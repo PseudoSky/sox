@@ -5,13 +5,12 @@ from __future__ import annotations
 import re
 
 from datetime import datetime, timezone
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from .errors import FinanceError
 from .layout import Layout, atomic_write_json, check_id, read_json
-from .money import check_currency, money_str, parse_money
+from .money import check_currency, parse_money
 
 FILL_MODES = {"open", "limit", "trigger", "trigger_or_gap"}
 DEFAULT_FILL_RULES = {

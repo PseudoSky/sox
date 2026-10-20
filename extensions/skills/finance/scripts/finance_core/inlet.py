@@ -24,7 +24,7 @@ from .money import money_str, parse_money, parse_qty
 ASSET_TYPES = {"equity", "etf", "option", "cash_equivalent", "other"}
 OPTION_FIELDS = ("option_underlying", "option_expiry", "option_strike", "option_right",
                  "option_multiplier")
-OPTIONAL_FIELDS = ("avg_cost", "last_price", "asset_type", "currency")
+OPTIONAL_FIELDS = ("avg_cost", "cost_basis", "last_price", "asset_type", "currency")
 TOLERANCE = Decimal("0.05")
 
 
@@ -247,6 +247,10 @@ def _build_position(row: dict[str, Any], fields: dict[str, Any], amap: dict[str,
         asset_type = "option"
         key = f"{symbol}|{expiry}|{right}|{money_str(strike)}|{money_str(multiplier)}"
     avg = get("avg_cost")
+    total_cost = get("cost_basis")
+    if not _blank(total_cost):
+        # The broker's total cost is exact; a per-share column is rounded to cents. Prefer the total.
+        avg = money_str((parse_money(total_cost, f"{key}.cost_basis") / (qty * multiplier)).quantize(Decimal("0.00000001")))
     last = get("last_price")
     currency = _text(get("currency")) or base_currency
     return {

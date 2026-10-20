@@ -10,12 +10,12 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import accounts, analyze, breakout, edge, income, inlet, intraday, marketdata, paper, plans, posture, recommend, report, screen
+from . import accounts, analyze, breakout, edge, income, inlet, intraday, marketdata, paper, plans, posture, recommend, report, screen, universe
 from .errors import FinanceError
 from .layout import Layout, read_json
 
@@ -79,6 +79,16 @@ def cmd_inlet(args: argparse.Namespace, layout: Layout) -> Any:
     raise FinanceError(f"unknown inlet action {args.action}")
 
 
+def _latest_bar(layout: Layout, account_id: str, order_id: str) -> dict[str, Any]:
+    order = next((o for o in paper.open_orders(layout, account_id) if o["order_id"] == order_id), None)
+    if order is None:
+        raise FinanceError(f"order {order_id} is not open")
+    if order.get("option"):
+        raise FinanceError("paper fill --latest-bar covers equity orders; pass --bar for an option")
+    last = marketdata.get_bars(layout, order["symbol"], "1y")["bars"][-1]
+    return {"open": last["open"], "high": last["high"], "low": last["low"], "close": last["close"], "ts": last["date"]}
+
+
 def cmd_paper(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "order":
         order = _load_json_arg(args.order)
@@ -86,7 +96,13 @@ def cmd_paper(args: argparse.Namespace, layout: Layout) -> Any:
             raise FinanceError("order: the quantity field is 'qty', not 'quantity'")
         return {"order_id": paper.place_order(layout, args.account, order)}
     if args.action == "fill":
-        return paper.fill_bar(layout, args.account, args.order_id, _load_json_arg(args.bar))
+        if args.latest_bar:
+            bar = _latest_bar(layout, args.account, args.order_id)
+        elif args.bar:
+            bar = _load_json_arg(args.bar)
+        else:
+            raise FinanceError("paper fill: pass --bar <json> or --latest-bar")
+        return paper.fill_bar(layout, args.account, args.order_id, bar)
     if args.action == "cancel":
         paper.cancel_order(layout, args.account, args.order_id)
         return {"cancelled": args.order_id}
@@ -119,7 +135,8 @@ def cmd_intraday(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "entry":
         weekday = args.weekday if args.weekday is not None else datetime.now().weekday()
         return intraday.check_entry(args.grade, args.signal, args.rvol, args.time, args.trend_age, weekday,
-                                    args.open_positions, args.trades_today, args.day_pnl, args.account_size, args.symbol)
+                                    args.open_positions, args.trades_today, args.day_pnl, args.account_size, args.symbol,
+                                    args.max_trade_pct, args.max_daily_loss_pct)
     return intraday.check_exit(args.pnl_pct, args.grade, args.signal_flipped, args.time, args.entry_grade)
 
 
@@ -132,9 +149,14 @@ def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
                 "fetched_at": record["fetched_at"], "source": record["source"],
                 "provider": record["provider"], "adjusted": record["adjusted"],
                 "cache": str(layout.base / "market" / f"{record['symbol']}.json")}
+    if args.action == "universe":
+        return universe.get_universe(layout, args.index, sector=args.sector, limit=args.limit, refresh=args.refresh)
     if args.action == "screen":
-        return screen.run_screen(layout, [s for s in args.symbols.split(",") if s],
-                                 max_candidates=args.max_candidates, top=args.top)
+        if bool(args.symbols) == bool(args.index):
+            raise FinanceError("screen: pass exactly one of --symbols or --index")
+        symbols = ([s for s in args.symbols.split(",") if s] if args.symbols
+                   else universe.get_universe(layout, args.index, sector=args.sector, limit=args.limit)["symbols"])
+        return screen.run_screen(layout, symbols, max_candidates=args.max_candidates, top=args.top)
     if args.action == "posture":
         result = posture.compute_posture(layout, tuple(s for s in args.symbols.split(",") if s))
         result["receipt"] = posture.write_posture(layout, result)
@@ -185,6 +207,9 @@ def cmd_analyze(args: argparse.Namespace, layout: Layout) -> Any:
             result["receipt"] = income.write_income(layout, result)
         return result
     result = analyze.analyze_account(layout, args.account, as_of=args.as_of)
+    age = analyze.snapshot_age_warning(result["snapshot_as_of"], date.fromisoformat(args.as_of) if args.as_of else date.today())
+    if age:
+        result["warnings"].append(age)
     if args.write:
         result["receipt"] = analyze.write_analysis(layout, result)
     return result
@@ -197,7 +222,7 @@ def cmd_recommend(args: argparse.Namespace, layout: Layout) -> Any:
 
 
 def cmd_report(args: argparse.Namespace, layout: Layout) -> Any:
-    built = report.build_report(layout, as_of=args.as_of)
+    built = report.build_report(layout, as_of=args.as_of, account_id=args.account)
     written = report.write_report(layout, built)
     return {"as_of": built["as_of"], **written, "warnings": built["warnings"]}
 
@@ -244,7 +269,9 @@ def build_parser() -> argparse.ArgumentParser:
     pf = pap_sub.add_parser("fill")
     pf.add_argument("--account", required=True)
     pf.add_argument("--order-id", required=True)
-    pf.add_argument("--bar", required=True, help="JSON bar: open, high, low, close, ts")
+    pf.add_argument("--bar", help="JSON bar: open, high, low, close, ts")
+    pf.add_argument("--latest-bar", action="store_true",
+                    help="use the most recent cached or fetched daily bar of the order's symbol")
     pc = pap_sub.add_parser("cancel")
     pc.add_argument("--account", required=True)
     pc.add_argument("--order-id", required=True)
@@ -292,9 +319,17 @@ def build_parser() -> argparse.ArgumentParser:
     mb.add_argument("--refresh", action="store_true")
     mb.add_argument("--provider", default="auto", choices=list(marketdata.PROVIDERS))
     ms = mk_sub.add_parser("screen")
-    ms.add_argument("--symbols", required=True, help="comma list; the screener never needs a key")
+    ms.add_argument("--symbols", help="comma list; the screener never needs a key")
+    ms.add_argument("--index", choices=sorted(universe.SOURCES), help="screen an index's constituents instead (see `market universe`)")
+    ms.add_argument("--sector", help="with --index: one GICS sector")
+    ms.add_argument("--limit", type=int, help="with --index: first N constituents")
     ms.add_argument("--max-candidates", type=int, default=100)
-    ms.add_argument("--top", type=int, default=20)
+    ms.add_argument("--top", type=int, default=20, help="keep the N best-scoring symbols in `results`")
+    mu = mk_sub.add_parser("universe", help="list an index's constituents (keyless) for `market screen --symbols`")
+    mu.add_argument("--index", default="sp500", choices=sorted(universe.SOURCES))
+    mu.add_argument("--sector")
+    mu.add_argument("--limit", type=int)
+    mu.add_argument("--refresh", action="store_true")
 
     mp = mk_sub.add_parser("posture", help="P2: full / reduced / no-new-entries from index trend and drawdown")
     mp.add_argument("--symbols", default=",".join(posture.DEFAULT_INDICES))
@@ -318,6 +353,8 @@ def build_parser() -> argparse.ArgumentParser:
     ie.add_argument("--trades-today", type=int, default=0)
     ie.add_argument("--day-pnl", help="today's realized P&L in account currency, 0 on a fresh day; omitted = rule not evaluated")
     ie.add_argument("--account-size")
+    ie.add_argument("--max-trade-pct", help="per-trade cap as percent of --account-size; the source's 40%% only up to $1,000")
+    ie.add_argument("--max-daily-loss-pct", help="daily-loss cap as percent of --account-size; the source's 80%% only up to $1,000")
     ie.add_argument("--symbol", help="underlying the signal fired on; the playbook requires SPY")
     ix = it_sub.add_parser("exit")
     ix.add_argument("--pnl-pct", required=True)
@@ -340,6 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rp = groups.add_parser("report")
     rp.add_argument("--as-of")
+    rp.add_argument("--account", help="report one account (default: every account)")
     return parser
 
 

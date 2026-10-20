@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from . import analyze, paper, posture, screen
-from .errors import FinanceError
-from .layout import Layout, atomic_write_json
+from .layout import Layout, write_receipt
 from .money import money_str, parse_money
 
 CENT = Decimal("0.01")
@@ -37,17 +36,24 @@ def _trims(layout: Layout, account_id: str, result: dict[str, Any], limit: Decim
             continue
         proceeds = shares * price
         avg = parse_money(pos["avg_cost"], "avg_cost") if pos.get("avg_cost") is not None else None
+        after_pct = ((value - proceeds) / equity * 100).quantize(CENT)
+        gain = (shares * (price - avg)).quantize(CENT) if avg is not None else None
+        text = (f"Sell {shares} {row['key']} at about {money_str(price)} for roughly ${proceeds:,.2f}, which takes it "
+                f"from {flag['pct']}% to {after_pct}% of equity")
+        text += f"; the estimated realized gain on average cost is ${gain:,.2f}." if gain is not None else "."
         out.append({
-            "type": "trim", "priority": 1, "symbol": row["key"],
+            "type": "trim", "priority": 1, "symbol": row["key"], "text": text,
             "reason": f"{row['key']} is {flag['pct']}% of equity, above the {limit}% single-position limit",
             "proposal": {"side": "sell", "qty": str(shares), "reference_price": money_str(price),
                          "order_type": "limit", "est_proceeds": money_str(proceeds.quantize(CENT))},
-            "after": {"position_pct": money_str(((value - proceeds) / equity * 100).quantize(CENT)),
-                      "cash_pct_added": money_str((proceeds / equity * 100).quantize(CENT))},
-            "est_realized_gain": money_str((shares * (price - avg)).quantize(CENT)) if avg is not None else None,
-            "alternative": {"keep_position_and_add_other_assets": money_str((value / limit * 100 - equity).quantize(CENT)),
-                            "meaning": "new money needed in other holdings to bring the same position down to the limit"},
-            "caveat": "an estimate from average cost; taxes and wash-sale rules are not modelled and this is not advice",
+            "after": {"position_pct": money_str(after_pct),
+                      "proceeds_as_pct_of_equity": money_str((proceeds / equity * 100).quantize(CENT))},
+            "est_realized_gain": money_str(gain) if gain is not None else None,
+            "alternative": {"new_money_in_other_holdings": money_str((value / limit * 100 - equity).quantize(CENT)),
+                            "meaning": "instead of selling, adding this much new money to other holdings brings "
+                                       "the same position down to the limit"},
+            "caveat": "The gain is an estimate from average cost; taxes and wash-sale rules are not modelled and "
+                      "this is not advice.",
         })
     return out
 
@@ -87,7 +93,12 @@ def recommend_for_account(layout: Layout, account_id: str, screen_path: str | No
     policy = _entry_policy(receipt)
     items.append(policy)
     out: dict[str, Any] = {"account_id": account_id, "as_of": result["as_of"], "limit_pct": str(limit),
-                           "decision_support": True, "items": items, "proposals": [], "watchlist": []}
+                           "decision_support": True, "items": items, "proposals": [], "watchlist": [],
+                           "positions_seq": result["ledger_seq"], "screen": screen_path,
+                           "warnings": list(result["warnings"])}
+    age = analyze.snapshot_age_warning(result["snapshot_as_of"], today or date.today())
+    if age:
+        out["warnings"].append(age)
     if screen_path is not None:
         data = json.loads(Path(screen_path).read_text(encoding="utf-8"))
         out["watchlist"] = _watch(data)
@@ -108,5 +119,5 @@ def write_recommendations(layout: Layout, result: dict[str, Any]) -> str:
     folder = layout.base / "recommendations"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{result['account_id']}-{result['as_of']}.json"
-    atomic_write_json(path, result)
+    write_receipt(path, result)
     return str(path)

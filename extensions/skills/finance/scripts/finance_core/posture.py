@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 from .errors import FinanceError
-from .layout import Layout, atomic_write_json
+from .layout import Layout, write_receipt
 from .marketdata import UNADJUSTED_WARNING, get_bars, unadjusted_symbols
 
 DEFAULT_INDICES = ("SPY", "QQQ", "IWM")
@@ -93,5 +93,5 @@ def write_posture(layout: Layout, result: dict[str, Any]) -> str:
     out = layout.base / "posture"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{result['as_of']}.json"
-    atomic_write_json(path, result)
+    write_receipt(path, result)
     return str(path)

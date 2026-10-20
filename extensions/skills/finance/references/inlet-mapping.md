@@ -29,11 +29,12 @@ The agent writes this file for each brokerage export. The core validates it with
 Top-level keys:
 
 - `header_line` (csv, 1-based, default 1): the physical line holding the column header, counting blank lines. A wrong value produces a rejection that lists the columns it read. Brokers put preambles above it; the header of a preamble-heavy file is usually not line 1.
+- `fields.cost_basis` (optional): the broker's total cost for the position. When mapped it replaces the per-share `avg_cost` column, which brokers round to cents; the average cost is derived as total cost over quantity, so cost basis and unrealized P&L match the broker to the cent.
 - `rows.row_filter`: `{column, equals}` keeps matching rows; `{column, not_equals}` drops them. Use `not_equals` to drop summary rows that share a column.
 - `rows.require_numeric` (csv): columns that must parse as numbers. A row failing this is skipped with a named warning, which is how totals and footers drop out.
 - `fields.asset_type` values in `asset_type_map` must be `equity`, `etf`, `option`, `cash_equivalent`, or `other`. Map mutual funds that are neither stocks nor ETFs to `other`; allocation reports them as their own bucket. Use `cash_equivalent` for money-market and sweep funds: they count toward `cash_pct` as a brokerage cash balance does, and are reported separately as `cash_equivalents`. A mapped asset_type column with a blank cell rejects the file; it never defaults to equity.
 
-Scalars (`as_of`, `cash`, `control_total`, `account_number`) read any row: a regex over the raw text. For a summary row, anchor on its label and capture the value column, e.g. `{"regex": "Cash & Cash Investments,[^,]*,[^,]*,[^,]*,([-0-9,.]+)", "group": 1}` for a row laid out as label, type, quantity, price, value. Adjust the `[^,]*` count to the row's real column count.
+Scalars (`as_of`, `cash`, `control_total`, `account_number`) read any row: a regex over the raw file text, quotes and delimiters included, so a value inside a quoted CSV cell is matched with its quotes and commas (`"1,234.00"`). For a summary row, anchor on its label and capture the value column, e.g. `{"regex": "Cash & Cash Investments,[^,]*,[^,]*,[^,]*,([-0-9,.]+)", "group": 1}` for a row laid out as label, type, quantity, price, value. Adjust the `[^,]*` count to the row's real column count.
 
 Account ids (`account create --account`) match `^[a-z0-9][a-z0-9_-]{0,63}$`.
 

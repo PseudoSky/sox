@@ -240,12 +240,44 @@ def fill_bar(layout: Layout, account_id: str, order_id: str, bar: dict[str, Any]
                                                "reason": "sell exceeds held long quantity at fill time",
                                                "bar_ts": bar.get("ts")})
         return {"status": "rejected", "order_id": order_id, "seq": ev["seq"]}
+    realized = None
+    if order["side"] == "sell":
+        held = state["positions"].get(key, {})
+        if held.get("avg_cost") is not None:
+            mult = Decimal(option["multiplier"]) if option else Decimal(1)
+            realized = money_str((price - Decimal(held["avg_cost"])) * qty * mult - fee)
     fill = {"type": "fill", "order_id": order_id, "price": money_str(price), "qty": money_str(qty),
             "fee": money_str(fee), "side": order["side"], "symbol": order["symbol"], "option": option,
             "multiplier": option["multiplier"] if option else "1", "bar_ts": bar.get("ts"),
-            "currency": account.get("base_currency")}
+            "currency": account.get("base_currency"), "realized_pnl": realized,
+            "fill_rule": {"order_type": order["type"], "mode": rule["fill"], "bar_open": money_str(o)}}
     ev = record_event(layout, account_id, fill)
-    return {"status": "filled", **{k: ev[k] for k in ("order_id", "price", "qty", "fee", "seq", "ts", "bar_ts")}}
+    return {"status": "filled", "side": order["side"], "symbol": order["symbol"], "realized_pnl": realized,
+            "fill_rule": fill["fill_rule"],
+            **{k: ev[k] for k in ("order_id", "price", "qty", "fee", "seq", "ts", "bar_ts")}}
+
+
+def ledger_seq(layout: Layout, account_id: str) -> int:
+    """Sequence number of the last ledger event; 0 when the account has no paper activity."""
+    events = _read_events(layout, account_id)
+    return events[-1]["seq"] if events else 0
+
+
+def realized_fills(layout: Layout, account_id: str) -> dict[str, Any]:
+    """Paper sells since the current snapshot, with realized P&L from the average cost at the fill."""
+    _, pointer = load_current(layout, account_id)
+    rows, total, unknown = [], Decimal(0), 0
+    for event in _read_events(layout, account_id):
+        if event["type"] != "fill" or event["ts"] <= pointer["imported_at"] or event["side"] != "sell":
+            continue
+        pnl = event.get("realized_pnl")
+        unknown += pnl is None
+        total += Decimal(pnl) if pnl is not None else 0
+        rows.append({"seq": event["seq"], "symbol": event["symbol"], "qty": event["qty"], "price": event["price"],
+                     "realized_pnl": pnl, "bar_ts": event.get("bar_ts")})
+    return {"fills": rows, "realized_pnl": money_str(total.quantize(Decimal("0.01"))),
+            "unknown_cost_fills": unknown,
+            "basis": "price minus the average cost at the fill, times quantity, minus fees; not tax advice"}
 
 
 def cancel_order(layout: Layout, account_id: str, order_id: str) -> dict[str, Any]:
