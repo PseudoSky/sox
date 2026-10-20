@@ -229,6 +229,20 @@ def export_draft(
 # ---------------------------------------------------------------------------
 
 
+def _round_threshold(match: "re.Match[str]") -> str:
+    """Round one decimal to a standard increment without erasing its scale.
+
+    Values of 10 or more become integers, values from 1 up to 10 keep one decimal, and values under 1
+    keep one significant figure (0.0098 stays 0.01, not 0).
+    """
+    value = float(match.group(0))
+    if value >= 10:
+        return str(round(value))
+    if value >= 1:
+        return str(round(value, 1))
+    return f"{value:.1g}" if value > 0 else "0"
+
+
 def apply_revisions(draft: dict[str, Any], instructions: list[str]) -> dict[str, Any]:
     """Apply heuristic revisions based on reviewer instructions."""
     revised = deepcopy(draft)
@@ -248,13 +262,7 @@ def apply_revisions(draft: dict[str, Any], instructions: list[str]) -> dict[str,
         elif "round precise thresholds" in lower:
             rounded: list[str] = []
             for cond in conditions:
-                rounded.append(
-                    re.sub(
-                        r"(\d+)\.(\d+)",
-                        lambda m: str(round(float(m.group(0)))),
-                        cond,
-                    )
-                )
+                rounded.append(re.sub(r"(\d+)\.(\d+)", _round_threshold, cond))
             conditions = rounded
 
     entry["conditions"] = conditions

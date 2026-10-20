@@ -811,6 +811,22 @@ class TestRevisionLogic:
         # Integer values unchanged
         assert "close > 100" in conditions
 
+    def test_rounding_keeps_the_scale_of_sub_one_thresholds(self) -> None:
+        draft: dict[str, Any] = {
+            "id": "test_draft",
+            "entry": {
+                "conditions": ["breadth_delta_7d=0.2", "ret_5d=0.0098", "vol_trend=0.8954",
+                               "avg_pair_corr_20=0.1233", "rsi > 50.7", "ratio > 3.14159"],
+                "trend_filter": [],
+            },
+            "variant": "core",
+            "export_ready_v1": True,
+        }
+        revised = apply_revisions(draft, instructions=["Round precise thresholds"])
+        assert revised["entry"]["conditions"] == [
+            "breadth_delta_7d=0.2", "ret_5d=0.01", "vol_trend=0.9", "avg_pair_corr_20=0.1",
+            "rsi > 51", "ratio > 3.1"]
+
     def test_apply_revision_preserves_variant(self, sample_draft_revise: dict) -> None:
         original_variant = sample_draft_revise["variant"]
         revised = apply_revisions(sample_draft_revise, instructions=["Reduce entry conditions"])

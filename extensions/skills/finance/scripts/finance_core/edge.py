@@ -102,8 +102,9 @@ def run_edge(layout: Layout, symbols: list[str], range_: str = "1y", dry_run: bo
              "tickets/anomalies.json lists statistical outliers (for example gap z-scores). They are observations "
              "about single symbols, not trade signals and not edge candidates."]
     if drafts:
-        notes.append("Draft conditions are template fields filled from few observations and can hold placeholder "
-                     "zeros. Open each draft and check its conditions before backtesting it in P7.")
+        notes.append("Draft conditions are the concept's observed values after the review loop rounds them "
+                     "(one significant figure below 1). They are single observations, not fitted thresholds: open "
+                     "each draft and check its conditions before backtesting it in P7.")
     return {"output_dir": str(out_dir / "pipeline"), "manifest": str(manifest_path), "dry_run": dry_run, "warnings": warnings,
             "drafts": drafts, "notes": notes,
             "review": {"passed": review.get("passed_count", 0), "rejected": review.get("rejected_count", 0),
