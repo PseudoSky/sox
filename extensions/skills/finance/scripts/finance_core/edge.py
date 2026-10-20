@@ -22,6 +22,7 @@ CONVERTER = SKILL_ROOT / "scripts" / "edge_support" / "to_parquet.py"
 ORCHESTRATOR = SKILL_ROOT / "sources" / "edge-pipeline-orchestrator" / "scripts" / "orchestrate_edge_pipeline.py"
 TIMEOUT_SECONDS = 900
 MIN_SYMBOLS = 3
+MIN_BARS_FOR_REGIME = 200  # the regime filter needs a 200-day average
 NO_TICKETS = "no valid ticket files found"
 
 
@@ -29,9 +30,11 @@ def write_ohlcv(layout: Layout, symbols: list[str], range_: str, dest: Path) -> 
     """Write the cached bars of `symbols` as the pipeline's long-format OHLCV parquet."""
     rows: list[dict[str, Any]] = []
     providers: set[str] = set()
+    counts: dict[str, int] = {}
     for symbol in symbols:
         record = get_bars(layout, symbol, range_)
         providers.add(record["provider"])
+        counts[record["symbol"]] = len(record["bars"])
         for bar in record["bars"]:
             rows.append({"symbol": record["symbol"], "timestamp": bar["date"],
                          "open": float(bar["open"]), "high": float(bar["high"]),
@@ -45,7 +48,9 @@ def write_ohlcv(layout: Layout, symbols: list[str], range_: str, dest: Path) -> 
     if done.returncode != 0:
         raise FinanceError("edge: could not write the OHLCV parquet", (done.stderr or done.stdout).strip().splitlines()[-3:])
     written = json.loads(done.stdout)
+    short = sorted(s for s, n in counts.items() if n < MIN_BARS_FOR_REGIME)
     return {"rows": written["rows"], "symbols": len(symbols), "providers": sorted(providers),
+            "short_history": short,
             "first": written["first"], "last": written["last"]}
 
 
@@ -70,6 +75,10 @@ def run_edge(layout: Layout, symbols: list[str], range_: str = "1y", dry_run: bo
         raise FinanceError(f"edge: timed out after {TIMEOUT_SECONDS}s") from exc
     flagged = unadjusted_symbols(layout, symbols)
     warnings = [{"symbols": flagged, "warning": UNADJUSTED_WARNING}] if flagged else []
+    if summary["short_history"]:
+        warnings.append({"symbols": summary["short_history"],
+                         "warning": f"fewer than {MIN_BARS_FOR_REGIME} bars: the pipeline drops these from its universe; "
+                                    "use --range 2y or longer"})
     tickets_manifest = out_dir / "pipeline" / "tickets" / "run_manifest.json"
     if done.returncode != 0 and NO_TICKETS in (done.stderr + done.stdout) and tickets_manifest.is_file():
         found = json.loads(tickets_manifest.read_text(encoding="utf-8"))
@@ -87,7 +96,10 @@ def run_edge(layout: Layout, symbols: list[str], range_: str = "1y", dry_run: bo
     review, export = stages.get("review_loop", {}), stages.get("export", {})
     not_exportable = export.get("skipped_not_eligible", [])
     drafts = sorted(str(p) for p in (out_dir / "pipeline" / "drafts").glob("*.yaml"))
-    notes = ["tickets/anomalies.json lists statistical outliers (for example gap z-scores). They are observations "
+    notes = ["The pipeline's universe_count can be smaller than the symbols passed: it keeps only symbols with a 200-day "
+             "average, a price above its minimum and enough average volume. Optional news and futures modules need "
+             "inputs this skill does not supply and are skipped.",
+             "tickets/anomalies.json lists statistical outliers (for example gap z-scores). They are observations "
              "about single symbols, not trade signals and not edge candidates."]
     if drafts:
         notes.append("Draft conditions are template fields filled from few observations and can hold placeholder "

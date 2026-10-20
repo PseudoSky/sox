@@ -6,6 +6,6 @@ Source skills (instructions only, no scripts): `mph-pine` writes Pine v6 indicat
 
 1. Authoring: read `sources/mph-pine/SKILL.source.md` and follow it. Where it differs from this playbook, this playbook wins: output path (step 2), no credit line, no clipboard step without tools, and a dashboard is optional (alert conditions are enough unless the user asks for one). The script is compiled by the user in TradingView's Pine Editor, which needs a TradingView account; say so and never claim it compiled.
 2. Where the script goes: `.finance/pine/<name>.pine` under the root unless the user names a path. The clipboard and `context7` steps in `mph-pine` apply only when those tools exist here; otherwise say the syntax is unchecked. Write no attribution or credit line in the script header.
-3. Porting: read `sources/pine-to-python/SKILL.source.md`. Name every construct that has no Python equivalent instead of approximating it silently.
+3. Porting: a port needs at least the slow length plus warm-up bars (50-bar EMA: fetch `market bars --range 1y` or longer, not `1mo`) and raises when given fewer rather than returning empty signals. read `sources/pine-to-python/SKILL.source.md`. Name every construct that has no Python equivalent instead of approximating it silently.
 4. A script is advisory. Placing trades and wiring alerts to a broker belong to E and are not implemented.
 5. Hand the finished strategy to P7 for a backtest with a stated data range.

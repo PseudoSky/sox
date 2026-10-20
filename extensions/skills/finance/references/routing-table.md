@@ -21,7 +21,7 @@ P4 dividend, P8 pine, P9 options, P10 discovery and P11 intraday rules are side 
 | P6 position-size | size | keep | position-sizer | plan, account equity | plan with quantity |
 | P7 validate-strategy | validate | keep | backtest-expert, strategy-pivot-designer, signal-postmortem, quant-feature-engineer | plan or strategy | validation receipt |
 | P8 pine-authoring | author | keep | mph-pine, pine-to-python | strategy | Pine script, Python port |
-| P9 options-analysis | analyze | keyed | options-strategy-advisor | market-data | options receipt |
+| P9 options-analysis | analyze | unavailable here (no chain source) | options-strategy-advisor | market-data | options receipt |
 | P10 strategy-discovery | research | keep | edge-candidate-agent, edge-hint-extractor, edge-concept-synthesizer, edge-strategy-designer, edge-strategy-reviewer, edge-pipeline-orchestrator, edge-signal-aggregator | market-data | strategy drafts |
 | P11 intraday-options-rules | analysis | keep | 0dte-flow, ghost-auto-trader (reference only) | observed signal values | entry/exit verdict |
 | P12 portfolio-report | report | keep | none (renders) | P0 receipts, plan index, P2, P4, P9 | report md and json |

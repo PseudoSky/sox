@@ -21,7 +21,8 @@ WATCH_MAX = 8
 BASE_RISK_PCT = Decimal("0.5")
 
 
-def _trims(layout: Layout, account_id: str, result: dict[str, Any], limit: Decimal) -> list[dict[str, Any]]:
+def _trims(layout: Layout, account_id: str, result: dict[str, Any], limit: Decimal,
+           notes: list[str]) -> list[dict[str, Any]]:
     equity = parse_money(result["equity"], "equity")
     held = paper.positions_now(layout, account_id)["positions"]
     out = []
@@ -33,6 +34,8 @@ def _trims(layout: Layout, account_id: str, result: dict[str, Any], limit: Decim
         excess = value - equity * limit / 100
         shares = (excess / price).to_integral_value(rounding=ROUND_DOWN)
         if shares < 1:
+            notes.append(f"{row['key']} is {flag['pct']}% of equity, above the {limit}% limit, but the excess "
+                         f"(${excess.quantize(CENT):,.2f}) is less than one share at {money_str(price)}, so no trim is proposed")
             continue
         proceeds = shares * price
         avg = parse_money(pos["avg_cost"], "avg_cost") if pos.get("avg_cost") is not None else None
@@ -89,13 +92,14 @@ def recommend_for_account(layout: Layout, account_id: str, screen_path: str | No
     limit = parse_money(limit_pct, "limit_pct")
     result = analyze.analyze_account(layout, account_id)
     receipt = posture.latest_posture(layout, today)
-    items = _trims(layout, account_id, result, limit)
+    notes: list[str] = []
+    items = _trims(layout, account_id, result, limit, notes)
     policy = _entry_policy(receipt)
     items.append(policy)
     out: dict[str, Any] = {"account_id": account_id, "as_of": result["as_of"], "limit_pct": str(limit),
                            "decision_support": True, "items": items, "proposals": [], "watchlist": [],
                            "positions_seq": result["ledger_seq"], "screen": screen_path,
-                           "warnings": list(result["warnings"])}
+                           "warnings": list(result["warnings"]) + notes}
     age = analyze.snapshot_age_warning(result["snapshot_as_of"], today or date.today())
     if age:
         out["warnings"].append(age)

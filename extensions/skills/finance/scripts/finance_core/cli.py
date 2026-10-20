@@ -80,13 +80,15 @@ def cmd_inlet(args: argparse.Namespace, layout: Layout) -> Any:
 
 
 def _latest_bar(layout: Layout, account_id: str, order_id: str) -> dict[str, Any]:
+    """Most recent daily bar of the order's symbol; `partial` is True while that session is still open."""
     order = next((o for o in paper.open_orders(layout, account_id) if o["order_id"] == order_id), None)
     if order is None:
         raise FinanceError(f"order {order_id} is not open")
     if order.get("option"):
         raise FinanceError("paper fill --latest-bar covers equity orders; pass --bar for an option")
     last = marketdata.get_bars(layout, order["symbol"], "1y")["bars"][-1]
-    return {"open": last["open"], "high": last["high"], "low": last["low"], "close": last["close"], "ts": last["date"]}
+    return {"open": last["open"], "high": last["high"], "low": last["low"], "close": last["close"], "ts": last["date"],
+            "partial": marketdata.bar_in_progress(last["date"])}
 
 
 def cmd_paper(args: argparse.Namespace, layout: Layout) -> Any:
@@ -102,7 +104,13 @@ def cmd_paper(args: argparse.Namespace, layout: Layout) -> Any:
             bar = _load_json_arg(args.bar)
         else:
             raise FinanceError("paper fill: pass --bar <json> or --latest-bar")
-        return paper.fill_bar(layout, args.account, args.order_id, bar)
+        partial = bool(bar.pop("partial", False))
+        result = paper.fill_bar(layout, args.account, args.order_id, bar)
+        if partial:
+            result["warnings"] = [f"the {bar['ts']} bar is still forming (the session closes 16:00 ET): its high, low "
+                                  "and close will change; the fill used what is cached now. Refetch after the close "
+                                  "with `market bars --refresh` for a final bar."]
+        return result
     if args.action == "cancel":
         paper.cancel_order(layout, args.account, args.order_id)
         return {"cancelled": args.order_id}

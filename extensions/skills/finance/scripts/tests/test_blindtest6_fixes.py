@@ -201,7 +201,7 @@ def test_screen_reports_truncation_and_funnel(tmp_path, monkeypatch):
     monkeypatch.setattr(screen, "_run", lambda *a, **k: f"JSON Report: {out_file}\n")
     out = screen.run_screen(layout, ["AAA", "BBB"], max_candidates=1, top=20)
     assert out["truncated"] is True and out["funnel"]["vcp_candidates"] == 26
-    assert "best-scoring of 26" in out["note"] and "--top 20" in out["note"]
+    assert "best-scoring of 26 VCP candidates" in out["note"] and "--top 20" in out["note"]
     assert "only the 1 highest" in out["pre_filter_cap"]
 
 
@@ -268,3 +268,49 @@ def test_total_cost_basis_beats_the_rounded_per_share_cost(tmp_path):
     row = analyze.analyze_account(layout, "syn")["positions"][0]
     # 246 x 470.83 = 115824.18 from the rounded column; the broker's total is 115825.00
     assert row["cost_basis"] == "115825.00" and row["unrealized_pnl"] == "59614.82"
+
+
+# --- blind-test-7 findings
+def test_realized_pnl_is_rounded_to_cents(tmp_path):
+    layout = Layout(tmp_path)
+    book(layout)
+    snap = next((layout.account_dir("acct") / "snapshots").glob("*.json"))
+    data = json.loads(snap.read_text())
+    data["positions"][0]["avg_cost"] = "60.3333333"
+    snap.write_text(json.dumps(data))
+    fill = sell_big(layout, "7", "101", "2026-10-19")
+    # (101 - 60.3333333) * 7 = 284.6666669 -> 284.67
+    assert fill["realized_pnl"] == "284.67"
+
+
+def test_sub_share_excess_is_stated_not_dropped(tmp_path):
+    layout = Layout(tmp_path)
+    book(layout)
+    sell_big(layout, "72", "100", "2026-10-19")  # 28 BIG + 10 SMALL, equity 11000: BIG 25.45%, excess $50
+    out = recommend.recommend_for_account(layout, "acct", today=TODAY)
+    assert [i for i in out["items"] if i["type"] == "trim"] == []
+    note = next(w for w in out["warnings"] if "less than one share" in w)
+    assert "BIG is 25.45% of equity" in note and "$50.00" in note
+    recommend.write_recommendations(layout, out)
+    assert "Note: BIG is 25.45%" in report.render_markdown(report.build_report(layout, today=TODAY))
+
+
+def test_bar_in_progress_follows_the_eastern_session():
+    from finance_core.marketdata import bar_in_progress
+    morning = datetime(2026, 10, 20, 13, 42, tzinfo=timezone.utc)   # 09:42 ET
+    evening = datetime(2026, 10, 20, 21, 0, tzinfo=timezone.utc)    # 17:00 ET
+    assert bar_in_progress("2026-10-20", morning) and not bar_in_progress("2026-10-20", evening)
+    assert not bar_in_progress("2026-10-19", morning)
+
+
+def test_latest_bar_fill_warns_while_the_session_is_open(tmp_path, capsys, monkeypatch):
+    from finance_core import marketdata
+    layout = Layout(tmp_path)
+    book(layout)
+    seed_bars(layout, "BIG", {"open": "101.00", "high": "103.00", "low": "99.00", "close": "102.00"})
+    monkeypatch.setattr(marketdata, "bar_in_progress", lambda d: True)
+    oid = paper.place_order(layout, "acct", {"symbol": "BIG", "side": "sell", "qty": "5", "type": "limit",
+                                             "limit_price": "100"})
+    assert main(["--root", str(tmp_path), "paper", "fill", "--account", "acct", "--order-id", oid, "--latest-bar"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "filled" and "still forming" in out["warnings"][0]

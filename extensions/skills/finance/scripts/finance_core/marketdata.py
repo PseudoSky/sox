@@ -45,6 +45,13 @@ def check_symbol(symbol: str) -> str:
     return symbol.upper()
 
 
+def bar_in_progress(bar_date: str, now: datetime | None = None) -> bool:
+    """True when `bar_date` is today's US-Eastern date and the regular session has not closed (16:00 ET)."""
+    from zoneinfo import ZoneInfo
+    eastern = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/New_York"))
+    return bar_date == eastern.date().isoformat() and (eastern.hour, eastern.minute) < (16, 0)
+
+
 def default_opener(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
     request = urllib.request.Request(url, headers=headers)
     try:

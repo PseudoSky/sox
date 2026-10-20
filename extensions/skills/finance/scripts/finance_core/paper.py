@@ -245,7 +245,7 @@ def fill_bar(layout: Layout, account_id: str, order_id: str, bar: dict[str, Any]
         held = state["positions"].get(key, {})
         if held.get("avg_cost") is not None:
             mult = Decimal(option["multiplier"]) if option else Decimal(1)
-            realized = money_str((price - Decimal(held["avg_cost"])) * qty * mult - fee)
+            realized = money_str(((price - Decimal(held["avg_cost"])) * qty * mult - fee).quantize(Decimal("0.01")))
     fill = {"type": "fill", "order_id": order_id, "price": money_str(price), "qty": money_str(qty),
             "fee": money_str(fee), "side": order["side"], "symbol": order["symbol"], "option": option,
             "multiplier": option["multiplier"] if option else "1", "bar_ts": bar.get("ts"),

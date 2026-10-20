@@ -79,8 +79,8 @@ def run_screen(layout: Layout, symbols: list[str], max_candidates: int = 100, to
            "valid_vcp": sum(1 for r in results if r.get("valid_vcp")),
            "schema_version": data.get("schema_version"), "funnel": funnel,
            "truncated": found > len(results),
-           "note": f"results holds the {len(results)} best-scoring of {found} symbols that passed the trend filter "
-                   f"(--top {top}); the rest are not in the file. Only valid_vcp ones can become trade candidates. "
+           "note": f"results holds the {len(results)} best-scoring of {found} VCP candidates "
+                   f"(--top {top}; {funnel.get('trend_template_passed', found)} passed the trend filter); the rest are not in the file. Only valid_vcp ones can become trade candidates. "
                    "Sector and market cap read Unknown and 0 because fundamentals are not provided."}
     if len(symbols) > max_candidates:
         out["pre_filter_cap"] = (f"only the {max_candidates} highest Stage 2 likelihood symbols of {len(symbols)} were "

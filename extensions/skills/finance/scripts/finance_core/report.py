@@ -127,6 +127,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         if current is not None and rec.get("positions_seq") != current.get("ledger_seq"):
             out += [f"- STALE: positions changed after this recommendation (paper ledger {rec.get('positions_seq')} "
                     f"-> {current.get('ledger_seq')}). Run `recommend --account {acct}` again before acting on it.", ""]
+        out += [f"- Note: {w}" for w in rec.get("warnings", []) if "less than one share" in w]
         for item in rec["items"]:
             if item["type"] == "trim":
                 out += [f"- Trim {item['symbol']}: {item['reason']}. {item['text']} Instead of selling, adding "
