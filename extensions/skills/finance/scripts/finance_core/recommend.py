@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -32,11 +32,11 @@ def _trims(layout: Layout, account_id: str, result: dict[str, Any], limit: Decim
         price, qty = parse_money(row["last_price"], "price"), parse_money(row["qty"], "qty")
         value = price * qty
         excess = value - equity * limit / 100
-        shares = (excess / price).to_integral_value(rounding=ROUND_DOWN)
-        if shares < 1:
+        if (excess / price).to_integral_value(rounding=ROUND_DOWN) < 1:
             notes.append(f"{row['key']} is {flag['pct']}% of equity, above the {limit}% limit, but the excess "
                          f"(${excess.quantize(CENT):,.2f}) is less than one share at {money_str(price)}, so no trim is proposed")
             continue
+        shares = (excess / price).to_integral_value(rounding=ROUND_CEILING)  # whole shares that reach the limit
         proceeds = shares * price
         avg = parse_money(pos["avg_cost"], "avg_cost") if pos.get("avg_cost") is not None else None
         after_pct = ((value - proceeds) / equity * 100).quantize(CENT)

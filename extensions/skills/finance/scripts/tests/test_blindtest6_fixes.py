@@ -129,10 +129,11 @@ def test_trim_text_is_a_complete_sentence_with_the_alternative_explained(tmp_pat
     layout = Layout(tmp_path)
     book(layout)
     trim = next(i for i in recommend.recommend_for_account(layout, "acct", today=TODAY)["items"] if i["type"] == "trim")
-    # equity 11000, limit 25% = 2750, excess 7250 -> 72 whole shares = 7200; 2800/11000 = 25.45%; 72*(100-60) = 2880
-    assert trim["text"] == ("Sell 72 BIG at about 100 for roughly $7,200.00, which takes it from 90.91% to 25.45% of "
-                            "equity; the estimated realized gain on average cost is $2,880.00.")
-    assert trim["after"]["proceeds_as_pct_of_equity"] == "65.45"
+    # equity 11000, limit 25% = 2750, excess 7250 -> 72.5 shares rounded UP to 73 = 7300; 2700/11000 = 24.55%; 73*(100-60) = 2920
+    assert trim["text"] == ("Sell 73 BIG at about 100 for roughly $7,300.00, which takes it from 90.91% to 24.55% of "
+                            "equity; the estimated realized gain on average cost is $2,920.00.")
+    assert trim["after"]["proceeds_as_pct_of_equity"] == "66.36"
+    assert Decimal(trim["after"]["position_pct"]) <= 25  # the trim reaches the limit
     assert "adding this much new money" in trim["alternative"]["meaning"]
     assert trim["caveat"][0].isupper()
 

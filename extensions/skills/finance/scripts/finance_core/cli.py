@@ -76,8 +76,11 @@ def cmd_inlet(args: argparse.Namespace, layout: Layout) -> Any:
         if (layout.account_dir(args.account) / "current.json").exists():
             held = paper.positions_now(layout, args.account)["positions"]
             ledger = {key: pos["qty"] for key, pos in held.items()}
-        return inlet.ingest(layout, args.account, Path(args.mapping), Path(args.source),
-                            ledger_positions=ledger)
+        result = inlet.ingest(layout, args.account, Path(args.mapping), Path(args.source), ledger_positions=ledger)
+        age = analyze.snapshot_age_warning(result["as_of"], date.today())
+        if age:
+            result["warnings"] = [*result.get("warnings", []), age]
+        return result
     raise FinanceError(f"unknown inlet action {args.action}")
 
 
@@ -190,6 +193,9 @@ def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "posture":
         result = posture.compute_posture(layout, tuple(s for s in args.symbols.split(",") if s))
         result["receipt"] = posture.write_posture(layout, result)
+        if marketdata.bar_in_progress(result["as_of"]):
+            result["warnings"] = [*result.get("warnings", []), f"the {result['as_of']} bars are still forming (before 16:00 ET): "
+                                  "closes and the averages move until the session ends; rerun after the close before relying on a flip"]
         return result
     if args.action == "edge":
         return edge.run_edge(layout, [x for x in args.symbols.split(",") if x], args.range,
@@ -234,7 +240,16 @@ def cmd_breakout(args: argparse.Namespace, layout: Layout) -> Any:
         risk_pct, state = _apply_posture(layout, args.risk_pct, args.ignore_posture)
         sized = screen.run_sizer(layout, equity, args.entry, args.stop, risk_pct, args.max_position_pct)
         r = sized["result"]
-        return {"account_equity": equity, "posture": state, "entry": args.entry, "stop": args.stop,
+        state_now = paper.positions_now(layout, args.account)
+        sweep = sum((Decimal(p["qty"]) * Decimal(p["last_price"]) for p in state_now["positions"].values()
+                     if p.get("asset_type") == "cash_equivalent" and p.get("last_price") is not None), Decimal(0))
+        buying_power = state_now["cash"] + sweep
+        size_warnings = []
+        if Decimal(str(r["final_position_value"])) > buying_power:
+            size_warnings.append(f"the position costs {r['final_position_value']} but cash plus cash equivalents is "
+                                 f"{buying_power:.2f}: a paper buy of this size is rejected at fill time unless the account "
+                                 "allows margin; size down or fund the account")
+        return {"account_equity": equity, "buying_power": f"{buying_power:.2f}", "warnings": size_warnings, "posture": state, "entry": args.entry, "stop": args.stop,
                 "risk_pct_requested": args.risk_pct, "risk_pct": risk_pct,
                 "max_position_pct": args.max_position_pct, "shares": r["final_recommended_shares"],
                 "position_value": r["final_position_value"], "risk_dollars": r.get("final_risk_dollars"),

@@ -241,3 +241,42 @@ def test_bars_reply_names_the_requested_and_the_cached_range(tmp_path, capsys):
     seed_history(Layout(tmp_path), date(2026, 10, 16))
     code, out, _ = run(tmp_path, capsys, "market", "bars", "--symbol", "ZZZ", "--range", "1y")
     assert out["range"] == "1y" and out["cached_range"] == "5y"
+
+
+# --- trims round up to the limit; ingest and posture warn about stale or forming data
+def test_trim_never_leaves_the_position_above_the_limit(tmp_path):
+    from finance_core import recommend
+    layout = Layout(tmp_path)
+    book(layout)
+    trim = next(i for i in recommend.recommend_for_account(layout, "acct", today=date(2026, 10, 16))["items"]
+                if i["type"] == "trim")
+    assert trim["proposal"]["qty"] == "73"  # 72.5 shares of excess rounds up
+
+
+def test_ingest_warns_when_the_export_is_old(tmp_path, capsys):
+    src = tmp_path / "export.csv"
+    src.write_text('"Positions as of 2026/10/01"\nSymbol,Qty,Price\nAAA,2,10\n')
+    atomic_write_json(tmp_path / "m.json", {
+        "schema_version": 0, "broker_label": "x", "format": "csv", "header_line": 2,
+        "as_of": {"regex": "as of ([0-9/]+)", "group": 1}, "as_of_format": "%Y/%m/%d", "cash": {"value": "0"},
+        "fields": {"symbol": {"column": "Symbol"}, "quantity": {"column": "Qty"}, "last_price": {"column": "Price"},
+                   "asset_type": {"value": "etf"}}, "rows": {"require_numeric": ["Qty", "Price"]}})
+    assert run(tmp_path, capsys, "account", "create", "--account", "a", "--base-currency", "USD")[0] == 0
+    code, out, _ = run(tmp_path, capsys, "inlet", "ingest", "--account", "a", "--mapping", str(tmp_path / "m.json"),
+                       "--source", str(src))
+    assert code == 0 and any("days old (2026-10-01" in w for w in out["warnings"])
+
+
+def test_posture_warns_while_the_session_is_forming(tmp_path, capsys, monkeypatch):
+    from finance_core import posture
+    monkeypatch.setattr(marketdata, "bar_in_progress", lambda d, now=None: True)
+    monkeypatch.setattr(posture, "compute_posture", lambda layout, symbols: {
+        "posture": "full", "as_of": "2026-10-21", "reasons": ["x"], "signals": [], "sources": [], "rules": {}})
+    code, out, _ = run(tmp_path, capsys, "market", "posture")
+    assert code == 0 and "still forming" in out["warnings"][0]
+
+
+def test_size_warns_when_the_position_exceeds_buying_power(tmp_path, capsys):
+    book(Layout(tmp_path))  # cash 0
+    code, out, _ = run(tmp_path, capsys, "breakout", "size", "--account", "acct", "--entry", "100", "--stop", "95")
+    assert code == 0 and out["buying_power"] == "0.00" and "rejected at fill time" in out["warnings"][0]
