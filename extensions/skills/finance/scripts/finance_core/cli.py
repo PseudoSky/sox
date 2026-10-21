@@ -65,6 +65,8 @@ def cmd_account(args: argparse.Namespace, layout: Layout) -> Any:
 
 def cmd_inlet(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "check-mapping":
+        if args.source:
+            return inlet.check_source(_load_json_arg(args.mapping), args.source)
         errors = inlet.validate_mapping(_load_json_arg(args.mapping))
         if errors:
             raise FinanceError("mapping invalid", errors)
@@ -144,7 +146,7 @@ def cmd_intraday(args: argparse.Namespace, layout: Layout) -> Any:
         weekday = args.weekday if args.weekday is not None else datetime.now().weekday()
         return intraday.check_entry(args.grade, args.signal, args.rvol, args.time, args.trend_age, weekday,
                                     args.open_positions, args.trades_today, args.day_pnl, args.account_size, args.symbol,
-                                    args.max_trade_pct, args.max_daily_loss_pct, args.premium, args.contracts)
+                                    args.max_trade_pct, args.max_daily_loss_pct, args.premium, args.contracts, args.stop_premium)
     return intraday.check_exit(args.pnl_pct, args.grade, args.signal_flipped, args.time, args.entry_grade)
 
 
@@ -279,6 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     inl = groups.add_parser("inlet")
     inl_sub = inl.add_subparsers(dest="action", required=True)
     cm = inl_sub.add_parser("check-mapping")
+    cm.add_argument("--source", help="also resolve the mapping's scalar refs (as_of, cash, control_total) against this export")
     cm.add_argument("--mapping", required=True, help="path, JSON string, or -")
     ing = inl_sub.add_parser("ingest")
     ing.add_argument("--account", required=True)
@@ -386,6 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
     ie.add_argument("--max-trade-pct", help="per-trade cap as percent of --account-size; the source's 40%% only up to $1,000")
     ie.add_argument("--max-daily-loss-pct", help="daily-loss cap as percent of --account-size; the source's 80%% only up to $1,000")
     ie.add_argument("--premium", help="option price per share (for example 1.10); with --account-size, checks the order cost against the per-trade cap")
+    ie.add_argument("--stop-premium", help="option price of your stop; reports the stop distance and the loss if it is hit")
     ie.add_argument("--contracts", type=int, default=1, help="contracts in the order (default 1; 100 shares each)")
     ie.add_argument("--symbol", help="underlying the signal fired on; the playbook requires SPY")
     ix = it_sub.add_parser("exit")

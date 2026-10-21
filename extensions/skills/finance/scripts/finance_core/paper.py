@@ -240,6 +240,18 @@ def fill_bar(layout: Layout, account_id: str, order_id: str, bar: dict[str, Any]
                                                "reason": "sell exceeds held long quantity at fill time",
                                                "bar_ts": bar.get("ts")})
         return {"status": "rejected", "order_id": order_id, "seq": ev["seq"]}
+    if order["side"] == "buy" and not account.get("allow_margin"):
+        mult = Decimal(option["multiplier"]) if option else Decimal(1)
+        sweep = sum((parse_money(p["qty"], "qty") * parse_money(p["last_price"], "last_price")
+                     for p in state["positions"].values()
+                     if p.get("asset_type") == "cash_equivalent" and p.get("last_price") is not None), Decimal(0))
+        cost = price * qty * mult + fee
+        if cost > state["cash"] + sweep:
+            ev = record_event(layout, account_id, {
+                "type": "reject", "order_id": order_id, "bar_ts": bar.get("ts"),
+                "reason": f"buying power: the fill costs {money_str(cost)} but cash plus cash equivalents is "
+                          f"{money_str(state['cash'] + sweep)}; set account config allow_margin true to permit it"})
+            return {"status": "rejected", "order_id": order_id, "seq": ev["seq"], "reason": ev["reason"]}
     realized = None
     if order["side"] == "sell":
         held = state["positions"].get(key, {})

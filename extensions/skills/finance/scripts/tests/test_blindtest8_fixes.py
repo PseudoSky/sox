@@ -82,13 +82,38 @@ def test_breakout_size_respects_the_position_cap(tmp_path, capsys):
     assert code == 0 and out["shares"] == 5 and not out["binding_constraint"].startswith("none:")
 
 
-# --- paper fills that overdraw cash say so
-def test_overdrawing_fill_warns_about_negative_cash(tmp_path):
+# --- paper buys are limited to cash plus cash equivalents unless the account allows margin
+def buy_one(layout, qty="1"):
+    oid = paper.place_order(layout, "acct", {"symbol": "BIG", "side": "buy", "qty": qty, "type": "market"})
+    return paper.fill_bar(layout, "acct", oid, {"open": "100", "high": "101", "low": "99", "close": "100", "ts": "2026-10-19"})
+
+
+def test_buy_beyond_buying_power_is_rejected(tmp_path):
     layout = Layout(tmp_path)
-    book(layout)  # cash 0
-    oid = paper.place_order(layout, "acct", {"symbol": "BIG", "side": "buy", "qty": "1", "type": "market"})
-    fill = paper.fill_bar(layout, "acct", oid, {"open": "100", "high": "101", "low": "99", "close": "100", "ts": "2026-10-19"})
+    book(layout)  # cash 0, no cash equivalents
+    fill = buy_one(layout)
+    assert fill["status"] == "rejected" and "buying power" in fill["reason"] and "100" in fill["reason"]
+    assert paper.positions_now(layout, "acct")["cash"] == 0
+
+
+def test_margin_account_may_overdraw_and_is_warned(tmp_path):
+    layout = Layout(tmp_path)
+    book(layout)
+    accounts.update_config(layout, "acct", "allow_margin", True)
+    fill = buy_one(layout)
     assert fill["status"] == "filled" and "cash is now -100" in fill["warnings"][0]
+
+
+def test_cash_equivalents_count_as_buying_power(tmp_path):
+    layout = Layout(tmp_path)
+    book(layout)
+    snap, _ = accounts.load_current(layout, "acct")
+    snap["positions"].append({"symbol": "SWEEP", "asset_type": "cash_equivalent", "option": None, "qty": "500",
+                              "avg_cost": "1", "last_price": "1", "price_as_of": "2026-10-16", "currency": "USD"})
+    snap["source"]["file_sha256"] = "cd" * 32
+    accounts.write_snapshot(layout, "acct", snap)
+    assert buy_one(layout, "5")["status"] == "filled"      # 500 cost <= 500 sweep
+    assert buy_one(layout, "1")["status"] == "rejected"    # cash is already -500
 
 
 # --- 0DTE entry: the order cost is checked against the per-trade cap
@@ -112,3 +137,37 @@ def test_order_cost_is_reported_but_not_judged_without_a_cap():
     assert out["allowed"] and out["order_cost"] == "110.00" and out["order_cost_pct_of_account"] == "0.44"
 
 
+
+
+def test_stop_premium_reports_distance_and_loss():
+    out = intraday.check_entry(**OK, account_size="600", premium="1.10", contracts=2, stop_premium="0.80")
+    # (1.10 - 0.80) * 100 * 2 = 60; 0.80 / 1.10 - 1 = -27.27%
+    assert out["stop_loss_pct"] == "-27.27" and out["risk_if_stopped"] == "60.00"
+    wide = intraday.check_entry(**OK, account_size="600", premium="1.10", contracts=1, stop_premium="0.40")
+    assert any("past the -50% hard stop" in w for w in wide["warnings"])
+
+
+def test_check_mapping_against_the_source_catches_a_dead_regex(tmp_path, capsys):
+    src = tmp_path / "export.csv"
+    src.write_text('"Positions for account ****496 as of 01:34 PM ET, 2026/10/16"\nSymbol,Qty\nAAA,1\n')
+    mapping = {"schema_version": 0, "broker_label": "x", "format": "csv", "header_line": 2,
+               "as_of": {"regex": "ET, ([0-9/]+)", "group": 1}, "as_of_format": "%Y/%m/%d",
+               "cash": {"value": "0"}, "control_total": {"regex": "Total Value,([0-9.]+)", "group": 1},
+               "fields": {"symbol": {"column": "Symbol"}, "quantity": {"column": "Qty"}, "last_price": {"value": "1"}, "asset_type": {"value": "etf"}}, "rows": {}}
+    atomic_write_json(tmp_path / "m.json", mapping)
+    code, _, err = run(tmp_path, capsys, "inlet", "check-mapping", "--mapping", str(tmp_path / "m.json"),
+                       "--source", str(src))
+    assert code == 2 and "control_total" in err
+    del mapping["control_total"]
+    atomic_write_json(tmp_path / "m.json", mapping)
+    code, out, _ = run(tmp_path, capsys, "inlet", "check-mapping", "--mapping", str(tmp_path / "m.json"),
+                       "--source", str(src))
+    assert code == 0 and out["resolved"]["as_of"] == "2026/10/16"
+
+
+def test_report_summary_states_posture_concentration_and_warnings(tmp_path):
+    layout = Layout(tmp_path)
+    book(layout)  # BIG is 10000 of 11000 = 90.91%
+    text = report.render_markdown(report.build_report(layout, as_of="2026-10-16", today=date(2026, 10, 16)))
+    summary = text.split("## Executive summary")[1].split("## Holdings")[0]
+    assert "No posture receipt" in summary and "over the 25% limit: BIG 90.91%" in summary

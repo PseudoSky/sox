@@ -276,6 +276,30 @@ def _reconcile(positions: list[dict[str, Any]], cash: Decimal, control: Decimal)
 
 # ---------------------------------------------------------------- ingest
 
+def check_source(mapping: dict[str, Any], source_path: str | Path) -> dict[str, Any]:
+    """Resolve a mapping's scalar refs against a real export without writing anything."""
+    errors = validate_mapping(mapping)
+    if errors:
+        raise FinanceError("mapping invalid", errors)
+    text = Path(source_path).read_bytes().decode("utf-8-sig")
+    data, csv_rows = _parse_source(mapping["format"], text, int(mapping.get("header_line", 1)))
+    first = csv_rows[0] if csv_rows else None
+    found: dict[str, Any] = {}
+    problems: list[str] = []
+    for name in ("as_of", "cash", "control_total", "account_number"):
+        if name not in mapping:
+            continue
+        try:
+            value = _text(_scalar(mapping[name], name, text, data, first))
+            found[name] = mask_account_number(value) if name == "account_number" else value
+        except FinanceError as exc:
+            problems.append(str(exc))
+    if problems:
+        raise FinanceError("mapping does not resolve against the source", problems)
+    return {"valid": True, "errors": [], "resolved": found,
+            "note": "scalars read from the file; `inlet ingest` also applies the row filters and reconciles the totals"}
+
+
 def ingest(layout: Layout, account_id: str, mapping_path: str | Path, source_path: str | Path,
            ledger_positions: dict[str, Any] | None = None) -> dict[str, Any]:
     source = Path(source_path).resolve()

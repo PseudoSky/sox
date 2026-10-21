@@ -59,7 +59,7 @@ def _grade(value: str) -> int:
 def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int, weekday: int,
                 open_positions: int = 0, trades_today: int = 0, day_pnl: Any = None,
                 account_size: Any = None, symbol: str | None = None, max_trade_pct: Any = None,
-                max_daily_loss_pct: Any = None, premium: Any = None, contracts: int = 1) -> dict[str, Any]:
+                max_daily_loss_pct: Any = None, premium: Any = None, contracts: int = 1, stop_premium: Any = None) -> dict[str, Any]:
     """Return every rule with its observed value; `allowed` only when all hold."""
     now, rv = _minutes(time_et), _dec(rvol, "rvol")
     pnl = _dec(day_pnl, "day_pnl") if day_pnl is not None else None
@@ -90,6 +90,16 @@ def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int
     failed = [name for name, ok, _ in rules if not ok]
     out: dict[str, Any] = {"allowed": not failed, "failed": failed,
                            "rules": [{"rule": n, "ok": ok, "observed": v} for n, ok, v in rules]}
+    stop_warning = None
+    if cost is not None and stop_premium is not None:
+        stop = _dec(stop_premium, "stop_premium")
+        stop_pct = (stop / _dec(premium, "premium") - 1) * 100
+        out["stop_loss_pct"] = str(stop_pct.quantize(Decimal("0.01")))
+        out["risk_if_stopped"] = str(((_dec(premium, "premium") - stop) * 100 * contracts).quantize(Decimal("0.01")))
+        if stop_pct < Decimal("-50"):
+            stop_warning = (
+                f"the stop is {-stop_pct.quantize(Decimal('0.1'))}% below entry, past the -50% hard stop (S1): the "
+                "exit cascade sells there first")
     if cost is not None:
         out["order_cost"] = str(cost.quantize(Decimal("0.01")))
         if size:
@@ -111,6 +121,8 @@ def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int
         if pnl is None or loss_cap is None:
             out["warnings"].append("the daily-loss rule was NOT evaluated: it needs --day-pnl (0 on a fresh day) "
                                    "and a daily-loss limit")
+    if stop_warning:
+        out.setdefault("warnings", []).append(stop_warning)
     return out
 
 

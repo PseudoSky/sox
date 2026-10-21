@@ -108,6 +108,10 @@ def update_config(layout: Layout, account_id: str, key: str, value: Any) -> dict
         if not re.fullmatch(r"[0-9A-Za-z]{1,8}", str(value)):
             raise FinanceError("account_mask: 1 to 8 letters or digits, the visible tail shown by the broker")
         account[key] = str(value)
+    elif key == "allow_margin":
+        if value not in (True, False):
+            raise FinanceError("allow_margin: must be true or false")
+        account[key] = value
     elif key == "import_formats":
         if not set(value) <= FORMATS:
             raise FinanceError(f"import_formats: subset of {sorted(FORMATS)} required")

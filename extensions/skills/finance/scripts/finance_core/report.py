@@ -69,6 +69,14 @@ def render_markdown(report: dict[str, Any]) -> str:
     parts = [f"{a['account_id']} equity {a['equity']} {a['base_currency']}"
              + ("" if a["equity_complete"] else " (incomplete)") for a in report["accounts"]]
     out += ["; ".join(parts) + "." if parts else "No accounts configured.", ""]
+    post = report.get("posture")
+    bits = [f"Market posture {post['posture']} as of {post['as_of']}."] if post else ["No posture receipt."]
+    for a in report["accounts"]:
+        flagged = ", ".join(f"{f['key']} {f['pct']}%" for f in a.get("concentration_flags", []))
+        bits.append(f"{a['account_id']}: cash {_s(a['cash_pct'])}% of equity"
+                    + (f"; over the 25% limit: {flagged}" if flagged else "; no position over the 25% limit")
+                    + f"; {len(report['warnings'])} warning(s) listed under Action items.")
+    out += [" ".join(bits), ""]
     out += [f"## {SECTIONS[1]}", ""]
     for a in report["accounts"]:
         out += [f"### {a['account_id']}", ""]
