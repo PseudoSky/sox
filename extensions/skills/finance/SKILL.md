@@ -38,7 +38,7 @@ Paper fills: `paper order` returns an order id; `paper fill --account <id> --ord
 
 Receipts: a re-run that changes a receipt keeps the previous one under the receipt folder's `history/`. Analysis, recommend and report warn when the snapshot is two or more days old. `recommend` receipts record the paper ledger position they were made at, and the report marks one STALE after a later fill.
 
-Posture and income: `market posture` gives `full`, `reduced` or `no-new-entries` from index trend and drawdown (P2). `analyze --account <id> --income [--write]` reports trailing-12-month dividends per position (P4). `breakout plan` halves its risk when the posture is `reduced` and refuses when it is `no-new-entries`. The report flags any non-cash position above 25% of equity.
+Posture and income: `market posture` gives `full`, `reduced` or `no-new-entries` from index trend and drawdown (P2). `analyze --account <id> --income [--write]` reports trailing-12-month dividends per position (P4). `breakout plan` halves its risk when the posture is `reduced` and refuses when it is `no-new-entries`. The report flags any non-cash position above 25% of equity. `analyze --account <id> --lookthrough` (or `--consolidated --lookthrough`) expands every fund held into its underlying holdings from SEC N-PORT filings and shows each underlying's share of equity across funds and accounts (P0; set `FINANCE_SEC_CONTACT` to your email).
 
 Edge discovery and intraday rules: `market edge --symbols A,B,C,...` runs the edge research pipeline on cached bars (needs pandas and pyarrow; dry run unless `--export`). `intraday entry|exit` checks the 0DTE entry gate and exit cascade from values you observe (`--symbol SPY` checks the signal's underlying); it places nothing.
 

@@ -1,0 +1,282 @@
+"""Fund look-through: what each held fund owns, and each underlying holding's share of an account.
+
+Holdings come from the fund's own N-PORT filing on SEC EDGAR (keyless, public, lagged by the filing
+schedule). N-PORT names securities by CUSIP, so tickers come from OpenFIGI's keyless mapping, cached
+for good. Nothing here is a forecast: the weights are the fund's last reported portfolio, applied to
+the position's current market value.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Any, Callable
+
+from . import paper
+from .errors import FinanceError
+from .layout import Layout, atomic_write_json, read_json, write_receipt
+from .money import money_str, parse_money
+
+Fetcher = Callable[[str, dict[str, str], bytes | None], tuple[int, bytes]]
+FUND_TTL_DAYS = 30
+MAP_TTL_DAYS = 7
+MAX_FILINGS_SCANNED = 200
+STALE_FILING_DAYS = 120
+FIGI_BATCH = 10
+FIGI_PAUSE_SECONDS = 2.6          # the keyless limit is 25 requests a minute
+MF_MAP_URL = "https://www.sec.gov/files/company_tickers_mf.json"
+PCT = Decimal("0.01")
+EQUITY_CATEGORIES = {"EC", "EP"}  # N-PORT asset categories: common and preferred equity
+
+
+def default_fetcher(url: str, headers: dict[str, str], data: bytes | None = None) -> tuple[int, bytes]:
+    request = urllib.request.Request(url, headers=headers, data=data)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, b""
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise FinanceError(f"lookthrough: cannot reach {url}: {exc}") from exc
+
+
+def _headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    contact = os.environ.get("FINANCE_SEC_CONTACT", "finance-skill@example.com")
+    return {"User-Agent": f"finance-skill/0.1 ({contact})", **(extra or {})}
+
+
+def _get(fetch: Fetcher, url: str, what: str, extra: dict[str, str] | None = None, pause: float = 0.12) -> bytes:
+    time.sleep(pause)
+    status, body = fetch(url, _headers(extra), None)
+    if status not in (200, 206):
+        hint = "; the SEC rejects anonymous clients, set FINANCE_SEC_CONTACT to your email" if status == 403 else ""
+        raise FinanceError(f"lookthrough: {what} returned HTTP {status} ({url}){hint}")
+    return body
+
+
+def _fresh(record: dict[str, Any], days: int) -> bool:
+    return datetime.now(timezone.utc) - datetime.fromisoformat(record["fetched_at"]) < timedelta(days=days)
+
+
+def _fund_map(layout: Layout, fetch: Fetcher) -> dict[str, dict[str, Any]]:
+    path = layout.base / "funds" / "series-map.json"
+    if path.exists() and _fresh(read_json(path), MAP_TTL_DAYS):
+        return read_json(path)["funds"]
+    data = json.loads(_get(fetch, MF_MAP_URL, "fund list"))
+    funds = {r[3].upper(): {"cik": r[0], "series": r[1], "class": r[2]} for r in data["data"]}
+    atomic_write_json(path, {"fetched_at": datetime.now(timezone.utc).isoformat(), "source": MF_MAP_URL, "funds": funds})
+    return funds
+
+
+def _nport_filings(fetch: Fetcher, cik: int) -> list[tuple[str, str]]:
+    top = json.loads(_get(fetch, f"https://data.sec.gov/submissions/CIK{cik:010d}.json", "filing list"))
+    rows = [top["filings"]["recent"]]
+    for extra in top["filings"].get("files", []):
+        rows.append(json.loads(_get(fetch, f"https://data.sec.gov/submissions/{extra['name']}", "older filing list")))
+    out: list[tuple[str, str]] = []
+    for block in rows:
+        out += [(block["accessionNumber"][i], block["filingDate"][i])
+                for i in range(len(block["form"])) if block["form"][i] == "NPORT-P"]
+    return sorted(out, key=lambda r: r[1], reverse=True)
+
+
+def _parse_nport(xml: bytes) -> dict[str, Any]:
+    root = ET.fromstring(xml)
+    ns = {"n": root.tag.split("}")[0].strip("{")}
+    period = root.findtext(".//n:repPdDate", namespaces=ns) or root.findtext(".//n:repPdEnd", namespaces=ns)
+    holdings = []
+    for s in root.findall(".//n:invstOrSec", ns):
+        pct = s.findtext("n:pctVal", namespaces=ns)
+        if pct is None:
+            continue
+        holdings.append({"name": (s.findtext("n:name", namespaces=ns) or "").strip(),
+                         "cusip": next((c for c in [(s.findtext("n:cusip", namespaces=ns) or "").strip()] if len(c) == 9), None),
+                         "category": s.findtext("n:assetCat", namespaces=ns) or "other",
+                         "country": s.findtext("n:invCountry", namespaces=ns),
+                         "pct": str(Decimal(pct))})
+    return {"period_end": period, "holdings": holdings}
+
+
+def fund_holdings(layout: Layout, symbol: str, fetch: Fetcher | None = None, refresh: bool = False) -> dict[str, Any]:
+    """The fund's latest N-PORT holdings, cached for a month under `.finance/funds/`."""
+    fetch = fetch or default_fetcher
+    symbol = symbol.upper()
+    path = layout.base / "funds" / f"{symbol}.json"
+    if path.exists() and not refresh and _fresh(read_json(path), FUND_TTL_DAYS):
+        return read_json(path)
+    entry = _fund_map(layout, fetch).get(symbol)
+    if entry is None:
+        raise FinanceError(f"lookthrough: {symbol} is not in the SEC's registered fund list (a stock, a foreign "
+                           "fund or a non-registered product has no N-PORT filing)")
+    scanned = 0
+    for accession, filed in _nport_filings(fetch, entry["cik"])[:MAX_FILINGS_SCANNED]:
+        scanned += 1
+        url = f"https://www.sec.gov/Archives/edgar/data/{entry['cik']}/{accession.replace('-', '')}/primary_doc.xml"
+        time.sleep(0.12)
+        status, head = fetch(url, _headers({"Range": "bytes=0-6000"}), None)
+        if status not in (200, 206):
+            continue
+        found = re.search(rb"<(?:\w+:)?seriesId>\s*(S\d{9})", head)
+        if not found or found.group(1).decode() != entry["series"]:
+            continue
+        body = head if len(head) < 6001 else _get(fetch, url, "filing")
+        parsed = _parse_nport(body)
+        record = {"symbol": symbol, "series": entry["series"], "cik": entry["cik"], "accession": accession,
+                  "filed": filed, "period_end": parsed["period_end"], "holdings": parsed["holdings"],
+                  "source": url, "fetched_at": datetime.now(timezone.utc).isoformat(), "filings_scanned": scanned}
+        atomic_write_json(path, record)
+        return record
+    raise FinanceError(f"lookthrough: no N-PORT filing for {symbol} ({entry['series']}) among the newest {scanned} "
+                       f"of CIK {entry['cik']}")
+
+
+def _pick_listing(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The US listing: the composite 'US' first, else any US exchange (codes start with U); never a '*' line."""
+    us = [e for e in entries if e.get("exchCode", "").startswith("U") and "*" not in (e.get("ticker") or "*")
+          and e.get("securityType2") in (None, "Common Stock", "Depositary Receipt", "REIT", "MLP")]
+    us.sort(key=lambda e: e["exchCode"] != "US")
+    return us[0] if us else None
+
+
+def _map_cusips(layout: Layout, cusips: list[str], fetch: Fetcher) -> dict[str, dict[str, str | None]]:
+    path = layout.base / "funds" / "cusip-ticker.json"
+    known: dict[str, dict[str, str | None]] = read_json(path) if path.exists() else {}
+    todo = sorted({c for c in cusips if c and c not in known})
+    for i in range(0, len(todo), FIGI_BATCH):
+        batch = todo[i:i + FIGI_BATCH]
+        body = json.dumps([{"idType": "ID_CINS" if c[0].isalpha() else "ID_CUSIP", "idValue": c} for c in batch]).encode()
+        time.sleep(FIGI_PAUSE_SECONDS)
+        status, reply = fetch("https://api.openfigi.com/v3/mapping", _headers({"Content-Type": "application/json"}), body)
+        if status == 429:
+            time.sleep(30)
+            status, reply = fetch("https://api.openfigi.com/v3/mapping", _headers({"Content-Type": "application/json"}), body)
+        if status != 200:
+            raise FinanceError(f"lookthrough: ticker lookup returned HTTP {status}; rerun to resume (mapped tickers are cached)")
+        for cusip, result in zip(batch, json.loads(reply)):
+            data = _pick_listing(result.get("data") or [])
+            known[cusip] = {"ticker": data["ticker"] if data else None, "name": data.get("name") if data else None}
+        atomic_write_json(path, known)
+    return known
+
+
+def _position_values(layout: Layout, account_id: str) -> tuple[list[dict[str, Any]], Decimal, Decimal]:
+    state = paper.positions_now(layout, account_id)
+    rows, total = [], state["cash"]
+    for pos in state["positions"].values():
+        if pos.get("last_price") is None:
+            continue
+        mult = Decimal(pos["option"]["multiplier"]) if pos.get("option") else Decimal(1)
+        value = parse_money(pos["qty"], "qty") * parse_money(pos["last_price"], "last_price") * mult
+        rows.append({"symbol": pos["symbol"], "asset_type": pos["asset_type"], "option": bool(pos.get("option")),
+                     "value": value})
+        total += value
+    return rows, state["cash"], total
+
+
+def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None = None, top: int = 25) -> dict[str, Any]:
+    """Underlying exposure for one or several accounts, in each account's own equity and combined."""
+    fetch = fetch or default_fetcher
+    warnings: list[str] = []
+    funds: dict[str, dict[str, Any]] = {}
+    per_account, combined_value = [], Decimal(0)
+    exposures: dict[str, dict[str, Any]] = {}
+
+    def add(bucket: dict[str, dict[str, Any]], key: str, name: str, category: str, value: Decimal, via: str) -> None:
+        row = bucket.setdefault(key, {"name": name, "category": category, "value": Decimal(0), "via": {}})
+        row["value"] += value
+        row["via"][via] = row["via"].get(via, Decimal(0)) + value
+
+    account_exposures: dict[str, dict[str, dict[str, Any]]] = {}
+    totals: dict[str, Decimal] = {}
+    plan: list[tuple[str, list[dict[str, Any]], Decimal]] = []
+    wanted: list[str] = []
+    for account_id in account_ids:
+        rows, cash, total = _position_values(layout, account_id)
+        plan.append((account_id, rows, cash))
+        totals[account_id] = total
+        for r in rows:
+            if r["asset_type"] in ("etf", "other") and not r["option"]:
+                wanted.append(r["symbol"])
+    for symbol in sorted(set(wanted)):
+        try:
+            funds[symbol] = fund_holdings(layout, symbol, fetch)
+        except FinanceError as exc:
+            warnings.append(f"{symbol}: {exc}; held as a single line")
+    mapped = _map_cusips(layout, [h["cusip"] for f in funds.values() for h in f["holdings"]], fetch) if funds else {}
+    for account_id, rows, cash in plan:
+        bucket: dict[str, dict[str, Any]] = {}
+        if cash:
+            add(bucket, "CASH", "Cash", "cash", cash, "cash")
+        for r in rows:
+            sym, value = r["symbol"], r["value"]
+            if r["option"]:
+                add(bucket, f"OPTION:{sym}", f"{sym} options (not decomposed)", "option", value, sym)
+            elif r["asset_type"] == "cash_equivalent":
+                add(bucket, "CASH", "Cash", "cash", value, sym)
+            elif sym in funds:
+                for h in funds[sym]["holdings"]:
+                    ticker = (mapped.get(h["cusip"]) or {}).get("ticker") if h["cusip"] else None
+                    key = ticker or (f"cusip:{h['cusip']}" if h["cusip"] else f"name:{h['name']}")
+                    category = "equity" if h["category"] in EQUITY_CATEGORIES else f"other:{h['category']}"
+                    add(bucket, key, h["name"], category, value * Decimal(h["pct"]) / 100, sym)
+                residual = Decimal(100) - sum((Decimal(h["pct"]) for h in funds[sym]["holdings"]), Decimal(0))
+                if abs(residual) >= Decimal("0.5"):
+                    add(bucket, "OTHER:" + sym, f"{sym} other net assets (cash, receivables, derivatives)", "other",
+                        value * residual / 100, sym)
+            else:
+                add(bucket, sym, sym, "equity" if r["asset_type"] == "equity" else r["asset_type"], value, sym)
+        account_exposures[account_id] = bucket
+        for key, row in bucket.items():
+            add(exposures, key, row["name"], row["category"], row["value"], account_id)
+        combined_value += totals[account_id]
+
+    def render(bucket: dict[str, dict[str, Any]], equity: Decimal) -> list[dict[str, Any]]:
+        out = []
+        for key, row in sorted(bucket.items(), key=lambda kv: -kv[1]["value"]):
+            out.append({"underlying": key, "name": row["name"], "category": row["category"],
+                        "value": money_str(row["value"].quantize(PCT)),
+                        "pct_of_equity": money_str((row["value"] / equity * 100).quantize(PCT)) if equity else None,
+                        "via": {k: money_str(v.quantize(PCT)) for k, v in sorted(row["via"].items(), key=lambda kv: -kv[1])}})
+        return out
+
+    stale = []
+    for sym, f in funds.items():
+        if f.get("period_end") and (date.today() - date.fromisoformat(f["period_end"][:10])).days > STALE_FILING_DAYS:
+            stale.append(f"{sym} holdings are as of {f['period_end'][:10]}")
+    unmapped = sorted({h["name"] for f in funds.values() for h in f["holdings"]
+                       if h["category"] in EQUITY_CATEGORIES and h["cusip"] and not (mapped.get(h["cusip"]) or {}).get("ticker")})
+    if unmapped:
+        warnings.append(f"{len(unmapped)} equity holdings have no current US listing (delisted, taken private or foreign-only) and are listed by CUSIP "
+                        f"(for example {', '.join(unmapped[:3])})")
+    if stale:
+        warnings.append("older fund filings: " + "; ".join(stale) + "; the fund's weights have likely moved since")
+    result = {
+        "as_of": date.today().isoformat(), "accounts": account_ids,
+        "basis": "each fund's last reported N-PORT weights applied to the position's market value now; direct holdings "
+                 "are 100% themselves; cash and money-market funds are cash; options are not decomposed; "
+                 "a fund held inside another fund is not looked through",
+        "funds": {s: {"period_end": f["period_end"], "filed": f["filed"], "securities": len(f["holdings"]),
+                      "source": f["source"]} for s, f in funds.items()},
+        "per_account": [{"account_id": a, "equity": money_str(totals[a].quantize(PCT)),
+                         "exposure": render(account_exposures[a], totals[a])[:top]} for a in account_ids],
+        "warnings": warnings}
+    if len(account_ids) > 1:
+        result["combined"] = {"equity": money_str(combined_value.quantize(PCT)),
+                              "exposure": render(exposures, combined_value)[:top],
+                              "note": "accounts of different base currencies are not converted; combine only like currencies"}
+    return result
+
+
+def write_lookthrough(layout: Layout, result: dict[str, Any]) -> str:
+    folder = layout.base / "lookthrough"
+    folder.mkdir(parents=True, exist_ok=True)
+    name = "-".join(result["accounts"]) if len(result["accounts"]) <= 3 else "combined"
+    path = folder / f"{name}-{result['as_of']}.json"
+    write_receipt(path, result)
+    return str(path)
