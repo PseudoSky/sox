@@ -192,6 +192,11 @@ def get_bars(layout: Layout, symbol: str, range_: str = "1y", ttl_hours: float =
     if provider not in PROVIDERS:
         raise FinanceError(f"provider: must be one of {list(PROVIDERS)}")
     path = _cache_path(layout, symbol)
+    fetch_range = range_
+    if path.exists():
+        prior_range = read_json(path).get("range")
+        if prior_range in RANGES and RANGES.index(prior_range) > RANGES.index(range_):
+            fetch_range = prior_range  # a refresh never shrinks the cached history
     if path.exists() and not refresh:
         cached = read_json(path)
         age = datetime.now(timezone.utc) - datetime.fromisoformat(cached["fetched_at"])
@@ -209,10 +214,10 @@ def get_bars(layout: Layout, symbol: str, range_: str = "1y", ttl_hours: float =
     for name in order:
         try:
             if name == "yahoo":
-                record = fetch_chart(symbol, range_, opener=opener, sleep=sleep)
+                record = fetch_chart(symbol, fetch_range, opener=opener, sleep=sleep)
                 record["adjusted"] = True
             else:
-                record = fetch_nasdaq(symbol, range_, opener=opener)
+                record = fetch_nasdaq(symbol, fetch_range, opener=opener)
             record["provider"] = name
             break
         except FinanceError as exc:
@@ -222,7 +227,7 @@ def get_bars(layout: Layout, symbol: str, range_: str = "1y", ttl_hours: float =
                 atomic_write_json(block, {"at": datetime.now(timezone.utc).isoformat(), "reason": str(exc)})
     if record is None:
         raise FinanceError("market-data: all providers failed: " + " | ".join(failures))
-    record.update({"range": range_, "source": f"{record['provider']} (unofficial, personal use only)",
+    record.update({"range": fetch_range, "source": f"{record['provider']} (unofficial, personal use only)",
                    "fetched_at": datetime.now(timezone.utc).isoformat()})
     layout.ensure_base()
     atomic_write_json(path, record)

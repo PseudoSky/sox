@@ -303,3 +303,20 @@ def test_plan_with_stop_above_a_buy_trigger_is_rejected():
     from finance_core import plans
     bad = {**good_plan(), "stop_price": "105.00", "risk_per_share": "6.00"}
     assert any("wrong side of trigger_price" in e for e in plans.validate_plan(bad))
+
+
+# --- a refresh never shrinks the cached history
+def test_refreshing_a_shorter_range_keeps_the_longer_history(tmp_path, monkeypatch):
+    layout = Layout(tmp_path)
+    seed_history(layout, date(2026, 10, 16))
+    cached = json.loads((layout.base / "market" / "ZZZ.json").read_text())
+    cached["fetched_at"] = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()  # stale
+    atomic_write_json(layout.base / "market" / "ZZZ.json", cached)
+    asked = []
+
+    def fake_fetch(symbol, range_, opener=None, sleep=None):
+        asked.append(range_)
+        return {**cached, "range": range_}
+    monkeypatch.setattr(marketdata, "fetch_chart", fake_fetch)
+    record = marketdata.get_bars(layout, "ZZZ", "1y")
+    assert asked == ["5y"] and record["range"] == "5y"
