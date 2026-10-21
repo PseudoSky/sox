@@ -14,10 +14,10 @@ dispatcher-structuring: <everything the dispatcher added — goal narrowing, acc
 
 ## Acceptance criteria (test each; cite the ticket and the AC id)
 
-- <uid or BL-<n>> AC1 — <binary, checkable statement>
-- <uid or BL-<n>> AC2 — <statement>
+- <live full uid> AC1 — <binary, checkable statement>
+- <live full uid> AC2 — <statement>
 
-Every test, whoever writes a test, names the ticket and the AC ids it exercises (`<uid or BL-<n>> AC<n>`); one test may cite several ACs. Every AC is cited by at least one test; an AC no test cites is not done.
+Every test, whoever writes a test, names the ticket and the AC ids it exercises (`<live full uid> AC<n>`); one test may cite several ACs. Every AC is cited by at least one test; an AC no test cites is not done.
 
 ## Test routing (change needs tests)
 

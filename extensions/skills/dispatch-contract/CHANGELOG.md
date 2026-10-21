@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.0
+
+- Cite-rot fix: the AC cite is `<live full uid> AC<n>`, resolved with the backlog read verb at cite time (never a recalled prefix); a commit is `commit:<sha>` and never stands in for an item; the `BL-<n>` alternative is removed (the backlog has no such stable field, a body edit supersedes the uid). Every cited uid is re-resolved before dispatch and before any resolve; a `conflict` naming a successor means re-cite and enrich with an `old→new` uid note. Pin test in `tests/pin.test.mjs`.
+
 ## 2.1.0
 
 - Test standard (item 5416b29f, T15): the binary unit/e2e standard is replaced by inlining the test-writing role's card and the project's tier-mapping excerpt; it rides test-writing briefs only. The citation duty attaches to whoever writes a test.

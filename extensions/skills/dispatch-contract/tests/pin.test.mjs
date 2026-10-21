@@ -73,3 +73,13 @@ test('5416b29f AC1-AC6: every AC is cited by its own test title', () => {
   const rangeOnly = "test('5416b29f AC1-AC6: this file cites every AC', () => {});";
   assert.deepEqual([...rangeOnly.matchAll(/^test\('5416b29f AC(\d+)(?=[:\s])/gm)], []);
 });
+
+test('cite-rot: the cite is a live full uid, a commit is commit:<sha>, and BL-<n> is gone', () => {
+  const ac = skill.match(/- \*\*Acceptance criteria[^\n]*/)?.[0] ?? '';
+  assert.match(ac, /<live full uid> AC<n>/);
+  assert.match(ac, /commit:<sha>/);
+  assert.match(ac, /supersedes the uid/);
+  assert.match(ac, /`conflict` naming a successor/);
+  assert.doesNotMatch(skill + brief, /BL-<n>/);
+  assert.match(brief, /<live full uid> AC1/);
+});

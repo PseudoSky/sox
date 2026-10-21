@@ -1,3 +1,7 @@
+## 2.2.0
+
+- **Cite-rot fix.** Rule 20 cites `<live full uid> AC<n>` (`commit:<sha>` for commits, never an item; `BL-<n>` removed), batches body edits before dispatch and APPENDs the live uid to in-flight executors after one. Rule 18(a) requires every cited uid re-resolved to its live head. Step 4 fails an unresolvable cite like an uncovered AC; new failure mode *cite-rot*.
+
 ## Unreleased
 
 - **Closeness-0 bindings are named in telemetry (595965cc T47).** Step 2's telemetry bullet records a role bound with no declared obligation coverage as `role=<role>:<agent>` with covered ids `none` and the flag `bound-no-coverage`. Version is left to the Changesets release flow.
