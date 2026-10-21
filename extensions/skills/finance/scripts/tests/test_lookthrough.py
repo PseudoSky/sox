@@ -88,7 +88,9 @@ def test_single_account_hand_computed(tmp_path):
     assert aaa["value"] == "1100.00" and aaa["pct_of_equity"] == "36.67"   # 600 via FUNDA + 500 direct
     assert aaa["via"] == {"AAA": "500.00", "FUNDA": "600.00"}
     assert row(ex, "BBB")["value"] == "300.00"
-    assert row(ex, "CASH")["value"] == "1500.00"                 # cash + the money-market fund
+    cash = out["per_account"][0]["cash"]
+    assert cash[0]["value"] == "1500.00" and cash[0]["pct_of_equity"] == "50.00"   # cash + the money-market fund
+    assert all(r["category"] != "cash" for r in ex)
     assert row(ex, "cusip:CUSIPNOTE")["category"] == "other:DBT"
     assert row(ex, "OTHER:FUNDA")["value"] == "50.00"            # the 5% residual net assets
 
@@ -173,3 +175,30 @@ def test_foreign_domiciled_cusip_uses_cins_lookup(tmp_path):
     net.tickers["GFOREIGN1"] = "FRN"
     lookthrough._map_cusips(Layout(tmp_path), ["GFOREIGN1"], net)
     assert net.id_types == ["ID_CINS"]
+
+
+def test_top_counts_only_non_cash_rows(tmp_path):
+    out = lookthrough.look_through(book(tmp_path), ["acc1"], Net(), top=2)
+    assert [r["underlying"] for r in out["per_account"][0]["exposure"]] == ["AAA", "BBB"]
+
+
+def test_share_classes_of_one_issuer_merge(tmp_path):
+    net = Net()
+    key = "https://www.sec.gov/Archives/edgar/data/22/000000002226000001/primary_doc.xml"
+    net.docs[key] = nport("S000000002", [("Alpha Inc Class A", "CUSIPAAA1", "30", "EC"),
+                                         ("Alpha Inc Class C", "CUSIPAAC1", "20", "EC"), ("Gamma Ltd", "CUSIPCCC1", "50", "EC")])
+    net.tickers["CUSIPAAC1"] = "AAAC"
+    out = lookthrough.look_through(book(tmp_path), ["acc2"], net)
+    merged = out["per_account"][0]["merged_share_classes"]
+    assert merged[0]["tickers"] == ["AAA", "AAAC"] and merged[0]["pct_of_equity"] == "50.00"
+    assert lookthrough.issuer_key("Alphabet Inc. Class C") == lookthrough.issuer_key("Alphabet Inc Class A")
+
+
+def test_fund_weight_sum_reported_and_contact_warning(tmp_path, monkeypatch):
+    monkeypatch.delenv("FINANCE_SEC_CONTACT", raising=False)
+    out = lookthrough.look_through(book(tmp_path), ["acc1"], Net())
+    assert out["funds"]["FUNDA"]["weight_sum"] == "95.00"
+    assert any("FINANCE_SEC_CONTACT is not set" in w for w in out["warnings"])
+    monkeypatch.setenv("FINANCE_SEC_CONTACT", "a@b.co")
+    again = lookthrough.look_through(book(tmp_path / "x"), ["acc1"], Net())
+    assert not any("FINANCE_SEC_CONTACT" in w for w in again["warnings"])

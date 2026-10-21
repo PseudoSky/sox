@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -150,6 +151,7 @@ def _map_cusips(layout: Layout, cusips: list[str], fetch: Fetcher) -> dict[str, 
     todo = sorted({c for c in cusips if c and c not in known})
     for i in range(0, len(todo), FIGI_BATCH):
         batch = todo[i:i + FIGI_BATCH]
+        print(f"lookthrough: mapping tickers {i + len(batch)}/{len(todo)} (cached, so a rerun resumes)", file=sys.stderr, flush=True)
         body = json.dumps([{"idType": "ID_CINS" if c[0].isalpha() else "ID_CUSIP", "idValue": c} for c in batch]).encode()
         time.sleep(FIGI_PAUSE_SECONDS)
         status, reply = fetch("https://api.openfigi.com/v3/mapping", _headers({"Content-Type": "application/json"}), body)
@@ -163,6 +165,14 @@ def _map_cusips(layout: Layout, cusips: list[str], fetch: Fetcher) -> dict[str, 
             known[cusip] = {"ticker": data["ticker"] if data else None, "name": data.get("name") if data else None}
         atomic_write_json(path, known)
     return known
+
+
+_SUFFIX = re.compile(r"\b(class|cl|series|ser)\s+[a-z0-9]\b|\b(inc|corp|corporation|co|company|plc|nv|n v|ltd|sa|ag|holdings?|group|the)\b|[^a-z0-9 ]")
+
+
+def issuer_key(name: str) -> str:
+    """Name with share-class and legal-form words removed, so GOOGL and GOOG (Alphabet Class A/C) merge."""
+    return " ".join(_SUFFIX.sub(" ", name.lower()).split())
 
 
 def _position_values(layout: Layout, account_id: str) -> tuple[list[dict[str, Any]], Decimal, Decimal]:
@@ -236,14 +246,26 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
             add(exposures, key, row["name"], row["category"], row["value"], account_id)
         combined_value += totals[account_id]
 
-    def render(bucket: dict[str, dict[str, Any]], equity: Decimal) -> list[dict[str, Any]]:
+    def render(bucket: dict[str, dict[str, Any]], equity: Decimal, cash: bool = False) -> list[dict[str, Any]]:
         out = []
-        for key, row in sorted(bucket.items(), key=lambda kv: -kv[1]["value"]):
+        for key, row in sorted(((k, r) for k, r in bucket.items() if (r["category"] == "cash") == cash), key=lambda kv: -kv[1]["value"]):
             out.append({"underlying": key, "name": row["name"], "category": row["category"],
                         "value": money_str(row["value"].quantize(PCT)),
                         "pct_of_equity": money_str((row["value"] / equity * 100).quantize(PCT)) if equity else None,
                         "via": {k: money_str(v.quantize(PCT)) for k, v in sorted(row["via"].items(), key=lambda kv: -kv[1])}})
         return out
+
+    def issuers(bucket: dict[str, dict[str, Any]], equity: Decimal) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for key, row in bucket.items():
+            if row["category"] == "equity":
+                m = merged.setdefault(issuer_key(row["name"]), {"name": row["name"], "value": Decimal(0), "tickers": []})
+                m["value"] += row["value"]
+                m["tickers"].append(key)
+        rows = [m for m in merged.values() if len(m["tickers"]) > 1]
+        return [{"issuer": m["name"], "tickers": sorted(m["tickers"]), "value": money_str(m["value"].quantize(PCT)),
+                 "pct_of_equity": money_str((m["value"] / equity * 100).quantize(PCT)) if equity else None}
+                for m in sorted(rows, key=lambda m: -m["value"])]
 
     stale = []
     for sym, f in funds.items():
@@ -251,6 +273,8 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
             stale.append(f"{sym} holdings are as of {f['period_end'][:10]}")
     unmapped = sorted({h["name"] for f in funds.values() for h in f["holdings"]
                        if h["category"] in EQUITY_CATEGORIES and h["cusip"] and not (mapped.get(h["cusip"]) or {}).get("ticker")})
+    if funds and "FINANCE_SEC_CONTACT" not in os.environ:
+        warnings.append("FINANCE_SEC_CONTACT is not set; SEC requests used a placeholder contact, set it to your email")
     if unmapped:
         warnings.append(f"{len(unmapped)} equity holdings have no current US listing (delisted, taken private or foreign-only) and are listed by CUSIP "
                         f"(for example {', '.join(unmapped[:3])})")
@@ -258,17 +282,22 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
         warnings.append("older fund filings: " + "; ".join(stale) + "; the fund's weights have likely moved since")
     result = {
         "as_of": date.today().isoformat(), "accounts": account_ids,
-        "basis": "each fund's last reported N-PORT weights applied to the position's market value now; direct holdings "
+        "basis": "--top counts non-cash rows (cash is listed apart); each fund's last reported N-PORT weights applied to the position's market value now; direct holdings "
                  "are 100% themselves; cash and money-market funds are cash; options are not decomposed; "
                  "a fund held inside another fund is not looked through",
         "funds": {s: {"period_end": f["period_end"], "filed": f["filed"], "securities": len(f["holdings"]),
+                      "weight_sum": str(sum((Decimal(h["pct"]) for h in f["holdings"]), Decimal(0)).quantize(PCT)),
                       "source": f["source"]} for s, f in funds.items()},
         "per_account": [{"account_id": a, "equity": money_str(totals[a].quantize(PCT)),
-                         "exposure": render(account_exposures[a], totals[a])[:top]} for a in account_ids],
+                         "cash": render(account_exposures[a], totals[a], cash=True),
+                         "exposure": render(account_exposures[a], totals[a])[:top],
+                         "merged_share_classes": issuers(account_exposures[a], totals[a])} for a in account_ids],
         "warnings": warnings}
     if len(account_ids) > 1:
         result["combined"] = {"equity": money_str(combined_value.quantize(PCT)),
+                              "cash": render(exposures, combined_value, cash=True),
                               "exposure": render(exposures, combined_value)[:top],
+                              "merged_share_classes": issuers(exposures, combined_value),
                               "note": "accounts of different base currencies are not converted; combine only like currencies"}
     return result
 
