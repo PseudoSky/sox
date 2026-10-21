@@ -152,6 +152,19 @@ def put_plan(layout: Layout, plan: dict[str, Any], approval: dict[str, Any] | No
     return path
 
 
+def close_plan(layout: Layout, plan_id: str, status: str = "closed", reason: str = "", as_of: str | None = None) -> dict[str, Any]:
+    """End an active or draft plan: `closed` after its trade is done, `cancelled` if it never ran."""
+    if status not in ("closed", "cancelled"):
+        raise FinanceError("plan close: status must be closed or cancelled")
+    plan = get_plan(layout, plan_id)
+    if plan["status"] not in ("active", "draft"):
+        raise FinanceError(f"plan {plan_id} is {plan['status']}; only an active or draft plan can be closed")
+    plan.update({"status": status, "closed_at": as_of or date.today().isoformat(), "close_reason": reason})
+    atomic_write_json(_path(layout, plan_id), plan)
+    _rebuild_index(layout)
+    return plan
+
+
 def _effective(plan: dict[str, Any], as_of: str | None) -> str:
     if as_of and plan["status"] == "active" and plan["valid_until"] < as_of:
         return "expired"

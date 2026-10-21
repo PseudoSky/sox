@@ -171,3 +171,37 @@ def test_report_summary_states_posture_concentration_and_warnings(tmp_path):
     text = report.render_markdown(report.build_report(layout, as_of="2026-10-16", today=date(2026, 10, 16)))
     summary = text.split("## Executive summary")[1].split("## Holdings")[0]
     assert "No posture receipt" in summary and "over the 25% limit: BIG 90.91%" in summary
+
+
+# --- a finished trade can end its plan; a flat position names the plans still open
+def test_plan_close_ends_a_plan_and_removes_its_open_risk(tmp_path, capsys):
+    from finance_core import breakout, plans
+    layout = Layout(tmp_path)
+    book(layout)
+    item = {"symbol": "BIG", "sector": "x", "plan_valid_for_session": "2026-10-30",
+            "trade_plan": {"signal_entry": 100.0, "worst_entry": 101.0, "stop_loss_price": 95.0, "risk_per_share": 6.0,
+                           "target_price": 120.0, "shares": 10, "risk_dollars": 60.0, "position_value": 1000.0,
+                           "cumulative_risk_pct": 0.5, "binding_constraint": "risk_budget"}}
+    plans.put_plan(layout, breakout.translate_breakout(item, "acct", "big-1", input_hash="0" * 64))
+    assert plans.open_risk(layout, "acct", "2026-10-19") == 60
+    code, out, _ = run(tmp_path, capsys, "plan", "close", "--plan-id", "big-1", "--reason", "target hit")
+    assert code == 0 and out["status"] == "closed"
+    assert plans.open_risk(layout, "acct", "2026-10-19") == 0
+    assert plans.get_plan(layout, "big-1")["close_reason"] == "target hit"
+    code, _, err = run(tmp_path, capsys, "plan", "close", "--plan-id", "big-1")
+    assert code == 2 and "only an active or draft plan" in err
+
+
+def test_selling_the_last_share_names_plans_that_are_still_active(tmp_path, capsys):
+    from finance_core import breakout, plans
+    layout = Layout(tmp_path)
+    book(layout)
+    item = {"symbol": "BIG", "sector": "x", "plan_valid_for_session": "2026-10-30",
+            "trade_plan": {"signal_entry": 100.0, "worst_entry": 101.0, "stop_loss_price": 95.0, "risk_per_share": 6.0,
+                           "target_price": 120.0, "shares": 10, "risk_dollars": 60.0, "position_value": 1000.0,
+                           "cumulative_risk_pct": 0.5, "binding_constraint": "risk_budget"}}
+    plans.put_plan(layout, breakout.translate_breakout(item, "acct", "big-1", input_hash="0" * 64))
+    oid = paper.place_order(layout, "acct", {"symbol": "BIG", "side": "sell", "qty": "100", "type": "market"})
+    code, out, _ = run(tmp_path, capsys, "paper", "fill", "--account", "acct", "--order-id", oid,
+                       "--bar", '{"open":"100","high":"101","low":"99","close":"100","ts":"2026-10-19"}')
+    assert code == 0 and any("plan(s) big-1 are still active" in w for w in out["warnings"])

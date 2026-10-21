@@ -108,10 +108,21 @@ def cmd_paper(args: argparse.Namespace, layout: Layout) -> Any:
             raise FinanceError("paper fill: pass --bar <json> or --latest-bar")
         partial = bool(bar.pop("partial", False))
         result = paper.fill_bar(layout, args.account, args.order_id, bar)
+        warnings = list(result.get("warnings", []))
         if partial:
-            result["warnings"] = [f"the {bar['ts']} bar is still forming (the session closes 16:00 ET): its high, low "
-                                  "and close will change; the fill used what is cached now. Refetch after the close "
-                                  "with `market bars --refresh` for a final bar."]
+            warnings.append(f"the {bar['ts']} bar is still forming (the session closes 16:00 ET): its high, low "
+                            "and close will change; the fill used what is cached now. Refetch after the close "
+                            "with `market bars --refresh` for a final bar.")
+        if result.get("status") == "filled" and result.get("side") == "sell":
+            held = paper.positions_now(layout, args.account)["positions"]
+            if not any(p["symbol"] == result["symbol"] for p in held.values()):
+                open_plans = [p["plan_id"] for p in plans.list_plans(layout, account_id=args.account, status="active")
+                              if p["symbol"] == result["symbol"]]
+                if open_plans:
+                    warnings.append(f"{result['symbol']} is flat but plan(s) {', '.join(open_plans)} are still active "
+                                    "and count as open risk; end each with `plan close --plan-id <id>`")
+        if warnings:
+            result["warnings"] = warnings
         return result
     if args.action == "cancel":
         paper.cancel_order(layout, args.account, args.order_id)
@@ -134,6 +145,9 @@ def cmd_plan(args: argparse.Namespace, layout: Layout) -> Any:
         approval = _load_json_arg(args.approval) if args.approval else None
         path = plans.put_plan(layout, _load_json_arg(args.plan), approval=approval)
         return {"written": path}
+    if args.action == "close":
+        plan = plans.close_plan(layout, args.plan_id, args.status, args.reason)
+        return {"plan_id": plan["plan_id"], "status": plan["status"], "closed_at": plan["closed_at"]}
     if args.action == "list":
         return {"plans": plans.list_plans(layout, args.account, args.status, args.as_of)}
     if args.action == "get":
@@ -320,6 +334,10 @@ def build_parser() -> argparse.ArgumentParser:
     pli.add_argument("--account")
     pli.add_argument("--status")
     pli.add_argument("--as-of")
+    pc = pl_sub.add_parser("close", help="end a plan once its trade is done (closed) or abandoned (cancelled)")
+    pc.add_argument("--plan-id", required=True)
+    pc.add_argument("--status", default="closed", choices=["closed", "cancelled"])
+    pc.add_argument("--reason", default="")
     pg = pl_sub.add_parser("get")
     pg.add_argument("--plan-id", required=True)
 
