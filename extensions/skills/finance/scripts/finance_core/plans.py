@@ -62,9 +62,14 @@ def validate_plan(plan: Any) -> list[str]:
     else:
         for i, t in enumerate(targets):
             try:
-                parse_money(t, f"targets[{i}]")
+                value = parse_money(t, f"targets[{i}]")
             except FinanceError as exc:
                 errors.append(str(exc))
+                continue
+            if trigger is not None and plan.get("side") in SIDES and (value <= trigger) == (plan["side"] == "buy"):
+                errors.append(f"targets[{i}]: {value} is on the loss side of trigger_price {trigger} for a {plan['side']}")
+    if trigger is not None and stop is not None and plan.get("side") in SIDES and (stop >= trigger) == (plan["side"] == "buy"):
+        errors.append(f"stop_price: {stop} is on the wrong side of trigger_price {trigger} for a {plan['side']}")
     qty = plan.get("quantity")
     if isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
         errors.append("quantity: positive int required")

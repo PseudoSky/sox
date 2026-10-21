@@ -69,8 +69,8 @@ def test_breakout_size_matches_the_hand_computation(tmp_path, capsys):
     book(Layout(tmp_path))  # equity 11000
     code, out, _ = run(tmp_path, capsys, "breakout", "size", "--account", "acct", "--entry", "100", "--stop", "95")
     # risk budget 0.5% of 11000 = 55; risk per share 5 -> 11 shares; 11 * 100 = 1100 = 10% cap
-    assert code == 0 and out["shares"] == 11 and out["position_value"] == 1100
-    assert out["risk_dollars"] == 55 and Path(out["sizer_output"]).is_file()
+    assert code == 0 and out["shares"] == 11 and out["position_value"] == "1100.00"
+    assert out["risk_dollars"] == "55.00" and Path(out["sizer_output"]).is_file()
     assert out["binding_constraint"].startswith("risk_budget")  # no cap reduced the 11 shares; they tie
 
 
@@ -280,3 +280,26 @@ def test_size_warns_when_the_position_exceeds_buying_power(tmp_path, capsys):
     book(Layout(tmp_path))  # cash 0
     code, out, _ = run(tmp_path, capsys, "breakout", "size", "--account", "acct", "--entry", "100", "--stop", "95")
     assert code == 0 and out["buying_power"] == "0.00" and "rejected at fill time" in out["warnings"][0]
+
+
+# --- a plan's stop and targets must lie on the correct side of its trigger
+def good_plan():
+    from finance_core import breakout
+    item = {"symbol": "BIG", "sector": "x", "plan_valid_for_session": "2026-10-30",
+            "trade_plan": {"signal_entry": 100.0, "worst_entry": 101.0, "stop_loss_price": 95.0, "risk_per_share": 6.0,
+                           "target_price": 120.0, "shares": 10, "risk_dollars": 60.0, "position_value": 1000.0,
+                           "cumulative_risk_pct": 0.5, "binding_constraint": "risk_budget"}}
+    return breakout.translate_breakout(item, "acct", "big-1", input_hash="0" * 64)
+
+
+def test_plan_with_target_below_a_buy_trigger_is_rejected():
+    from finance_core import plans
+    assert plans.validate_plan(good_plan()) == []
+    bad = {**good_plan(), "targets": ["90.00"]}
+    assert any("loss side of trigger_price" in e for e in plans.validate_plan(bad))
+
+
+def test_plan_with_stop_above_a_buy_trigger_is_rejected():
+    from finance_core import plans
+    bad = {**good_plan(), "stop_price": "105.00", "risk_per_share": "6.00"}
+    assert any("wrong side of trigger_price" in e for e in plans.validate_plan(bad))

@@ -203,6 +203,11 @@ def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
     raise FinanceError(f"unknown market action {args.action}")
 
 
+def _cents(value: Any) -> str | None:
+    """A sizer number as a two-decimal string, the convention of every other money field."""
+    return None if value is None else f"{Decimal(str(value)):.2f}"
+
+
 def _apply_posture(layout: Layout, risk_pct: str, ignore: bool) -> tuple[str, dict[str, Any] | None]:
     """Entry risk after the latest posture: halved when reduced, refused when no-new-entries unless ignored."""
     current = posture.latest_posture(layout)
@@ -252,8 +257,8 @@ def cmd_breakout(args: argparse.Namespace, layout: Layout) -> Any:
         return {"account_equity": equity, "buying_power": f"{buying_power:.2f}", "warnings": size_warnings, "posture": state, "entry": args.entry, "stop": args.stop,
                 "risk_pct_requested": args.risk_pct, "risk_pct": risk_pct,
                 "max_position_pct": args.max_position_pct, "shares": r["final_recommended_shares"],
-                "position_value": r["final_position_value"], "risk_dollars": r.get("final_risk_dollars"),
-                "risk_pct_of_equity": r.get("final_risk_pct"), "binding_constraint": r.get("binding_constraint") or "risk_budget (no cap reduced the share count)",
+                "position_value": _cents(r["final_position_value"]), "risk_dollars": _cents(r.get("final_risk_dollars")),
+                "risk_pct_of_equity": _cents(r.get("final_risk_pct")), "binding_constraint": r.get("binding_constraint") or "risk_budget (no cap reduced the share count)",
                 "sizer_output": sized["sizer_output"],
                 "note": "shares are floored; the stop is the caller's, nothing here places an order or stores a plan"}
     item = _load_json_arg(args.item)
