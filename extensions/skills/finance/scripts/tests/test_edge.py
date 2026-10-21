@@ -69,6 +69,7 @@ def test_empty_detection_is_a_clean_result_not_an_error(tmp_path):
     seed(layout, breakout=False)
     result = edge.run_edge(layout, SYMBOLS)
     assert result["candidates"] == 0 and "no edge candidates" in result["note"]
+    assert result["drafts"] == [] and "no drafts were written" in result["notes"][0]
     assert result["warnings"] and result["adjusted_prices"] is False
 
 

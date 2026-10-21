@@ -252,7 +252,10 @@ def fill_bar(layout: Layout, account_id: str, order_id: str, bar: dict[str, Any]
             "currency": account.get("base_currency"), "realized_pnl": realized,
             "fill_rule": {"order_type": order["type"], "mode": rule["fill"], "bar_open": money_str(o)}}
     ev = record_event(layout, account_id, fill)
-    return {"status": "filled", "side": order["side"], "symbol": order["symbol"], "realized_pnl": realized,
+    after = positions_now(layout, account_id)["cash"]
+    warnings = [f"cash is now {money_str(after)}: the fill exceeds the account's cash and the paper ledger has no "
+                "margin or buying-power limit"] if after < 0 else []
+    return {"status": "filled", "warnings": warnings, "side": order["side"], "symbol": order["symbol"], "realized_pnl": realized,
             "fill_rule": fill["fill_rule"],
             **{k: ev[k] for k in ("order_id", "price", "qty", "fee", "seq", "ts", "bar_ts")}}
 

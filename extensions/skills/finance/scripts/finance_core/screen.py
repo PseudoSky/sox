@@ -22,6 +22,7 @@ from .plans import put_plan
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
 VCP_SCRIPTS = SKILL_ROOT / "sources" / "vcp-screener" / "scripts"
+SIZER = SKILL_ROOT / "sources" / "position-sizer" / "scripts" / "position_sizer.py"
 PLANNER = SKILL_ROOT / "sources" / "breakout-trade-planner" / "scripts" / "plan_breakout_trades.py"
 TIMEOUT_SECONDS = 900
 
@@ -100,6 +101,19 @@ def run_planner(layout: Layout, screen_path: str | Path, account_size: str, risk
                    "--output-dir", str(out_dir)], "planner")
     path = _reported_path(stdout, r"JSON plan saved to:\s+(\S+\.json)", "planner")
     return {"planner_output": str(path), "result": json.loads(path.read_text(encoding="utf-8"))}
+
+
+def run_sizer(layout: Layout, account_size: str, entry: str, stop: str, risk_pct: str = "0.5",
+              max_position_pct: str = "10") -> dict[str, Any]:
+    """Fixed-fractional share count for one long trade, from the bundled position-sizer source."""
+    out_dir = layout.base / "market" / "sizing"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    layout.ensure_base()
+    stdout = _run([sys.executable, "-I", str(SIZER), "--account-size", str(account_size), "--entry", str(entry),
+                   "--stop", str(stop), "--risk-pct", str(risk_pct), "--max-position-pct", str(max_position_pct),
+                   "--output-dir", str(out_dir)], "sizer")
+    path = _reported_path(stdout, r"JSON report:\s+(\S+\.json)", "sizer")
+    return {"sizer_output": str(path), "result": json.loads(path.read_text(encoding="utf-8"))}
 
 
 def plans_from_planner(layout: Layout, account_id: str, planner: dict[str, Any], write: bool = False) -> list[dict[str, Any]]:

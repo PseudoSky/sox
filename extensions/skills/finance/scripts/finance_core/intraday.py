@@ -59,7 +59,7 @@ def _grade(value: str) -> int:
 def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int, weekday: int,
                 open_positions: int = 0, trades_today: int = 0, day_pnl: Any = None,
                 account_size: Any = None, symbol: str | None = None, max_trade_pct: Any = None,
-                max_daily_loss_pct: Any = None) -> dict[str, Any]:
+                max_daily_loss_pct: Any = None, premium: Any = None, contracts: int = 1) -> dict[str, Any]:
     """Return every rule with its observed value; `allowed` only when all hold."""
     now, rv = _minutes(time_et), _dec(rvol, "rvol")
     pnl = _dec(day_pnl, "day_pnl") if day_pnl is not None else None
@@ -84,9 +84,16 @@ def check_entry(grade: str, signal: str, rvol: Any, time_et: str, trend_age: int
         rules.append(("signal_on_spy", symbol.upper() == SIGNAL_UNDERLYING, symbol))
     if loss_cap is not None and pnl is not None:
         rules.append(("daily_loss_not_reached", pnl > -loss_cap, str(pnl)))
+    cost = _dec(premium, "premium") * 100 * contracts if premium is not None else None
+    if cost is not None and size is not None and trade_frac is not None:
+        rules.append(("order_cost_within_max_per_trade", cost <= size * trade_frac, str(cost.quantize(Decimal("0.01")))))
     failed = [name for name, ok, _ in rules if not ok]
     out: dict[str, Any] = {"allowed": not failed, "failed": failed,
                            "rules": [{"rule": n, "ok": ok, "observed": v} for n, ok, v in rules]}
+    if cost is not None:
+        out["order_cost"] = str(cost.quantize(Decimal("0.01")))
+        if size:
+            out["order_cost_pct_of_account"] = str((cost / size * 100).quantize(Decimal("0.01")))
     if size is not None:
         out["warnings"] = []
         if trade_frac is not None:

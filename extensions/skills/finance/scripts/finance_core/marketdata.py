@@ -195,7 +195,8 @@ def get_bars(layout: Layout, symbol: str, range_: str = "1y", ttl_hours: float =
     if path.exists() and not refresh:
         cached = read_json(path)
         age = datetime.now(timezone.utc) - datetime.fromisoformat(cached["fetched_at"])
-        if cached.get("range") == range_ and age < timedelta(hours=ttl_hours):
+        covers = cached.get("range") in RANGES and RANGES.index(cached["range"]) >= RANGES.index(range_)
+        if covers and age < timedelta(hours=ttl_hours):
             return cached
     block = layout.base / "market" / "_yahoo_blocked.json"
     yahoo_blocked = False

@@ -10,7 +10,7 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -144,7 +144,7 @@ def cmd_intraday(args: argparse.Namespace, layout: Layout) -> Any:
         weekday = args.weekday if args.weekday is not None else datetime.now().weekday()
         return intraday.check_entry(args.grade, args.signal, args.rvol, args.time, args.trend_age, weekday,
                                     args.open_positions, args.trades_today, args.day_pnl, args.account_size, args.symbol,
-                                    args.max_trade_pct, args.max_daily_loss_pct)
+                                    args.max_trade_pct, args.max_daily_loss_pct, args.premium, args.contracts)
     return intraday.check_exit(args.pnl_pct, args.grade, args.signal_flipped, args.time, args.entry_grade)
 
 
@@ -152,11 +152,17 @@ def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "bars":
         record = marketdata.get_bars(layout, args.symbol, args.range, refresh=args.refresh, provider=args.provider)
         bars = record["bars"]
-        return {"symbol": record["symbol"], "range": record["range"], "bars": len(bars),
-                "first": bars[0]["date"], "last": bars[-1]["date"], "last_close": bars[-1]["close"],
+        cutoff = (date.fromisoformat(bars[-1]["date"]) - timedelta(days=marketdata.RANGE_DAYS[args.range])).isoformat()
+        shown_bars = [b for b in bars if b["date"] >= cutoff] or bars
+        out = {"symbol": record["symbol"], "range": record["range"], "bars": len(shown_bars), "cached_bars": len(bars),
+                "first": shown_bars[0]["date"], "last": bars[-1]["date"], "last_close": bars[-1]["close"],
                 "fetched_at": record["fetched_at"], "source": record["source"],
                 "provider": record["provider"], "adjusted": record["adjusted"],
                 "cache": str(layout.base / "market" / f"{record['symbol']}.json")}
+        if marketdata.bar_in_progress(bars[-1]["date"]):
+            out["warnings"] = [f"the {bars[-1]['date']} bar is still forming (before 16:00 ET): last_close is an intraday "
+                               "price that changes on every refresh; run `market bars --refresh` after the close for the final bar"]
+        return out
     if args.action == "universe":
         return universe.get_universe(layout, args.index, sector=args.sector, limit=args.limit, refresh=args.refresh)
     if args.action == "screen":
@@ -198,6 +204,16 @@ def _plan_breakouts(args: argparse.Namespace, layout: Layout) -> Any:
 def cmd_breakout(args: argparse.Namespace, layout: Layout) -> Any:
     if args.action == "plan":
         return _plan_breakouts(args, layout)
+    if args.action == "size":
+        equity = analyze.analyze_account(layout, args.account)["equity"]
+        sized = screen.run_sizer(layout, equity, args.entry, args.stop, args.risk_pct, args.max_position_pct)
+        r = sized["result"]
+        return {"account_equity": equity, "entry": args.entry, "stop": args.stop, "risk_pct": args.risk_pct,
+                "max_position_pct": args.max_position_pct, "shares": r["final_recommended_shares"],
+                "position_value": r["final_position_value"], "risk_dollars": r.get("final_risk_dollars"),
+                "risk_pct_of_equity": r.get("final_risk_pct"), "binding_constraint": r.get("binding_constraint"),
+                "sizer_output": sized["sizer_output"],
+                "note": "shares are floored; the stop is the caller's, nothing here places an order or stores a plan"}
     item = _load_json_arg(args.item)
     digest = hashlib.sha256(json.dumps(item, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     plan = breakout.translate_breakout(item, args.account, args.plan_id, digest, mode=args.mode)
@@ -312,6 +328,12 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--plan-id", required=True)
     bt.add_argument("--mode", default="planned")
     bt.add_argument("--write", action="store_true", help="store the plan (default: print only)")
+    bz = bo_sub.add_parser("size", help="P6: shares for one long trade from entry, stop and risk percent")
+    bz.add_argument("--account", required=True)
+    bz.add_argument("--entry", required=True)
+    bz.add_argument("--stop", required=True)
+    bz.add_argument("--risk-pct", default="0.5", help="percent of equity risked (default 0.5)")
+    bz.add_argument("--max-position-pct", default="10", help="largest single position as percent of equity (default 10)")
     bp = bo_sub.add_parser("plan")
     bp.add_argument("--account", required=True)
     bp.add_argument("--screen", required=True, help="screener JSON from `market screen`")
@@ -363,6 +385,8 @@ def build_parser() -> argparse.ArgumentParser:
     ie.add_argument("--account-size")
     ie.add_argument("--max-trade-pct", help="per-trade cap as percent of --account-size; the source's 40%% only up to $1,000")
     ie.add_argument("--max-daily-loss-pct", help="daily-loss cap as percent of --account-size; the source's 80%% only up to $1,000")
+    ie.add_argument("--premium", help="option price per share (for example 1.10); with --account-size, checks the order cost against the per-trade cap")
+    ie.add_argument("--contracts", type=int, default=1, help="contracts in the order (default 1; 100 shares each)")
     ie.add_argument("--symbol", help="underlying the signal fired on; the playbook requires SPY")
     ix = it_sub.add_parser("exit")
     ix.add_argument("--pnl-pct", required=True)

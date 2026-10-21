@@ -105,10 +105,10 @@ def test_snapshot_age_warning_thresholds():
 def test_report_and_recommend_carry_the_stale_snapshot_warning(tmp_path):
     layout = Layout(tmp_path)
     book(layout)
-    rep = report.build_report(layout, as_of="2026-10-19")
+    rep = report.build_report(layout, as_of="2026-10-19", today=TODAY)
     assert any("acct: snapshot is 3 days old" in w for w in rep["warnings"])
     assert any("snapshot is 3 days old" in w for w in recommend.recommend_for_account(layout, "acct", today=TODAY)["warnings"])
-    assert not any("snapshot is" in w for w in report.build_report(layout, as_of="2026-10-16")["warnings"])
+    assert not any("snapshot is" in w for w in report.build_report(layout, as_of="2026-10-16", today=date(2026, 10, 16))["warnings"])
 
 
 def test_report_can_be_limited_to_one_account(tmp_path, capsys):

@@ -132,7 +132,11 @@ def write_snapshot(layout: Layout, account_id: str, record: dict[str, Any]) -> P
 
 
 def load_current(layout: Layout, account_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    pointer = read_json(layout.account_dir(account_id) / "current.json")
+    pointer_path = layout.account_dir(account_id) / "current.json"
+    if not pointer_path.is_file():
+        raise FinanceError(f"account {account_id} has no imported holdings snapshot; run `inlet ingest --account "
+                           f"{account_id} --mapping <file> --source <export>` first (see references/inlet-mapping.md)")
+    pointer = read_json(pointer_path)
     record = read_json(layout.account_dir(account_id) / "snapshots" / pointer["snapshot"])
     return record, pointer
 

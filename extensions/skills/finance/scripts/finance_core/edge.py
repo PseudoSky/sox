@@ -85,6 +85,8 @@ def run_edge(layout: Layout, symbols: list[str], range_: str = "1y", dry_run: bo
         return {"output_dir": str(out_dir / "pipeline"), "dry_run": dry_run, "input": summary,
                 "candidates": 0, "warnings": warnings, "adjusted_prices": not flagged, "regime": found.get("regime"), "as_of": found.get("as_of"),
                 "note": "detection ran and found no edge candidates in this universe; that is a valid result",
+                "drafts": [], "notes": ["No candidates, so no drafts were written. tickets/anomalies.json (if present) lists "
+                                        "single-symbol outliers, which are observations and not edge candidates."],
                 "report": str(out_dir / "pipeline" / "tickets" / "daily_report.md")}
     if done.returncode != 0:
         raise FinanceError(f"edge: orchestrator exited {done.returncode}", (done.stderr or done.stdout).strip().splitlines()[-8:])

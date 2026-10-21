@@ -23,7 +23,7 @@ def _latest(folder: Path, pattern: str) -> dict[str, Any] | None:
 def build_report(layout: Layout, as_of: str | None = None, account_id: str | None = None,
                  today: date | None = None) -> dict[str, Any]:
     accounts, receipts, warnings = [], [], []
-    ref = date.fromisoformat(as_of) if as_of else (today or date.today())
+    ref = today or date.today()
     for acct in ([account_id] if account_id else list_accounts(layout)):
         result = analyze.analyze_account(layout, acct, as_of)
         receipts.append(str(analyze.write_analysis(layout, result)))
