@@ -71,7 +71,7 @@ def test_breakout_size_matches_the_hand_computation(tmp_path, capsys):
     # risk budget 0.5% of 11000 = 55; risk per share 5 -> 11 shares; 11 * 100 = 1100 = 10% cap
     assert code == 0 and out["shares"] == 11 and out["position_value"] == 1100
     assert out["risk_dollars"] == 55 and Path(out["sizer_output"]).is_file()
-    assert out["binding_constraint"].startswith("none:")  # risk budget and cap tie at 11 shares
+    assert out["binding_constraint"].startswith("risk_budget")  # no cap reduced the 11 shares; they tie
 
 
 def test_breakout_size_respects_the_position_cap(tmp_path, capsys):
@@ -79,7 +79,7 @@ def test_breakout_size_respects_the_position_cap(tmp_path, capsys):
     code, out, _ = run(tmp_path, capsys, "breakout", "size", "--account", "acct", "--entry", "100", "--stop", "99",
                        "--max-position-pct", "5")
     # budget 55 / 1 per share = 55 shares, but 5% of 11000 = 550 -> 5 shares
-    assert code == 0 and out["shares"] == 5 and not out["binding_constraint"].startswith("none:")
+    assert code == 0 and out["shares"] == 5 and not out["binding_constraint"].startswith("risk_budget")
 
 
 # --- paper buys are limited to cash plus cash equivalents unless the account allows margin
@@ -205,3 +205,39 @@ def test_selling_the_last_share_names_plans_that_are_still_active(tmp_path, caps
     code, out, _ = run(tmp_path, capsys, "paper", "fill", "--account", "acct", "--order-id", oid,
                        "--bar", '{"open":"100","high":"101","low":"99","close":"100","ts":"2026-10-19"}')
     assert code == 0 and any("plan(s) big-1 are still active" in w for w in out["warnings"])
+
+
+# --- sizing honours the market posture exactly as breakout plan does
+def synthetic_posture(layout: Layout, state: str) -> None:
+    from finance_core import posture
+    posture.write_posture(layout, {"posture": state, "as_of": date.today().isoformat(), "reasons": ["SYNTHETIC"],
+                                   "signals": [], "sources": ["SYNTHETIC"], "rules": {}})
+
+
+def test_reduced_posture_halves_the_size(tmp_path, capsys):
+    layout = Layout(tmp_path)
+    book(layout)  # equity 11000
+    synthetic_posture(layout, "reduced")
+    code, out, _ = run(tmp_path, capsys, "breakout", "size", "--account", "acct", "--entry", "100", "--stop", "99",
+                       "--max-position-pct", "100")
+    # 0.5% halves to 0.25% of 11000 = 27.50; risk per share 1 -> 27 shares (full risk would give 55)
+    assert code == 0 and out["shares"] == 27 and out["risk_pct"] == "0.25" and out["risk_pct_requested"] == "0.5"
+    assert out["posture"]["posture"] == "reduced"
+
+
+def test_no_new_entries_refuses_sizing_unless_overridden(tmp_path, capsys):
+    layout = Layout(tmp_path)
+    book(layout)
+    synthetic_posture(layout, "no-new-entries")
+    args = ["breakout", "size", "--account", "acct", "--entry", "100", "--stop", "99", "--max-position-pct", "100"]
+    code, _, err = run(tmp_path, capsys, *args)
+    assert code == 2 and "no-new-entries" in err
+    code, out, _ = run(tmp_path, capsys, *args, "--ignore-posture")
+    assert code == 0 and out["shares"] == 55 and "--ignore-posture used" in out["posture"]["override"]
+    assert out["posture"]["posture"] == "no-new-entries"
+
+
+def test_bars_reply_names_the_requested_and_the_cached_range(tmp_path, capsys):
+    seed_history(Layout(tmp_path), date(2026, 10, 16))
+    code, out, _ = run(tmp_path, capsys, "market", "bars", "--symbol", "ZZZ", "--range", "1y")
+    assert out["range"] == "1y" and out["cached_range"] == "5y"

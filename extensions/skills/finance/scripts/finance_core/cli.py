@@ -170,7 +170,7 @@ def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
         bars = record["bars"]
         cutoff = (date.fromisoformat(bars[-1]["date"]) - timedelta(days=marketdata.RANGE_DAYS[args.range])).isoformat()
         shown_bars = [b for b in bars if b["date"] >= cutoff] or bars
-        out = {"symbol": record["symbol"], "range": record["range"], "bars": len(shown_bars), "cached_bars": len(bars),
+        out = {"symbol": record["symbol"], "range": args.range, "cached_range": record["range"], "bars": len(shown_bars), "cached_bars": len(bars),
                 "first": shown_bars[0]["date"], "last": bars[-1]["date"], "last_close": bars[-1]["close"],
                 "fetched_at": record["fetched_at"], "source": record["source"],
                 "provider": record["provider"], "adjusted": record["adjusted"],
@@ -197,18 +197,27 @@ def cmd_market(args: argparse.Namespace, layout: Layout) -> Any:
     raise FinanceError(f"unknown market action {args.action}")
 
 
+def _apply_posture(layout: Layout, risk_pct: str, ignore: bool) -> tuple[str, dict[str, Any] | None]:
+    """Entry risk after the latest posture: halved when reduced, refused when no-new-entries unless ignored."""
+    current = posture.latest_posture(layout)
+    if current is None:
+        return risk_pct, None
+    state = {"posture": current["posture"], "as_of": current["as_of"]}
+    if ignore:
+        state["override"] = "--ignore-posture used; the posture was not applied"
+        return risk_pct, state
+    if current["posture"] == "no-new-entries":
+        raise FinanceError(f"posture is no-new-entries ({current['as_of']}): new entries stop at P5; "
+                           "pass --ignore-posture to size anyway", current["reasons"])
+    if current["posture"] == "reduced":
+        risk_pct = str(Decimal(risk_pct) * posture.REDUCED_RISK_FACTOR)
+        state["risk_pct_used"] = risk_pct
+    return risk_pct, state
+
+
 def _plan_breakouts(args: argparse.Namespace, layout: Layout) -> Any:
     equity = analyze.analyze_account(layout, args.account)["equity"]
-    risk_pct, state = args.risk_pct, None
-    current = None if args.ignore_posture else posture.latest_posture(layout)
-    if current is not None:
-        state = {"posture": current["posture"], "as_of": current["as_of"]}
-        if current["posture"] == "no-new-entries":
-            raise FinanceError(f"posture is no-new-entries ({current['as_of']}): new entries stop at P5; "
-                               "pass --ignore-posture to size anyway", current["reasons"])
-        if current["posture"] == "reduced":
-            risk_pct = str(Decimal(risk_pct) * posture.REDUCED_RISK_FACTOR)
-            state["risk_pct_used"] = risk_pct
+    risk_pct, state = _apply_posture(layout, args.risk_pct, args.ignore_posture)
     planner = screen.run_planner(layout, args.screen, equity, risk_pct)
     built = screen.plans_from_planner(layout, args.account, planner, write=args.write)
     return {"account_equity": equity, "posture": state, "planner_output": planner["planner_output"],
@@ -222,12 +231,14 @@ def cmd_breakout(args: argparse.Namespace, layout: Layout) -> Any:
         return _plan_breakouts(args, layout)
     if args.action == "size":
         equity = analyze.analyze_account(layout, args.account)["equity"]
-        sized = screen.run_sizer(layout, equity, args.entry, args.stop, args.risk_pct, args.max_position_pct)
+        risk_pct, state = _apply_posture(layout, args.risk_pct, args.ignore_posture)
+        sized = screen.run_sizer(layout, equity, args.entry, args.stop, risk_pct, args.max_position_pct)
         r = sized["result"]
-        return {"account_equity": equity, "entry": args.entry, "stop": args.stop, "risk_pct": args.risk_pct,
+        return {"account_equity": equity, "posture": state, "entry": args.entry, "stop": args.stop,
+                "risk_pct_requested": args.risk_pct, "risk_pct": risk_pct,
                 "max_position_pct": args.max_position_pct, "shares": r["final_recommended_shares"],
                 "position_value": r["final_position_value"], "risk_dollars": r.get("final_risk_dollars"),
-                "risk_pct_of_equity": r.get("final_risk_pct"), "binding_constraint": r.get("binding_constraint") or "none: the risk budget and the position cap allow the same share count",
+                "risk_pct_of_equity": r.get("final_risk_pct"), "binding_constraint": r.get("binding_constraint") or "risk_budget (no cap reduced the share count)",
                 "sizer_output": sized["sizer_output"],
                 "note": "shares are floored; the stop is the caller's, nothing here places an order or stores a plan"}
     item = _load_json_arg(args.item)
@@ -355,6 +366,7 @@ def build_parser() -> argparse.ArgumentParser:
     bz.add_argument("--stop", required=True)
     bz.add_argument("--risk-pct", default="0.5", help="percent of equity risked (default 0.5)")
     bz.add_argument("--max-position-pct", default="10", help="largest single position as percent of equity (default 10)")
+    bz.add_argument("--ignore-posture", action="store_true", help="size at the full risk even when the posture is reduced or no-new-entries")
     bp = bo_sub.add_parser("plan")
     bp.add_argument("--account", required=True)
     bp.add_argument("--screen", required=True, help="screener JSON from `market screen`")

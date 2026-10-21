@@ -11,3 +11,5 @@ The chain is the harvested edge-* skills in order: `edge-candidate-agent` (detec
 - Drafts are hypotheses. Send any draft to P7 for a backtest before it reaches P5.
 
 `market edge` also returns `drafts` (the draft files) and `notes`. Anomalies in `tickets/anomalies.json` are outliers on single symbols, not signals. Draft conditions are the concept's observed values, rounded by the review loop (whole numbers from 10 up, one decimal from 1 to 10, one significant figure below 1); they are single observations, not fitted thresholds, so open each draft and check its conditions before a P7 backtest.
+
+Draft details the pipeline adds, not this skill: a draft carries an `avg_volume > 500000` liquidity condition that the ticket lacks and drops the ticket's `trend_filter`; its validation window starts 2016-01-01, which a 5-year bar cache does not cover (extend the history before backtesting it in P7). A MARKET_BASKET observation with zero close and relative volume is a basket-level aggregate, not a tradable symbol.
