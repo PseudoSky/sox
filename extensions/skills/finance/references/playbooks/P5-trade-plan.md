@@ -8,4 +8,4 @@ Stage: plan. Reads: a candidate (P3) or a single name (P1), and the posture (P2)
 3. Mode: `planned` by default. `paper:<id>` only when the user asks for a paper trade. `live:<id>` needs an approval record; the core will refuse without it.
 
 Order templates in the planner output (Alpaca format) are not used.
-4. A name the planner rejects (no valid VCP) gets no automatic plan. Choose the entry and stop yourself, size them with `breakout size` (P6), and store the plan with `plan put` (the JSON shape is what `breakout translate` prints; run it on a hand-built item to see one).
+4. A name the planner rejects (no valid VCP) gets no automatic plan. Choose the entry and stop yourself, size them with `breakout size` (P6), and store it with `breakout translate --account <id> --item <file> --plan-id <id> --write` on a hand-built item shaped like the planner's actionable item (SKILL.md "Breakout" lists its fields); `plan list` and `plan get --plan-id` read it back.

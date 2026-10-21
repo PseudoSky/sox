@@ -57,4 +57,4 @@ def income_for_account(layout: Layout, account_id: str, as_of: str | None = None
     return {"account_id": account_id, "as_of": as_of_date.isoformat(), "positions": rows,
             "income_12m_total": money_str(total.quantize(CENT)), "warnings": warnings,
             "basis": "paid dividends in the trailing 365 days times current quantity; not a forecast. "
-                     "A broker-reported yield may use a different basis (for example last payment times 12)."}
+                     "trailing_yield_pct is that per-share total over the latest cached close. A broker-reported yield may use a different basis (for example last payment times 12)."}

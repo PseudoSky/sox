@@ -71,6 +71,7 @@ def test_breakout_size_matches_the_hand_computation(tmp_path, capsys):
     # risk budget 0.5% of 11000 = 55; risk per share 5 -> 11 shares; 11 * 100 = 1100 = 10% cap
     assert code == 0 and out["shares"] == 11 and out["position_value"] == 1100
     assert out["risk_dollars"] == 55 and Path(out["sizer_output"]).is_file()
+    assert out["binding_constraint"].startswith("none:")  # risk budget and cap tie at 11 shares
 
 
 def test_breakout_size_respects_the_position_cap(tmp_path, capsys):
@@ -78,7 +79,7 @@ def test_breakout_size_respects_the_position_cap(tmp_path, capsys):
     code, out, _ = run(tmp_path, capsys, "breakout", "size", "--account", "acct", "--entry", "100", "--stop", "99",
                        "--max-position-pct", "5")
     # budget 55 / 1 per share = 55 shares, but 5% of 11000 = 550 -> 5 shares
-    assert code == 0 and out["shares"] == 5
+    assert code == 0 and out["shares"] == 5 and not out["binding_constraint"].startswith("none:")
 
 
 # --- paper fills that overdraw cash say so

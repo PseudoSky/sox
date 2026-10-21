@@ -211,7 +211,7 @@ def cmd_breakout(args: argparse.Namespace, layout: Layout) -> Any:
         return {"account_equity": equity, "entry": args.entry, "stop": args.stop, "risk_pct": args.risk_pct,
                 "max_position_pct": args.max_position_pct, "shares": r["final_recommended_shares"],
                 "position_value": r["final_position_value"], "risk_dollars": r.get("final_risk_dollars"),
-                "risk_pct_of_equity": r.get("final_risk_pct"), "binding_constraint": r.get("binding_constraint"),
+                "risk_pct_of_equity": r.get("final_risk_pct"), "binding_constraint": r.get("binding_constraint") or "none: the risk budget and the position cap allow the same share count",
                 "sizer_output": sized["sizer_output"],
                 "note": "shares are floored; the stop is the caller's, nothing here places an order or stores a plan"}
     item = _load_json_arg(args.item)
