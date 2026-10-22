@@ -335,3 +335,12 @@ def test_zero_filled_cusip_is_not_an_identifier():
     xml = nport("S1", [("ASML Holding NV", "000000000", "1", "EC"), ("Real Co", "CUSIPRE01", "1", "EC")])
     h = lookthrough._parse_nport(xml)["holdings"]
     assert h[0]["cusip"] is None and h[1]["cusip"] == "CUSIPRE01"
+
+
+def test_cusipless_name_variants_merge_into_one_row(tmp_path):
+    net = Net()
+    net.docs["https://www.sec.gov/Archives/edgar/data/22/000000002226000001/primary_doc.xml"] = nport(
+        "S000000002", [("Eaton Corp PLC", "000000000", "50", "EC"), ("Eaton Corp. plc", "000000000", "50", "EC")])
+    out = lookthrough.look_through(book(tmp_path), ["acc2"], net)
+    rows = [r for r in out["per_account"][0]["exposure"] if r["underlying"].startswith("name:")]
+    assert len(rows) == 1 and rows[0]["value"] == "2000.00"

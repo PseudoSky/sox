@@ -291,7 +291,7 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
                 for h in funds[sym]["holdings"]:
                     ticker = h.get("ticker") or ((mapped.get(h["cusip"]) or {}).get("ticker") if h["cusip"] else None)
                     ticker = ticker or (by_issuer.get(issuer_key(h["name"])) if not h["cusip"] else None)
-                    key = ticker or (f"cusip:{h['cusip']}" if h["cusip"] else f"name:{h['name']}")
+                    key = ticker or (f"cusip:{h['cusip']}" if h["cusip"] else f"name:{issuer_key(h['name'])}")
                     category = "equity" if h["category"] in EQUITY_CATEGORIES else f"other:{h['category']}"
                     add(bucket, key, names.get(key, h["name"]), category, value * Decimal(h["pct"]) / 100, sym)
                 residual = Decimal(100) - sum((Decimal(h["pct"]) for h in funds[sym]["holdings"]), Decimal(0))
