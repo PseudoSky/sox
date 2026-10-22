@@ -1,5 +1,5 @@
 /**
- * Memory CLI — memory init|import|status|list|promote|registry|export|fts-optimize|fts-rebuild|restore
+ * Memory CLI — memory init|import|status|list|promote|registry|export|recluster|fts-optimize|fts-rebuild|restore
  * Deterministic: no LLM calls, predictable output.
  *
  * P3: multi-scope with registry.json.
@@ -47,6 +47,9 @@ import type {
   CurateDrainResult,
   CurateResetPipelineResult,
   CurateResumeResult,
+  CurateReclusterGlobalResult,
+  CurateReclusterSubsetResult,
+  CurateReclusterStatusResult,
 } from '@adhd/sox-memory-core';
 
 /** The curate error-variant shape (a failed/unknown op). */
@@ -955,6 +958,11 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'pipeline':
       await cmdPipeline(rest[0], dbPathOverride, dryRun, limit);
       break;
+    case 'recluster': {
+      const code = await runReclusterCommand(rest, dbPathOverride, dryRun);
+      if (code !== 0) process.exit(code);
+      break;
+    }
     case 'fts-optimize':
       await cmdFtsOptimize(dbPathOverride, rest);
       break;
@@ -985,6 +993,14 @@ Commands:
           [<path> positional arg also works]
   pipeline <status|drain|reset|resume> [--db <path>]   Enrich/embed pipeline control plane
           [--dry-run] [--limit N]
+  recluster [--db <path>] [--dry-run] [--wait]         Request a recluster job (whole store, or filtered
+            [--timeout SEC] [--poll-ms N] [--json]     by --project-path/--topic/--tag/--importance-min,
+            [--project-path P] [--topic T]             --threshold X). Single-flight per store: when a
+            [--tag t1,t2] [--importance-min N]         job is already open you get ITS handle. The
+            [--threshold X]                            running memory-server executes the job (isolated
+                                                      child). --wait polls to a terminal state.
+                                                      Exit: 0 completed (or queued, no --wait),
+                                                      1 usage/error, 2 failed, 3 degraded, 4 timeout.
   fts-optimize [--db <path>]                           OFFLINE merge of FTS index segments
           [<path> positional arg also works]          (run \`soxe service disable memory-server\`
                                                       first — a killed one respawns under
@@ -1014,6 +1030,196 @@ Commands:
                                                       holds <10% of the live store's nodes
                                                       (--allow-shrink overrides).
 `);
+  }
+}
+
+/** `recluster` exit codes (90ba140a / 2f998081 AC-B5). */
+export const RECLUSTER_EXIT = {
+  COMPLETED: 0,
+  USAGE: 1,
+  FAILED: 2,
+  DEGRADED: 3,
+  TIMEOUT: 4,
+} as const;
+
+export interface ReclusterCliDeps {
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  write?: (line: string) => void;
+  error?: (line: string) => void;
+}
+
+/**
+ * `memory recluster` — trigger a recluster job and optionally wait for it.
+ *
+ * The CLI process does not run the pass. It requests a job through the same
+ * `memory_curate` path the MCP tool uses (so single-flight is the store's
+ * guarantee: with a job already open you get that job's handle, never a second
+ * pass) and polls `recluster_status`. The memory-server on the store executes
+ * the job in its isolated child; with no server running a `--wait` ends in the
+ * timeout exit code (4) with the job still queued — it is never reported done.
+ * Returns the process exit code (0 completed, 1 usage/error, 2 failed,
+ * 3 degraded, 4 timeout).
+ */
+export async function runReclusterCommand(
+  args: string[],
+  dbPathOverride: string,
+  dryRun: boolean,
+  deps: ReclusterCliDeps = {},
+): Promise<number> {
+  const out = deps.write ?? ((l: string) => console.log(l));
+  const err = deps.error ?? ((l: string) => console.error(l));
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = deps.now ?? Date.now;
+
+  let wait = false;
+  let json = false;
+  let timeoutSec = 900;
+  let pollMs = 2000;
+  let threshold: number | undefined;
+  const filters: Record<string, unknown> = {};
+  // 90ba140a AC-C7: every value is validated BEFORE the store is opened, so a bad
+  // flag can never enqueue anything. A flag with no value (`--project-path` as
+  // the last token, or followed by another flag) used to become a filter with an
+  // undefined value — a whole-store subset pass — and `--importance-min abc`
+  // stored NaN.
+  const usage = (msg: string): number => {
+    err(`[recluster] ${msg}`);
+    return RECLUSTER_EXIT.USAGE;
+  };
+  const parseNumber = (raw: string): number | null => {
+    const n = Number(raw);
+    return raw.trim() !== '' && Number.isFinite(n) ? n : null;
+  };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === '--wait') { wait = true; continue; }
+    if (a === '--json') { json = true; continue; }
+    const valued = ['--timeout', '--poll-ms', '--threshold', '--project-path', '--topic', '--tag', '--importance-min'];
+    if (!valued.includes(a)) return usage(`unknown argument: ${a}`);
+    const raw = args[i + 1];
+    if (raw === undefined || raw.startsWith('--')) return usage(`${a} requires a value`);
+    i++;
+    if (a === '--project-path' || a === '--topic') {
+      if (raw.trim() === '') return usage(`${a} requires a non-empty value`);
+      filters[a === '--topic' ? 'topic' : 'project_path'] = raw;
+    } else if (a === '--tag') {
+      const tags = raw.split(',').map((t) => t.trim()).filter(Boolean);
+      if (tags.length === 0) return usage('--tag requires at least one tag (comma-separated)');
+      filters['tags'] = tags;
+    } else {
+      const n = parseNumber(raw);
+      if (n === null) return usage(`${a} must be a number, got '${raw}'`);
+      if (a === '--timeout') timeoutSec = n;
+      else if (a === '--poll-ms') pollMs = n;
+      else if (a === '--threshold') threshold = n;
+      else filters['importance_min'] = n;
+    }
+  }
+  if (timeoutSec <= 0 || pollMs <= 0) return usage('--timeout and --poll-ms must be positive numbers');
+
+  const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
+  const rawDb = dbPathOverride || path.join(home, '.memory', 'memory.db');
+  const resolvedDb = path.resolve(rawDb.replace(/^~(?=\/|$)/, home));
+  if (!fs.existsSync(resolvedDb)) {
+    err(`[recluster] db not found: ${resolvedDb}`);
+    return RECLUSTER_EXIT.USAGE;
+  }
+
+  const adapter = await openDb(resolvedDb);
+  try {
+    const req = (await memoryCurate(adapter, {
+      op: 'recluster',
+      dry_run: dryRun,
+      ...(Object.keys(filters).length > 0 ? { filters } : {}),
+      ...(threshold !== undefined ? { threshold } : {}),
+    })) as CurateReclusterGlobalResult | CurateReclusterSubsetResult | CurateOpError;
+    if ('code' in req) {
+      err(`[recluster] ${req.code}: ${req.message ?? ''}`);
+      return RECLUSTER_EXIT.USAGE;
+    }
+    if (!req.enqueued || !req.job_id) {
+      const r = { op: 'recluster', enqueued: false, dry_run: true };
+      out(json ? JSON.stringify(r) : '[recluster] DRY-RUN: nothing enqueued (whole-store dry run has no effect)');
+      return RECLUSTER_EXIT.COMPLETED;
+    }
+    const jobId = req.job_id;
+    const joined = req.joined === true;
+    const jobScope = req.job_scope ?? req.scope;
+    // 90ba140a AC-C6: single-flight hands a request the OPEN job's handle even when
+    // that job does not carry the request (a filtered request joining a whole-store
+    // job, or vice versa). Say so, in every output mode, and again after --wait.
+    const honored = !joined || (jobScope === req.scope && (req.scope !== 'subset' || req.filters_applied !== false));
+    const notice = honored
+      ? null
+      : `this request was NOT honored as asked: it joined the open ${jobScope} job ${jobId} (single-flight per store), ` +
+        `so ${Object.keys(filters).length > 0 ? 'your filters were NOT applied' : 'no whole-store pass was queued'}; ` +
+        'request again once that job settles';
+    if (!json) {
+      out(
+        `[recluster] ${joined ? 'joined the open job' : 'job queued'}: ${jobId} ` +
+        `(joined=${joined}, job_scope=${jobScope}, state=${req.state ?? 'queued'})`,
+      );
+      if (notice) out(`[recluster] NOTICE: ${notice}`);
+    }
+    const handleFields = { joined, job_scope: jobScope, filters_applied: honored, ...(notice ? { notice } : {}) };
+
+    const poll = async (): Promise<CurateReclusterStatusResult | null> => {
+      const st = (await memoryCurate(adapter, { op: 'recluster_status', job_id: jobId })) as
+        | CurateReclusterStatusResult
+        | CurateOpError;
+      if ('code' in st) {
+        err(`[recluster] status ${st.code}: ${st.message ?? ''}`);
+        return null;
+      }
+      return st;
+    };
+
+    if (!wait) {
+      if (json) out(JSON.stringify({ job_id: jobId, state: req.state, scope: jobScope, ...handleFields }));
+      return RECLUSTER_EXIT.COMPLETED;
+    }
+
+    const deadline = now() + timeoutSec * 1000;
+    let last: CurateReclusterStatusResult | null = null;
+    let lastState = '';
+    for (;;) {
+      last = await poll();
+      if (!last) return RECLUSTER_EXIT.USAGE;
+      if (!json && last.state !== lastState) {
+        out(`[recluster] state: ${last.state}${last.started_at ? ` (started ${last.started_at})` : ''}`);
+        lastState = last.state;
+      }
+      if (last.state === 'completed' || last.state === 'degraded' || last.state === 'failed') break;
+      if (now() >= deadline) {
+        const r = { job_id: jobId, state: last.state, timeout: true, timeout_sec: timeoutSec };
+        if (json) out(JSON.stringify(r));
+        else err(`[recluster] timeout after ${timeoutSec}s: job ${jobId} is still ${last.state}; a running memory-server executes it`);
+        return RECLUSTER_EXIT.TIMEOUT;
+      }
+      await sleep(pollMs);
+    }
+    if (json) out(JSON.stringify({ ...last, ...handleFields }));
+    else {
+      out(
+        `[recluster] ${last.state}: job ${jobId}` +
+        `${last.reason ? ` reason=${last.reason}` : ''}` +
+        `${last.skip_reason ? ` (${last.skip_reason})` : ''}${last.error ? ` error=${last.error}` : ''}` +
+        `${last.finished_at ? ` finished ${last.finished_at}` : ''}`,
+      );
+      if (last.partition) {
+        out(`  partition: communities=${last.partition.community_count} clustered=${last.partition.clustered_episodes}/${last.partition.live_episodes}`);
+      }
+      if (last.result) out(`  result: clusters=${last.result.cluster_count} candidates=${last.result.candidate_count} persisted=${last.result.persisted}`);
+      if (notice) out(`[recluster] NOTICE: ${notice}`);
+    }
+    return last.state === 'completed'
+      ? RECLUSTER_EXIT.COMPLETED
+      : last.state === 'degraded'
+        ? RECLUSTER_EXIT.DEGRADED
+        : RECLUSTER_EXIT.FAILED;
+  } finally {
+    await adapter.close();
   }
 }
 

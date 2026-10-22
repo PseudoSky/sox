@@ -316,6 +316,47 @@ describe('config-merge TOML — [capability-engine.2]', () => {
   beforeEach(() => { dir = tmpDir(); });
   afterEach(() => rmrf(dir));
 
+  it('apply preserves a hostile real-world codex config byte-for-byte outside the merged key [codex-toml-roundtrip]', async () => {
+    const fp = path.join(dir, 'config.toml');
+    const original = [
+      '# user comment kept',
+      '[projects."/Users/nix/Documents/pro"]',
+      'trust_level = "trusted"',
+      '',
+      '[plugins."browser@openai-bundled"]',
+      'enabled = true',
+      '',
+      '[agents.old]',
+      'description = "has \\"quotes\\" and a # hash"',
+      'prompt = """',
+      '# Heading',
+      'key = "not a key"',
+      '[not.a.table]',
+      '"""',
+      '',
+    ].join('\n');
+    fs.writeFileSync(fp, original);
+    const ledger = Ledger.load(dir);
+    const prose = '# New Agent\nline with "quotes" and \\ backslash\n[fake.table]\nx = 1\n';
+    await configMerge.apply({
+      host: 'codex', scope: 'user', scopeRoot: dir, ext: 'new-agent',
+      target: { filePath: fp, keyPath: 'agents.new-agent' },
+      payload: { value: { description: 'A "quoted" one', prompt: prose } },
+      ledger,
+    });
+    const raw = fs.readFileSync(fp, 'utf8');
+    expect(raw).toContain('# user comment kept');
+    const parsed = configMerge.parseToml(raw) as any;
+    expect(parsed.projects['/Users/nix/Documents/pro'].trust_level).toBe('trusted');
+    expect(parsed.plugins['browser@openai-bundled'].enabled).toBe(true);
+    expect(parsed.agents.old.description).toBe('has "quotes" and a # hash');
+    expect(parsed.agents.old.prompt).toContain('[not.a.table]');
+    expect(parsed.agents['new-agent'].prompt).toBe(prose);
+    expect(parsed.agents['new-agent'].description).toBe('A "quoted" one');
+    expect(parsed.not).toBeUndefined();
+    expect(parsed.fake).toBeUndefined();
+  });
+
   it('exports parseToml and stringifyToml', () => {
     expect(typeof configMerge.parseToml).toBe('function');
     expect(typeof configMerge.stringifyToml).toBe('function');

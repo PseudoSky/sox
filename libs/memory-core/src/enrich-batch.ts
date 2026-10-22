@@ -22,6 +22,7 @@ import { getMemoryGraphBackend } from './graph-backend.js';
 import { buildAutoLinks } from './autolink.js';
 import {
   clusterStore,
+  clusterSubset,
   DEFAULT_CLUSTER_NODE_CAP,
   type ClusterAdmissionStats,
   type ClusterDegradation,
@@ -30,6 +31,9 @@ import {
 import { computeImportance } from './importance.js';
 import type { ImportanceWeights } from './importance.js';
 import { ENRICH_VERSION } from './enrich-version.js';
+import { summarizeSubsetResult } from './recluster-job.js';
+import type { ReclusterSubsetSummary } from './recluster-job.js';
+import type { MemoryFilter } from './memory-filters.js';
 import type { StoreAdapter, AdapterTransaction } from '@adhd/sox-store-adapter';
 
 export type { ImportanceWeights } from './importance.js';
@@ -88,9 +92,26 @@ export interface BatchEnrichOptions {
    * single-transaction form. 0 or Infinity → single transaction (original).
    */
   autoLinkChunkSize?: number;
+  /**
+   * 90ba140a AC-B1: run ONE filtered (subset) cluster pass instead of the batch
+   * enrich — the isolated child's way of running a filtered `recluster` off the
+   * server's event loop. When set, `runBatchEnrich` short-circuits to
+   * `clusterSubset` (no legacy stamp, importance, or auto-link) and returns the
+   * bounded summary on `result.subset`. When UNSET the function is unchanged.
+   */
+  subsetRecluster?: {
+    filter: MemoryFilter;
+    /** false = read-only (`dry_run`): communities are computed, nothing persisted. */
+    persist: boolean;
+    threshold?: number;
+    /** Wall-clock budget for the subset pass (default: clusterSubset's own). */
+    budgetMs?: number;
+  };
 }
 
 export interface BatchEnrichResult {
+  /** Present only for a `subsetRecluster` run: the bounded subset-pass summary. */
+  subset?: ReclusterSubsetSummary;
   /** Number of community nodes created or updated (E6). */
   communities_upserted: number;
   /** Number of MEMBER_OF edges inserted or refreshed (E6). */
@@ -248,6 +269,25 @@ export async function runBatchEnrich(
     cluster_pass_skipped: false,
     incremental_joined: 0,
   };
+
+  // 90ba140a AC-B1: filtered recluster, run inside the isolated child.
+  if (opts.subsetRecluster) {
+    const sub = opts.subsetRecluster;
+    const res = await clusterSubset(adapter, {
+      filter: sub.filter,
+      persist: sub.persist,
+      ...(typeof sub.threshold === 'number' ? { threshold: sub.threshold } : {}),
+      ...(typeof sub.budgetMs === 'number' ? { budgetMs: sub.budgetMs } : {}),
+      ...(storeKey !== undefined ? { storeKey } : {}),
+    });
+    result.subset = summarizeSubsetResult(res);
+    if (res.degraded) {
+      result.cluster_pass_skipped = true;
+      result.cluster_degraded = res.degraded;
+      result.cluster_skip_reason = `subset pass degraded: ${res.degraded.reason}`;
+    }
+    return result;
+  }
 
   // ── Step 1: Stamp legacy nodes (first-pass backfill, E12) ──────────────────
   const legacyStamp = JSON.stringify({ pass: 'legacy', ts: now, note: 'legacy' });

@@ -12,12 +12,19 @@ import * as crypto from 'node:crypto';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { monotonicFactory } from 'ulid';
 import { ENRICH_VERSION } from './enrich-version.js';
-import { clusterSubset, dropSubsetLens, listSubsetLenses } from './cluster.js';
-import type { ClusterDegradation } from './cluster.js';
+import { dropSubsetLens, listSubsetLenses } from './cluster.js';
 import { gcOrphanedCommunityState } from './community-gc.js';
 import { invalidateEpisodeInTx } from './invalidation-meta.js';
-import { enqueueReclusterJob, readReclusterJob } from './recluster-job.js';
-import type { ReclusterJobStatus } from './recluster-job.js';
+import { enqueueReclusterJob, readLatestReclusterJob, readReclusterJob } from './recluster-job.js';
+import type {
+  ReclusterJob,
+  ReclusterJobReason,
+  ReclusterJobScope,
+  ReclusterJobState,
+  ReclusterJobStatus,
+  ReclusterSubsetRequest,
+  ReclusterSubsetSummary,
+} from './recluster-job.js';
 import type { MemoryFilter } from './memory-filters.js';
 import type { WriteQueue } from './write-queue.js';
 import { healStaleVectors, drainBacklog, embedBacklogStats } from './embed-pipeline.js';
@@ -88,63 +95,89 @@ export interface CurateMergeResult {
   dry_run: boolean;
 }
 
+/**
+ * (90ba140a AC-B1) A FILTERED recluster returns a job handle, never the
+ * communities: the pass runs in the isolated enrich child on a later tick and
+ * the result is read from `recluster_status`. `joined:true` means a job was
+ * already open on the store and this is ITS handle (AC-B3), which may be of a
+ * different `scope`.
+ */
 export interface CurateReclusterSubsetResult {
   op: 'recluster';
   scope: 'subset';
   dry_run: boolean;
-  persisted: boolean;
-  provenance_hash?: string;
-  candidate_count: number;
-  cluster_count: number;
-  unclustered_count: number;
-  full_pass: boolean;
-  /** (0c9c76b4) Present when the requested pass was refused (nodeCap) or aborted
-   *  (budget) — the subset was NOT clustered as requested and nothing persisted. */
-  degraded?: ClusterDegradation;
-  clusters: Array<{
-    community_uid: string;
-    label: string;
-    size: number;
-    mean_intra_sim: number;
-    members: string[];
-  }>;
+  /** true when a job exists for the caller to poll (always, for a filtered call). */
+  enqueued: boolean;
+  seq: number;
+  job_id: string;
+  status: ReclusterJobStatus;
+  state: ReclusterJobState;
+  joined: boolean;
+  /** The scope of the job the handle belongs to (differs from `scope` when joined). */
+  job_scope: ReclusterJobScope;
+  /**
+   * 90ba140a AC-C6: false when the request joined an open job that does not
+   * carry its filters (other scope, other filters / dry_run) — the caller's
+   * filters were NOT applied and will run only if it requests again once the
+   * open job settles.
+   */
+  filters_applied: boolean;
 }
 
 export interface CurateReclusterGlobalResult {
   op: 'recluster';
   scope: 'global';
-  /** HONEST (BL-186): true only when a full-pass trigger row was actually
-   *  committed to organizer_queue. The in-process periodic tick consumes it. */
+  /** HONEST (BL-186): true only when a job exists on the store for the caller to
+   *  poll — a trigger row was committed, or an open job was joined (`joined`). */
   enqueued: boolean;
   dry_run?: boolean;
-  /** organizer_queue seq of the enqueued full-pass row (absent on dry_run). */
+  /** organizer_queue seq of the full-pass row (absent on dry_run). */
   seq?: number;
   /** (SR-9) Durable job handle — poll with `memory_curate {op:'recluster_status',
    *  job_id}` until it reaches a terminal state. "enqueued" is never the final
    *  answer. Absent on dry_run (nothing was enqueued). */
   job_id?: string;
-  /** (SR-9) The job's initial status. Always 'pending' on a fresh enqueue. */
+  /** (SR-9) The job's status: `pending` on a fresh enqueue, the live status when joined. */
   status?: ReclusterJobStatus;
+  /** Caller-facing state (queued|running|completed|degraded|failed). */
+  state?: ReclusterJobState;
+  /** AC-B3: an open job already existed; no second pass will run. */
+  joined?: boolean;
+  job_scope?: ReclusterJobScope;
 }
 
-/** (SR-9) The poll result for an observable recluster job. */
+/** (SR-9, 90ba140a AC-B2) The poll result for an observable recluster job. */
 export interface CurateReclusterStatusResult {
   op: 'recluster_status';
   job_id: string;
   /** The organizer_queue seq this job requested. */
   seq: number;
-  /** `pending` until the pass runs; then terminal — `completed` (partition),
-   *  `failed` (error), or `skipped` (the cluster step did not run; reason). */
+  /** Stored status: `pending` until claimed, `running` while one process holds
+   *  it, then terminal — `completed` (partition), `failed` (error), or
+   *  `skipped` (the pass did not produce a partition; reason). */
   status: ReclusterJobStatus;
+  /** Caller-facing state: queued | running | completed | degraded | failed. */
+  state: ReclusterJobState;
+  scope: ReclusterJobScope;
   /** Present once `status === 'completed'` — the resulting partition. */
   partition: { community_count: number; clustered_episodes: number; live_episodes: number; coverage: number } | null;
   /** Present once `status === 'failed'`. */
   error: string | null;
   /** Present once `status === 'skipped'` — why the cluster step did not run. */
   skip_reason: string | null;
+  /** nodeCap | budget | child_failed | cluster_skipped | owner_lost, when degraded/failed. */
+  reason: ReclusterJobReason | null;
   requested_by: string | null;
+  owner: string | null;
   created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
   updated_at: string;
+  attempts: number;
+  next_retry_at: string | null;
+  /** Filtered jobs: the request, and the bounded result once completed. */
+  request: ReclusterSubsetRequest | null;
+  result: ReclusterSubsetSummary | null;
 }
 
 export interface CurateDropLensResult {
@@ -534,34 +567,34 @@ async function curateRecluster(
   const filters = args['filters'] as Record<string, unknown> | undefined;
   const threshold = args['threshold'];
 
-  // Filtered recluster
+  // Filtered recluster (90ba140a AC-B1). Used to run `clusterSubset` inline in
+  // this tool call, which on a large store out-waited the MCP client timeout
+  // (-32001). It now mints a job (single-flight per store, AC-B3) and returns the
+  // handle; the enrich tick claims the job and runs the pass in the ISOLATED
+  // child. `dry_run` keeps its meaning — the job computes communities without
+  // persisting — but is deferred too, since the compute is the expensive part.
   if (filters && Object.keys(filters).length > 0) {
-    const res = await clusterSubset(adapter, {
-      filter: filters as MemoryFilter,
-      persist: !dryRun,
-      ...(typeof threshold === 'number' ? { threshold } : {}),
+    const job = await enqueueReclusterJob(adapter, {
+      reason: 'memory_curate recluster (filtered)',
+      scope: 'subset',
+      subset: {
+        filters: filters as MemoryFilter,
+        persist: !dryRun,
+        ...(typeof threshold === 'number' ? { threshold } : {}),
+      },
     });
-
-    const clusters = res.clusters.map((c) => ({
-      community_uid: c.community_uid,
-      label: c.label,
-      size: c.member_rowids.length,
-      mean_intra_sim: c.mean_intra_sim,
-      members: c.member_rowids.map(String),
-    }));
-
     return {
       op: 'recluster',
       scope: 'subset',
       dry_run: dryRun,
-      persisted: res.persisted,
-      provenance_hash: res.provenance_hash,
-      candidate_count: res.candidate_count,
-      cluster_count: clusters.length,
-      unclustered_count: res.unclustered_count,
-      full_pass: res.full_pass,
-      ...(res.degraded ? { degraded: res.degraded } : {}),
-      clusters,
+      enqueued: true,
+      seq: job.seq,
+      job_id: job.job_id,
+      status: job.status,
+      state: job.state,
+      joined: job.joined,
+      job_scope: job.scope,
+      filters_applied: job.request_honored,
     };
   }
 
@@ -570,18 +603,14 @@ async function curateRecluster(
   // — never synchronously inside this tool call. Rationale: the full pass on a
   // large store blocks the serial WriteQueue slot for its whole duration (every
   // write behind it can fast-fail E_BUSY under the time-based backpressure), and
-  // the MCP recluster call itself can out-wait its client timeout. Deferring to
-  // the tick costs at most one tick interval of latency and keeps the queue
-  // slot short.
+  // the MCP recluster call itself can out-wait its client timeout.
   //
-  // SR-9: the request is now OBSERVABLE. Instead of a bare `{enqueued:true, seq}`
-  // (a claim with no check), this mints a durable `recluster_job` handle AND the
-  // trigger row in one transaction, and returns `job_id`/`status:'pending'`. The
-  // tick settles the job to `completed` (with the partition), `failed` (with the
-  // error), or `skipped` (the cluster step did not run; with the reason); the
-  // caller polls `{op:'recluster_status', job_id}`. The return value stays
-  // HONEST: `enqueued:true` only after both rows are committed (an insert failure
-  // propagates as a tool error, never a false success — [inv:list-never-lies]).
+  // SR-9: the request is OBSERVABLE — a durable `recluster_job` handle is minted
+  // with the trigger row in one transaction. 90ba140a AC-B3: single-flight per
+  // STORE — when a job is already open (from any process) this joins it instead
+  // of adding a second row, so a second request can never start a second pass.
+  // The return value stays HONEST: `enqueued:true` only after a job exists to
+  // poll (an insert failure propagates as a tool error — [inv:list-never-lies]).
   if (dryRun) {
     return { op: 'recluster', scope: 'global', enqueued: false, dry_run: true };
   }
@@ -594,25 +623,34 @@ async function curateRecluster(
     seq: job.seq,
     job_id: job.job_id,
     status: job.status,
+    state: job.state,
+    joined: job.joined,
+    job_scope: job.scope,
   };
 }
 
 /**
- * (SR-9) Poll an observable global-recluster job. The terminal states are
- * `completed` (carries the resulting partition), `failed` (carries the error),
- * and `skipped` (the pass ran but its cluster step was skipped; carries
- * `skip_reason`) — `pending` means the pass has not run yet. A job handle is
- * stable and readable after a store reopen / from another process.
+ * (SR-9, 90ba140a AC-B2) Poll an observable recluster job by `job_id`, or the
+ * store's most recent job with `latest:true`. `state` is queued | running |
+ * completed | degraded | failed; terminal jobs carry `finished_at`, `reason`,
+ * and (completed) the partition or filtered-pass result. A job handle is stable
+ * and readable after a store reopen / from another process.
  */
 async function curateReclusterStatus(
   adapter: StoreAdapter,
   args: Record<string, unknown>,
 ): Promise<CurateReclusterStatusResult | { code: string; message?: string }> {
   const jobId = args['job_id'];
-  if (typeof jobId !== 'string' || jobId.length === 0) {
-    return { code: 'E_MISSING', message: 'job_id required for recluster_status' };
+  let job: ReclusterJob | null;
+  if (args['latest'] === true && (typeof jobId !== 'string' || jobId.length === 0)) {
+    job = await readLatestReclusterJob(adapter);
+    if (!job) return { code: 'E_NOT_FOUND', message: 'No recluster job recorded on this store' };
+    return { op: 'recluster_status', ...job };
   }
-  const job = await readReclusterJob(adapter, jobId);
+  if (typeof jobId !== 'string' || jobId.length === 0) {
+    return { code: 'E_MISSING', message: 'job_id required for recluster_status (or latest:true)' };
+  }
+  job = await readReclusterJob(adapter, jobId);
   if (!job) {
     return { code: 'E_NOT_FOUND', message: `No recluster job with id: ${jobId}` };
   }

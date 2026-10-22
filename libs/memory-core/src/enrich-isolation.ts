@@ -45,8 +45,17 @@ export interface EnrichIsolatedOk {
    *  the child's telemetry never initialised. */
   child_telemetry: ChildTelemetrySnapshot | null;
 }
+/**
+ * Machine-readable code on a refused fork: the one-holder child for this store
+ * is still alive, so the pass never started (90ba140a AC-D1). Consumers decide
+ * defer-vs-fail on this code, never on the `error` wording.
+ */
+export const ENRICH_ERR_HOLDER_BUSY = 'holder_busy' as const;
+
 export interface EnrichIsolatedErr {
   ok: false;
+  /** Set only for failures a caller may act on without parsing `error`. */
+  code?: typeof ENRICH_ERR_HOLDER_BUSY;
   /** Human-readable cause: child-reported error message, 'timeout', or
    *  'exit:<code>'/'signal:<signal>' for a crash with no reported error. */
   error: string;
@@ -304,6 +313,7 @@ export async function runEnrichIsolated(
     log.warn('enrich.child.refused_prior_alive', { db_path: dbPath, prior_pid: prior.pid ?? 0 });
     return {
       ok: false,
+      code: ENRICH_ERR_HOLDER_BUSY,
       error: `previous enrich child still running (pid ${prior.pid ?? 0}); not forking a second holder for this store`,
     };
   }

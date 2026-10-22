@@ -21,6 +21,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { parse as parseTomlLib, patch as patchTomlLib, stringify as stringifyTomlLib } from '@decimalturn/toml-patch';
 import { Ledger, LedgerAction } from '../ledger.js';
 
 // --- Types ---
@@ -78,174 +79,23 @@ export interface VerifyResult {
   reason?: string;
 }
 
-// --- Minimal TOML parser/writer ---
-// We implement a minimal subset of TOML sufficient for config-merge:
-// - Flat key=value (strings, integers, booleans)
-// - Dot-notation keys (table headers [a.b])
-// - Quoted and unquoted keys
-// - Inline tables for MCP entry values
-//
-// No external dependency — avoids adding toml to node_modules.
+// --- TOML (via @decimalturn/toml-patch) ---
+// The previous hand-rolled subset parser/serializer corrupted real codex configs on
+// every merge: it dropped comments, split multi-line strings into stray tables, left
+// strings unescaped, and mis-parsed quoted keys. toml-patch parses the full TOML spec
+// and patches only the changed values, so untouched text stays byte-identical.
 
 type TomlValue = string | number | boolean | null | TomlTable | TomlValue[];
 interface TomlTable { [key: string]: TomlValue }
 
-function isTomlTable(v: TomlValue | undefined): v is TomlTable {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-/** Parse a TOML string into a nested object (subset). */
+/** Parse a TOML string into a nested object. Throws on invalid TOML. */
 export function parseToml(src: string): TomlTable {
-  const root: TomlTable = {};
-  let current: TomlTable = root;
-  const lines = src.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i];
-    if (raw === undefined) continue;
-    const line = raw.trim();
-    if (line === '' || line.startsWith('#')) continue;
-
-    // Table header: [a.b.c] or [[array.table]]
-    if (line.startsWith('[')) {
-      // Skip array-of-tables (not needed for config-merge)
-      const isArray = line.startsWith('[[');
-      const end = isArray ? line.indexOf(']]') : line.indexOf(']');
-      if (end === -1) continue;
-      const headerRaw = isArray ? line.slice(2, end) : line.slice(1, end);
-      const parts = splitTomlKey(headerRaw.trim());
-      current = root;
-      for (const part of parts) {
-        if (!isTomlTable(current[part])) {
-          current[part] = {};
-        }
-        current = current[part] as TomlTable;
-      }
-      continue;
-    }
-
-    // Key = value
-    const eqIdx = line.indexOf('=');
-    if (eqIdx === -1) continue;
-    const rawKey = line.slice(0, eqIdx).trim();
-    const rawVal = line.slice(eqIdx + 1).trim();
-    const keys = splitTomlKey(rawKey);
-    let obj = current;
-    for (let k = 0; k < keys.length - 1; k++) {
-      const seg = keys[k];
-      if (seg === undefined) continue;
-      if (!isTomlTable(obj[seg])) obj[seg] = {};
-      obj = obj[seg] as TomlTable;
-    }
-    const lastKey = keys[keys.length - 1];
-    if (lastKey === undefined) continue;
-    obj[lastKey] = parseTomlValue(rawVal);
-  }
-  return root;
+  return parseTomlLib(src) as TomlTable;
 }
 
-function splitTomlKey(raw: string): string[] {
-  // Split on unquoted dots
-  const parts: string[] = [];
-  let cur = '';
-  let inQuote = false;
-  let quoteChar = '';
-  for (const ch of raw) {
-    if (inQuote) {
-      if (ch === quoteChar) { inQuote = false; } else { cur += ch; }
-    } else if (ch === '"' || ch === "'") {
-      inQuote = true;
-      quoteChar = ch;
-    } else if (ch === '.') {
-      parts.push(cur.trim());
-      cur = '';
-    } else {
-      cur += ch;
-    }
-  }
-  parts.push(cur.trim());
-  return parts;
-}
-
-function parseTomlValue(raw: string): TomlValue {
-  if (raw === 'true') return true;
-  if (raw === 'false') return false;
-  if ((raw.startsWith('"') && raw.endsWith('"')) ||
-      (raw.startsWith("'") && raw.endsWith("'"))) {
-    return raw.slice(1, -1);
-  }
-  if (raw.startsWith('{')) {
-    return parseTomlInlineTable(raw);
-  }
-  if (raw.startsWith('[')) {
-    return parseTomlArray(raw);
-  }
-  const n = Number(raw);
-  if (!isNaN(n) && raw !== '') return n;
-  return raw;
-}
-
-function parseTomlInlineTable(raw: string): TomlTable {
-  const inner = raw.slice(1, raw.lastIndexOf('}')).trim();
-  const result: TomlTable = {};
-  if (!inner) return result;
-  // Simple split on ", " — works for non-nested inline tables
-  const pairs = inner.split(',');
-  for (const pair of pairs) {
-    const eq = pair.indexOf('=');
-    if (eq === -1) continue;
-    const k = pair.slice(0, eq).trim();
-    const v = pair.slice(eq + 1).trim();
-    result[k] = parseTomlValue(v);
-  }
-  return result;
-}
-
-function parseTomlArray(raw: string): TomlValue[] {
-  const inner = raw.slice(1, raw.lastIndexOf(']')).trim();
-  if (!inner) return [];
-  return inner.split(',').map((s) => parseTomlValue(s.trim()));
-}
-
-/** Serialise a nested object back to TOML (subset). */
-export function stringifyToml(obj: TomlTable, prefix: string[] = []): string {
-  const lines: string[] = [];
-  const tables: Array<{ keys: string[]; val: TomlTable }> = [];
-
-  for (const [k, v] of Object.entries(obj)) {
-    if (isTomlTable(v)) {
-      tables.push({ keys: [...prefix, k], val: v });
-    } else {
-      lines.push(`${tomlKeyStr(k)} = ${tomlValStr(v)}`);
-    }
-  }
-
-  let out = prefix.length === 0 && lines.length > 0 ? lines.join('\n') + '\n' : '';
-  if (prefix.length > 0 && lines.length > 0) {
-    out = `[${prefix.join('.')}]\n` + lines.join('\n') + '\n';
-  }
-
-  for (const { keys, val } of tables) {
-    out += '\n' + stringifyToml(val, keys);
-  }
-  return out;
-}
-
-function tomlKeyStr(k: string): string {
-  // Quote key if it contains special chars
-  if (/^[a-zA-Z0-9_-]+$/.test(k)) return k;
-  return `"${k}"`;
-}
-
-function tomlValStr(v: TomlValue): string {
-  if (typeof v === 'string') return `"${v}"`;
-  if (typeof v === 'boolean' || typeof v === 'number') return String(v);
-  if (v === null) return 'null';
-  if (Array.isArray(v)) return '[' + v.map(tomlValStr).join(', ') + ']';
-  if (isTomlTable(v)) {
-    const pairs = Object.entries(v).map(([k, val]) => `${tomlKeyStr(k)} = ${tomlValStr(val)}`);
-    return '{ ' + pairs.join(', ') + ' }';
-  }
-  return String(v);
+/** Serialise a nested object to TOML. */
+export function stringifyToml(obj: TomlTable): string {
+  return stringifyTomlLib(obj);
 }
 
 // --- JSON helpers ---
@@ -271,7 +121,9 @@ function readToml(filePath: string): TomlTable {
 function writeToml(filePath: string, data: TomlTable): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(filePath, stringifyToml(data), 'utf8');
+  const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+  const out = existing.trim() === '' ? stringifyTomlLib(data) : patchTomlLib(existing, data);
+  fs.writeFileSync(filePath, out, 'utf8');
 }
 
 function isToml(filePath: string): boolean {

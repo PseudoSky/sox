@@ -24,22 +24,22 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
+    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
   },
   {
     "id": "memory-cli",
     "type": "command",
-    "version": "0.3.5",
+    "version": "0.4.0",
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
-    "source": "npm-package:@adhd/sox-extension-memory-cli@0.3.5",
-    "checksum": "sha256:3c86686f89654a04cce170e3a825d870c81f7bf4e40b40e871c8d53929581c4c",
+    "source": "npm-package:@adhd/sox-extension-memory-cli@0.4.0",
+    "checksum": "sha256:ef80b750a86efa35074e075d93b41cf6a70b2b3c3a356c01e14443f81ef0f53d",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
+    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
   },
   {
     "id": "memory-flush",
@@ -54,16 +54,16 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
+    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
   },
   {
     "id": "memory-server",
     "type": "mcp-server",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 29 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, bi-temporal invalidation, atomic claims, and an observable global re-cluster.",
-    "source": "npm-package:@adhd/sox-extension-memory-server@1.5.0",
-    "checksum": "sha256:e319793f4ed490ad1911c24c87bbcf3975d1a52cacf7f453508b6bb7e9b69abf",
+    "source": "npm-package:@adhd/sox-extension-memory-server@1.6.0",
+    "checksum": "sha256:5b841d6ffc8fe85c921cfaac4890376a6e825e39bdc72f71e1cc97ecf7b54930",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -73,7 +73,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
+    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
   },
   {
     "id": "memory-usage",
@@ -88,7 +88,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
+    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
   },
   {
     "id": "sox",
@@ -101,6 +101,6 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6234f167a81447afd45dcb325092977c9ea65996"
+    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
   }
 ]
