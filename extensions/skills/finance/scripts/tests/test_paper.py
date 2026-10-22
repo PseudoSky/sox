@@ -109,7 +109,10 @@ def test_sell_exceeding_held_refused_at_place_time(tmp_path):
 def test_fill_that_would_go_negative_is_rejected_at_fill_time(tmp_path):
     layout = make_account(tmp_path, positions=[equity(qty="10")])
     first = paper.place_order(layout, "acct", {"symbol": "SYNA", "side": "sell", "qty": "10", "type": "market"})
-    second = paper.place_order(layout, "acct", {"symbol": "SYNA", "side": "sell", "qty": "10", "type": "market"})
+    # An order that slipped past order-time checks (written straight to the ledger) must still be refused at fill time.
+    second = "ord-injected"
+    paper.record_event(layout, "acct", {"type": "order", "order_id": second, "order": {
+        "symbol": "SYNA", "side": "sell", "qty": "10", "type": "market", "plan_id": None, "fill_rules": {}, "option": None}})
     assert paper.fill_bar(layout, "acct", first, bar("10", "11", "9", "10"))["status"] == "filled"
     assert paper.fill_bar(layout, "acct", second, bar("10", "11", "9", "10"))["status"] == "rejected"
     events = [json.loads(x) for x in (layout.account_dir("acct") / "ledger.jsonl").read_text().splitlines()]
@@ -224,3 +227,41 @@ def test_validation_errors(tmp_path):
                   {"type": "limit"}, {"type": "stop_entry"}, {"type": "stop_loss"}):
         with pytest.raises(FinanceError):
             paper.place_order(layout, "acct", {**base, **patch})
+
+
+def test_open_sell_orders_count_against_held_quantity(tmp_path):
+    """Blind-review finding: several sells summing past the held quantity were all accepted."""
+    from finance_core import accounts, paper
+    from finance_core.errors import FinanceError
+    from finance_core.layout import Layout
+    from tests.test_analyze_report import pos, snapshot
+    layout = Layout(tmp_path)
+    accounts.create_account(layout, "a", "USD")
+    accounts.write_snapshot(layout, "a", snapshot("a", "0.00", [pos("AAA", "10", "5")]))
+    paper.place_order(layout, "a", {"type": "limit", "side": "sell", "qty": "6", "symbol": "AAA", "limit_price": "6"})
+    try:
+        paper.place_order(layout, "a", {"type": "limit", "side": "sell", "qty": "6", "symbol": "AAA", "limit_price": "6"})
+        raise AssertionError("second sell should be refused")
+    except FinanceError as exc:
+        assert "already on open sell orders" in str(exc)
+
+
+def test_concurrent_order_placement_never_reuses_an_order_id(tmp_path):
+    import threading
+    from finance_core import accounts, paper
+    from finance_core.layout import Layout
+    from tests.test_analyze_report import pos, snapshot
+    layout = Layout(tmp_path)
+    accounts.create_account(layout, "a", "USD")
+    accounts.write_snapshot(layout, "a", snapshot("a", "100000.00", [pos("AAA", "1", "5")]))
+    ids, lock = [], threading.Lock()
+
+    def go():
+        oid = paper.place_order(layout, "a", {"type": "limit", "side": "buy", "qty": "1", "symbol": "AAA", "limit_price": "1"})
+        with lock:
+            ids.append(oid)
+
+    threads = [threading.Thread(target=go) for _ in range(12)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(set(ids)) == 12

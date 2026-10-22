@@ -11,6 +11,8 @@ against the snapshot); a fill additionally carries ``bar_ts``, the bar it filled
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 from decimal import Decimal
@@ -59,10 +61,21 @@ def _read_events(layout: Layout, account_id: str) -> list[dict[str, Any]]:
     return events
 
 
-def record_event(layout: Layout, account_id: str, event: dict[str, Any]) -> dict[str, Any]:
-    """Append one event with the next seq and a fresh ts. Never rewrites the file."""
+@contextlib.contextmanager
+def _ledger_lock(layout: Layout, account_id: str):
+    """Exclusive advisory lock on the account's ledger, so concurrent writers cannot take the same seq."""
     path = _ledger_path(layout, account_id)
     path.parent.mkdir(parents=True, exist_ok=True)
+    with (path.parent / "ledger.lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _append(layout: Layout, account_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    path = _ledger_path(layout, account_id)
     events = _read_events(layout, account_id)
     seq = (events[-1]["seq"] if events else 0) + 1
     stored = {**event, "seq": seq, "ts": utc_now()}
@@ -71,6 +84,12 @@ def record_event(layout: Layout, account_id: str, event: dict[str, Any]) -> dict
         handle.flush()
         os.fsync(handle.fileno())
     return stored
+
+
+def record_event(layout: Layout, account_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    """Append one event with the next seq and a fresh ts. Never rewrites the file."""
+    with _ledger_lock(layout, account_id):
+        return _append(layout, account_id, event)
 
 
 def _apply_fill(cash: Decimal, positions: dict[str, dict[str, Any]], fill: dict[str, Any]) -> Decimal:
@@ -95,7 +114,8 @@ def _apply_fill(cash: Decimal, positions: dict[str, dict[str, Any]], fill: dict[
         positions[key] = pos
     else:
         cash += price * qty * mult - fee
-        assert pos is not None
+        if pos is None:
+            raise FinanceError(f"ledger: sell of {fill['symbol']} with no held position")
         remaining = Decimal(pos["qty"]) - qty
         if remaining == 0:
             del positions[key]
@@ -183,11 +203,16 @@ def place_order(layout: Layout, account_id: str, order: dict[str, Any]) -> str:
     if side == "sell":
         held = _held_long(positions_now(layout, account_id),
                           position_key({"symbol": stored["symbol"], "option": stored["option"]}))
-        if qty > held:
-            raise FinanceError(f"sell {money_str(qty)} exceeds held long quantity {money_str(held)} (no shorting)")
-    seq = (_read_events(layout, account_id) or [{"seq": 0}])[-1]["seq"] + 1
-    order_id = f"ord-{seq}"
-    record_event(layout, account_id, {"type": "order", "order_id": order_id, "order": stored})
+        pending = sum((Decimal(o["qty"]) for o in open_orders(layout, account_id)
+                       if o["side"] == "sell" and position_key({"symbol": o["symbol"], "option": o.get("option")}) ==
+                       position_key({"symbol": stored["symbol"], "option": stored["option"]})), _ZERO)
+        if qty > held - pending:
+            raise FinanceError(f"sell {money_str(qty)} exceeds held long quantity {money_str(held)} less "
+                               f"{money_str(pending)} already on open sell orders (no shorting)")
+    with _ledger_lock(layout, account_id):
+        seq = (_read_events(layout, account_id) or [{"seq": 0}])[-1]["seq"] + 1
+        order_id = f"ord-{seq}"
+        _append(layout, account_id, {"type": "order", "order_id": order_id, "order": stored})
     return order_id
 
 
