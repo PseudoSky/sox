@@ -20,6 +20,11 @@ def _latest(folder: Path, pattern: str) -> dict[str, Any] | None:
     return read_json(found[-1]) if found else None
 
 
+def _single_lookthrough(layout: Layout, account_id: str) -> dict[str, Any] | None:
+    found = sorted((layout.base / "lookthrough").glob(f"{account_id}-20*.json")) if (layout.base / "lookthrough").is_dir() else []
+    return read_json(found[-1]) if found else None
+
+
 def build_report(layout: Layout, as_of: str | None = None, account_id: str | None = None,
                  today: date | None = None) -> dict[str, Any]:
     accounts, receipts, warnings = [], [], []
@@ -42,6 +47,7 @@ def build_report(layout: Layout, as_of: str | None = None, account_id: str | Non
         "warnings": warnings,
         "posture": _latest(layout.base / "posture", "*.json"),
         "income": {a["account_id"]: _latest(layout.base / "income", f"{a['account_id']}-*.json") for a in accounts},
+        "lookthrough": {a["account_id"]: _single_lookthrough(layout, a["account_id"]) for a in accounts},
         "recommendations": {a["account_id"]: _latest(layout.base / "recommendations", f"{a['account_id']}-*.json")
                             for a in accounts},
     }
@@ -100,6 +106,19 @@ def render_markdown(report: dict[str, Any]) -> str:
                       [[f"type:{k}", _s(v)] for k, v in a["allocation"]["by_asset_type"].items()]
                       + [[f"currency:{k}", _s(v)] for k, v in a["allocation"]["by_currency"].items()])
         out.append("")
+        lt = report["lookthrough"].get(a["account_id"])
+        if lt is None:
+            out += [f"Underlying exposure: no look-through receipt. Run `analyze --account {a['account_id']} --lookthrough --write`.", ""]
+        else:
+            acct = lt["per_account"][0]
+            out += [f"Underlying exposure through funds, as of {lt['as_of']} (fund filings: "
+                    + ", ".join(f"{k} {v['period_end'][:10]}" for k, v in lt["funds"].items()) + "):", ""]
+            out += _table(["underlying", "pct of equity", "via"],
+                          [[r["underlying"], _s(r["pct_of_equity"]), ", ".join(f"{k} {v}" for k, v in r["via"].items())]
+                           for r in acct["exposure"][:15]])
+            out += ["", *[f"- {m['issuer']} across {', '.join(m['tickers'])}: {m['pct_of_equity']}%" for m in acct["merged_share_classes"]]]
+            out += [f"- {w}" for w in lt["warnings"]]
+            out.append("")
     out += [f"## {SECTIONS[3]}", ""]
     for a in report["accounts"]:
         top = ", ".join(f"{t['key']} {_s(t['pct'])}%" for t in a["top_concentration"]) or "none"

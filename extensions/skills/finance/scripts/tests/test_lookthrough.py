@@ -202,3 +202,13 @@ def test_fund_weight_sum_reported_and_contact_warning(tmp_path, monkeypatch):
     monkeypatch.setenv("FINANCE_SEC_CONTACT", "a@b.co")
     again = lookthrough.look_through(book(tmp_path / "x"), ["acc1"], Net())
     assert not any("FINANCE_SEC_CONTACT" in w for w in again["warnings"])
+
+
+def test_report_renders_lookthrough_section(tmp_path):
+    from finance_core import report
+    layout = book(tmp_path)
+    md = report.render_markdown(report.build_report(layout, account_id="acc1"))
+    assert "no look-through receipt" in md
+    lookthrough.write_lookthrough(layout, lookthrough.look_through(layout, ["acc1"], Net()))
+    md = report.render_markdown(report.build_report(layout, account_id="acc1"))
+    assert "Underlying exposure through funds" in md and "AAA" in md and "FUNDA 600.00" in md
