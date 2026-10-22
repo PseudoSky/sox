@@ -269,3 +269,52 @@ def test_holding_without_cusip_resolves_by_issuer_name(tmp_path):
     layout = book(tmp_path)
     out = lookthrough.look_through(layout, ["acc1", "acc2"], net)       # FUNDA supplies the Beta CUSIP, FUNDB lists it without
     assert row(out["combined"]["exposure"], "BBB")["via"].get("acc2") == "1000.00"
+
+
+def test_fetcher_retries_network_blips_then_succeeds(monkeypatch):
+    import io
+    import urllib.error
+    calls = []
+
+    class Resp(io.BytesIO):
+        status = 200
+        __enter__ = lambda self: self
+        __exit__ = lambda self, *a: None
+
+    def fake(request, timeout):
+        calls.append(1)
+        if len(calls) < 3:
+            raise urllib.error.URLError("nodename nor servname provided")
+        return Resp(b"ok")
+
+    monkeypatch.setattr(lookthrough.urllib.request, "urlopen", fake)
+    assert lookthrough.default_fetcher("https://x", {}, None) == (200, b"ok") and len(calls) == 3
+
+
+def test_fetcher_gives_up_with_clear_error(monkeypatch):
+    import urllib.error
+    monkeypatch.setattr(lookthrough.urllib.request, "urlopen",
+                        lambda r, timeout: (_ for _ in ()).throw(urllib.error.URLError("dns")))
+    with pytest.raises(FinanceError, match="cannot reach https://x"):
+        lookthrough.default_fetcher("https://x", {}, None)
+
+
+def test_fetcher_does_not_retry_a_403(monkeypatch):
+    import urllib.error
+    calls = []
+
+    def fake(request, timeout):
+        calls.append(1)
+        raise urllib.error.HTTPError("https://x", 403, "no", {}, None)
+
+    monkeypatch.setattr(lookthrough.urllib.request, "urlopen", fake)
+    assert lookthrough.default_fetcher("https://x", {}, None) == (403, b"") and len(calls) == 1
+
+
+def test_unexpanded_fund_marks_result_incomplete(tmp_path):
+    layout = Layout(tmp_path)
+    accounts.create_account(layout, "a", "USD")
+    accounts.write_snapshot(layout, "a", snapshot("a", "0.00", [pos("ZZZ", "1", "10", asset="etf")]))
+    out = lookthrough.look_through(layout, ["a"], Net())
+    assert out["incomplete"] is True and out["unexpanded_funds"] == ["ZZZ"]
+    assert lookthrough.look_through(book(tmp_path / "ok"), ["acc1"], Net())["incomplete"] is False

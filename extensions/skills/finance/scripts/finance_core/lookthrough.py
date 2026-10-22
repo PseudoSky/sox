@@ -36,15 +36,31 @@ PCT = Decimal("0.01")
 EQUITY_CATEGORIES = {"EC", "EP"}  # N-PORT asset categories: common and preferred equity
 
 
+RETRY_PAUSES = (1.0, 4.0, 12.0)
+
+
 def default_fetcher(url: str, headers: dict[str, str], data: bytes | None = None) -> tuple[int, bytes]:
-    request = urllib.request.Request(url, headers=headers, data=data)
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as exc:
-        return exc.code, b""
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise FinanceError(f"lookthrough: cannot reach {url}: {exc}") from exc
+    """One HTTP request, retried on a network failure, a 429 or a 5xx so one blip cannot degrade a run."""
+    last = ""
+    for pause in (*RETRY_PAUSES, None):
+        request = urllib.request.Request(url, headers=headers, data=data)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 and exc.code < 500:
+                return exc.code, b""
+            last = f"HTTP {exc.code}"
+            status = exc.code
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last, status = str(exc), 0
+        if pause is None:
+            break
+        print(f"lookthrough: {last} for {url}; retrying in {pause:.0f}s", file=sys.stderr, flush=True)
+        time.sleep(pause)
+    if status:
+        return status, b""
+    raise FinanceError(f"lookthrough: cannot reach {url}: {last}")
 
 
 def _headers(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -310,6 +326,7 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
                  "pct_of_equity": money_str((m["value"] / equity * 100).quantize(PCT)) if equity else None}
                 for m in sorted(rows, key=lambda m: -m["value"])]
 
+    unexpanded = sorted(set(wanted) - set(funds))
     stale = []
     for sym, f in funds.items():
         if f.get("period_end") and (date.today() - date.fromisoformat(f["period_end"][:10])).days > STALE_FILING_DAYS:
@@ -336,6 +353,7 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
                          "cash": render(account_exposures[a], totals[a], cash=True),
                          "exposure": render(account_exposures[a], totals[a])[:top],
                          "merged_share_classes": issuers(account_exposures[a], totals[a])} for a in account_ids],
+        "incomplete": bool(unexpanded), "unexpanded_funds": unexpanded,
         "warnings": warnings}
     if len(account_ids) > 1:
         result["combined"] = {"equity": money_str(combined_value.quantize(PCT)),
