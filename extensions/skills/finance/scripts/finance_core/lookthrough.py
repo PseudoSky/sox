@@ -113,7 +113,7 @@ def _parse_nport(xml: bytes) -> dict[str, Any]:
         if pct is None:
             continue
         holdings.append({"name": (s.findtext("n:name", namespaces=ns) or "").strip(),
-                         "cusip": next((c for c in [(s.findtext("n:cusip", namespaces=ns) or "").strip()] if len(c) == 9), None),
+                         "cusip": next((c for c in [(s.findtext("n:cusip", namespaces=ns) or "").strip()] if len(c) == 9 and set(c) != {"0"}), None),
                          "category": s.findtext("n:assetCat", namespaces=ns) or "other",
                          "country": s.findtext("n:invCountry", namespaces=ns),
                          "pct": str(Decimal(pct))})
@@ -295,8 +295,8 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
                     category = "equity" if h["category"] in EQUITY_CATEGORIES else f"other:{h['category']}"
                     add(bucket, key, names.get(key, h["name"]), category, value * Decimal(h["pct"]) / 100, sym)
                 residual = Decimal(100) - sum((Decimal(h["pct"]) for h in funds[sym]["holdings"]), Decimal(0))
-                if abs(residual) >= Decimal("0.5"):
-                    add(bucket, "OTHER:" + sym, f"{sym} other net assets (cash, receivables, derivatives)", "other",
+                if abs(residual) >= Decimal("0.005"):
+                    add(bucket, "OTHER:" + sym, f"{sym} unlisted net assets, rounding or weights over 100%", "other",
                         value * residual / 100, sym)
             else:
                 add(bucket, sym, sym, "equity" if r["asset_type"] == "equity" else r["asset_type"], value, sym)

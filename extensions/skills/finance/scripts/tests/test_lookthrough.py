@@ -318,3 +318,20 @@ def test_unexpanded_fund_marks_result_incomplete(tmp_path):
     out = lookthrough.look_through(layout, ["a"], Net())
     assert out["incomplete"] is True and out["unexpanded_funds"] == ["ZZZ"]
     assert lookthrough.look_through(book(tmp_path / "ok"), ["acc1"], Net())["incomplete"] is False
+
+
+def test_exposure_rows_plus_cash_reconcile_to_equity(tmp_path):
+    net = Net()
+    key = "https://www.sec.gov/Archives/edgar/data/22/000000002226000001/primary_doc.xml"
+    net.docs[key] = nport("S000000002", [("Alpha Inc", "CUSIPAAA1", "50.1", "EC"), ("Gamma Ltd", "CUSIPCCC1", "49.7", "EC")])
+    out = lookthrough.look_through(book(tmp_path), ["acc2"], net, top=1000)
+    acct = out["per_account"][0]
+    total = sum(float(r["value"]) for r in acct["exposure"] + acct["cash"])
+    assert abs(total - float(acct["equity"])) < 0.02
+    assert row(acct["exposure"], "OTHER:FUNDB")["value"] == "4.00"      # the 0.2% shortfall of 2000
+
+
+def test_zero_filled_cusip_is_not_an_identifier():
+    xml = nport("S1", [("ASML Holding NV", "000000000", "1", "EC"), ("Real Co", "CUSIPRE01", "1", "EC")])
+    h = lookthrough._parse_nport(xml)["holdings"]
+    assert h[0]["cusip"] is None and h[1]["cusip"] == "CUSIPRE01"
