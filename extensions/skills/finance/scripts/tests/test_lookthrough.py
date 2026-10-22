@@ -33,6 +33,8 @@ class Net:
                                ("Linked Note", "CUSIPNOTE", "5", "DBT")], period),
             "https://www.sec.gov/Archives/edgar/data/22/000000002226000001/primary_doc.xml": nport(
                 "S000000002", [("Alpha Inc", "CUSIPAAA1", "50", "EC"), ("Gamma Ltd", "CUSIPCCC1", "50", "EC")], period)}
+        self.issuer = {}
+        self.names = {"CUSIPAAA1": "Alpha Inc", "CUSIPBBB1": "Beta Corp"}
         self.tickers = {"CUSIPAAA1": "AAA", "CUSIPBBB1": "BBB", "CUSIPCCC1": "CCC"}
 
     def __call__(self, url, headers, data):
@@ -50,11 +52,17 @@ class Net:
             if url not in self.docs:
                 return 404, b""
             return 200, self.docs[url]
+        if "tickerinside" in url:
+            sym = url.rsplit("/", 1)[1][:-5].upper()
+            if sym not in self.issuer:
+                return 404, b""
+            return 200, json.dumps(self.issuer[sym]).encode()
         if "openfigi" in url:
             ids = [r["idValue"] for r in json.loads(data)]
             self.id_types = [r["idType"] for r in json.loads(data)]
             return 200, json.dumps([{"data": [{"ticker": self.tickers[i] + "*", "exchCode": "MM", "securityType2": "Common Stock"},
-                                              {"ticker": self.tickers[i], "exchCode": "UW", "securityType2": "Common Stock"}]} if i in self.tickers else {"warning": "none"}
+                                              {"ticker": self.tickers[i], "exchCode": "UW", "securityType2": "Common Stock",
+                                               "name": self.names.get(i, i)}]} if i in self.tickers else {"warning": "none"}
                                     for i in ids]).encode()
         return 404, b""
 
@@ -188,6 +196,7 @@ def test_share_classes_of_one_issuer_merge(tmp_path):
     net.docs[key] = nport("S000000002", [("Alpha Inc Class A", "CUSIPAAA1", "30", "EC"),
                                          ("Alpha Inc Class C", "CUSIPAAC1", "20", "EC"), ("Gamma Ltd", "CUSIPCCC1", "50", "EC")])
     net.tickers["CUSIPAAC1"] = "AAAC"
+    net.names.update({"CUSIPAAA1": "Alpha Inc Class A", "CUSIPAAC1": "Alpha Inc Class C"})
     out = lookthrough.look_through(book(tmp_path), ["acc2"], net)
     merged = out["per_account"][0]["merged_share_classes"]
     assert merged[0]["tickers"] == ["AAA", "AAAC"] and merged[0]["pct_of_equity"] == "50.00"
@@ -212,3 +221,51 @@ def test_report_renders_lookthrough_section(tmp_path):
     lookthrough.write_lookthrough(layout, lookthrough.look_through(layout, ["acc1"], Net()))
     md = report.render_markdown(report.build_report(layout, account_id="acc1"))
     assert "Underlying exposure through funds" in md and "AAA" in md and "FUNDA 600.00" in md
+
+
+ISSUER_FUNDA = {"source_layer": "issuer", "holdings_as_of": "2026-10-20", "page_url": "https://tickerinside.com/etf/funda/",
+                "cite_as": "TickerInside, FundA", "holdings": {"AAA": 70.0, "BBB": 25.0}}
+
+
+def test_issuer_file_preferred_when_issuer_sourced(tmp_path):
+    net = Net()
+    net.issuer["FUNDA"] = ISSUER_FUNDA
+    out = lookthrough.look_through(book(tmp_path), ["acc1"], net)
+    assert out["funds"]["FUNDA"]["layer"] == "issuer-file" and out["funds"]["FUNDA"]["period_end"] == "2026-10-20"
+    assert "attribution" in out["funds"]["FUNDA"]
+    ex = out["per_account"][0]["exposure"]
+    assert row(ex, "AAA")["value"] == "1200.00"                   # 700 via FUNDA + 500 direct
+    assert not any("sec.gov/Archives" in c and "000000001126" in c for c in net.calls)   # filing never fetched
+    assert not any("openfigi" in c for c in net.calls)            # tickers came with the file
+
+
+def test_filing_sourced_issuer_entry_falls_back_to_nport(tmp_path):
+    net = Net()
+    net.issuer["FUNDA"] = {**ISSUER_FUNDA, "source_layer": "sec_nport"}
+    out = lookthrough.look_through(book(tmp_path), ["acc1"], net)
+    assert out["funds"]["FUNDA"]["layer"] == "sec-nport"
+
+
+def test_sec_only_skips_issuer_files(tmp_path):
+    net = Net()
+    net.issuer["FUNDA"] = ISSUER_FUNDA
+    out = lookthrough.look_through(book(tmp_path), ["acc1"], net, issuer_files=False)
+    assert out["funds"]["FUNDA"]["layer"] == "sec-nport"
+    assert not any("tickerinside" in c for c in net.calls)
+
+
+def test_cached_filing_not_reused_as_issuer_when_never_checked(tmp_path):
+    layout, net = book(tmp_path), Net()
+    lookthrough.look_through(layout, ["acc1"], net, issuer_files=False)
+    net.issuer["FUNDA"] = ISSUER_FUNDA
+    out = lookthrough.look_through(layout, ["acc1"], net)
+    assert out["funds"]["FUNDA"]["layer"] == "issuer-file"
+
+
+def test_holding_without_cusip_resolves_by_issuer_name(tmp_path):
+    net = Net()
+    key = "https://www.sec.gov/Archives/edgar/data/22/000000002226000001/primary_doc.xml"
+    net.docs[key] = nport("S000000002", [("Alpha Inc", "CUSIPAAA1", "50", "EC"), ("Beta Corp", "N/A", "50", "EC")])
+    layout = book(tmp_path)
+    out = lookthrough.look_through(layout, ["acc1", "acc2"], net)       # FUNDA supplies the Beta CUSIP, FUNDB lists it without
+    assert row(out["combined"]["exposure"], "BBB")["via"].get("acc2") == "1000.00"

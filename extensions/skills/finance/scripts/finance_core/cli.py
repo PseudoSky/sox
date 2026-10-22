@@ -274,11 +274,11 @@ def _cmd_lookthrough(args: argparse.Namespace, layout: Layout) -> Any:
         groups = analyze.consolidated(layout)["groups"]
         out = {}
         for currency, group in groups.items():
-            out[currency] = lookthrough.look_through(layout, group["accounts"], top=args.top)
+            out[currency] = lookthrough.look_through(layout, group["accounts"], top=args.top, issuer_files=not args.sec_only)
             if args.write:
                 out[currency]["receipt"] = lookthrough.write_lookthrough(layout, out[currency])
         return {"groups": out}
-    result = lookthrough.look_through(layout, [args.account], top=args.top)
+    result = lookthrough.look_through(layout, [args.account], top=args.top, issuer_files=not args.sec_only)
     if args.write:
         result["receipt"] = lookthrough.write_lookthrough(layout, result)
     return result
@@ -473,6 +473,7 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--income", action="store_true", help="P4: trailing-12-month dividend income per position")
     an.add_argument("--write", action="store_true", help="write the analysis receipt")
     an.add_argument("--lookthrough", action="store_true", help="underlying holdings of every fund held (SEC N-PORT), per account or --consolidated")
+    an.add_argument("--sec-only", action="store_true", help="with --lookthrough, skip the issuer daily files (TickerInside) and use SEC N-PORT only")
     an.add_argument("--top", type=int, default=25, help="underlying rows to list with --lookthrough")
 
     rc = groups.add_parser("recommend", help="decision support: trims, entry policy, watchlist, sized proposals")

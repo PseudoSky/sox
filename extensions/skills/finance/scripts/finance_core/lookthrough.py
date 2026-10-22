@@ -104,13 +104,51 @@ def _parse_nport(xml: bytes) -> dict[str, Any]:
     return {"period_end": period, "holdings": holdings}
 
 
-def fund_holdings(layout: Layout, symbol: str, fetch: Fetcher | None = None, refresh: bool = False) -> dict[str, Any]:
-    """The fund's latest N-PORT holdings, cached for a month under `.finance/funds/`."""
+TICKERINSIDE = "https://tickerinside.com/api/v1/etf/{}.json"
+ISSUER_TTL_DAYS = 2
+
+
+def _issuer_file(symbol: str, fetch: Fetcher) -> dict[str, Any] | None:
+    """The issuer's own daily holdings file via TickerInside (CC BY 4.0), or None when it only has a filing.
+
+    A filing is no fresher than N-PORT itself, so only issuer-sourced funds use this layer.
+    """
+    try:
+        status, body = fetch(TICKERINSIDE.format(symbol.lower().replace(".", "-")), _headers(), None)
+        data = json.loads(body) if status == 200 else None
+    except (FinanceError, ValueError) as exc:
+        print(f"lookthrough: TickerInside unavailable for {symbol} ({exc}); using the SEC filing", file=sys.stderr)
+        return None
+    if not data or data.get("source_layer") != "issuer" or not data.get("holdings"):
+        return None
+    return {"symbol": symbol, "series": None, "cik": None, "accession": None, "filed": data["holdings_as_of"],
+            "period_end": data["holdings_as_of"], "source_layer": "issuer-file",
+            "holdings": [{"name": t, "cusip": None, "ticker": t, "category": "EC", "country": None, "pct": str(Decimal(str(w)))}
+                         for t, w in data["holdings"].items()],
+            "source": data.get("page_url"), "attribution": data.get("cite_as"),
+            "fetched_at": datetime.now(timezone.utc).isoformat(), "filings_scanned": 0}
+
+
+def fund_holdings(layout: Layout, symbol: str, fetch: Fetcher | None = None, refresh: bool = False,
+                  issuer_files: bool = True) -> dict[str, Any]:
+    """The fund's freshest holdings: the issuer's daily file when available, else the latest N-PORT filing.
+
+    Cached under `.finance/funds/` (two days for an issuer file, a month for a filing).
+    """
     fetch = fetch or default_fetcher
     symbol = symbol.upper()
     path = layout.base / "funds" / f"{symbol}.json"
-    if path.exists() and not refresh and _fresh(read_json(path), FUND_TTL_DAYS):
-        return read_json(path)
+    if path.exists() and not refresh:
+        cached = read_json(path)
+        issuer = cached.get("source_layer") == "issuer-file"
+        usable = issuer == issuer_files if issuer else (not issuer_files or cached.get("issuer_file_checked"))
+        if usable and _fresh(cached, ISSUER_TTL_DAYS if issuer else FUND_TTL_DAYS):
+            return cached
+    if issuer_files:
+        record = _issuer_file(symbol, fetch)
+        if record:
+            atomic_write_json(path, record)
+            return record
     entry = _fund_map(layout, fetch).get(symbol)
     if entry is None:
         raise FinanceError(f"lookthrough: {symbol} is not in the SEC's registered fund list (a stock, a foreign "
@@ -130,7 +168,8 @@ def fund_holdings(layout: Layout, symbol: str, fetch: Fetcher | None = None, ref
         parsed = _parse_nport(body)
         record = {"symbol": symbol, "series": entry["series"], "cik": entry["cik"], "accession": accession,
                   "filed": filed, "period_end": parsed["period_end"], "holdings": parsed["holdings"],
-                  "source": url, "fetched_at": datetime.now(timezone.utc).isoformat(), "filings_scanned": scanned}
+                  "source": url, "fetched_at": datetime.now(timezone.utc).isoformat(), "filings_scanned": scanned,
+                  "issuer_file_checked": issuer_files}
         atomic_write_json(path, record)
         return record
     raise FinanceError(f"lookthrough: no N-PORT filing for {symbol} ({entry['series']}) among the newest {scanned} "
@@ -189,7 +228,8 @@ def _position_values(layout: Layout, account_id: str) -> tuple[list[dict[str, An
     return rows, state["cash"], total
 
 
-def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None = None, top: int = 25) -> dict[str, Any]:
+def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None = None, top: int = 25,
+                 issuer_files: bool = True) -> dict[str, Any]:
     """Underlying exposure for one or several accounts, in each account's own equity and combined."""
     fetch = fetch or default_fetcher
     warnings: list[str] = []
@@ -215,10 +255,12 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
                 wanted.append(r["symbol"])
     for symbol in sorted(set(wanted)):
         try:
-            funds[symbol] = fund_holdings(layout, symbol, fetch)
+            funds[symbol] = fund_holdings(layout, symbol, fetch, issuer_files=issuer_files)
         except FinanceError as exc:
             warnings.append(f"{symbol}: {exc}; held as a single line")
     mapped = _map_cusips(layout, [h["cusip"] for f in funds.values() for h in f["holdings"]], fetch) if funds else {}
+    names = {v["ticker"]: v["name"] for v in mapped.values() if v.get("ticker") and v.get("name")}
+    by_issuer = {issuer_key(n): t for t, n in names.items()}
     for account_id, rows, cash in plan:
         bucket: dict[str, dict[str, Any]] = {}
         if cash:
@@ -231,10 +273,11 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
                 add(bucket, "CASH", "Cash", "cash", value, sym)
             elif sym in funds:
                 for h in funds[sym]["holdings"]:
-                    ticker = (mapped.get(h["cusip"]) or {}).get("ticker") if h["cusip"] else None
+                    ticker = h.get("ticker") or ((mapped.get(h["cusip"]) or {}).get("ticker") if h["cusip"] else None)
+                    ticker = ticker or (by_issuer.get(issuer_key(h["name"])) if not h["cusip"] else None)
                     key = ticker or (f"cusip:{h['cusip']}" if h["cusip"] else f"name:{h['name']}")
                     category = "equity" if h["category"] in EQUITY_CATEGORIES else f"other:{h['category']}"
-                    add(bucket, key, h["name"], category, value * Decimal(h["pct"]) / 100, sym)
+                    add(bucket, key, names.get(key, h["name"]), category, value * Decimal(h["pct"]) / 100, sym)
                 residual = Decimal(100) - sum((Decimal(h["pct"]) for h in funds[sym]["holdings"]), Decimal(0))
                 if abs(residual) >= Decimal("0.5"):
                     add(bucket, "OTHER:" + sym, f"{sym} other net assets (cash, receivables, derivatives)", "other",
@@ -272,7 +315,7 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
         if f.get("period_end") and (date.today() - date.fromisoformat(f["period_end"][:10])).days > STALE_FILING_DAYS:
             stale.append(f"{sym} holdings are as of {f['period_end'][:10]}")
     unmapped = sorted({h["name"] for f in funds.values() for h in f["holdings"]
-                       if h["category"] in EQUITY_CATEGORIES and h["cusip"] and not (mapped.get(h["cusip"]) or {}).get("ticker")})
+                       if h["category"] in EQUITY_CATEGORIES and h["cusip"] and not h.get("ticker") and not (mapped.get(h["cusip"]) or {}).get("ticker")})
     if funds and "FINANCE_SEC_CONTACT" not in os.environ:
         warnings.append("FINANCE_SEC_CONTACT is not set; SEC requests used a placeholder contact, set it to your email")
     if unmapped:
@@ -285,7 +328,8 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
         "basis": "--top counts non-cash rows (cash is listed apart); each fund's last reported N-PORT weights applied to the position's market value now; direct holdings "
                  "are 100% themselves; cash and money-market funds are cash; options are not decomposed; "
                  "a fund held inside another fund is not looked through",
-        "funds": {s: {"period_end": f["period_end"], "filed": f["filed"], "securities": len(f["holdings"]),
+        "funds": {s: {"period_end": f["period_end"], "filed": f["filed"], "securities": len(f["holdings"]), "layer": f.get("source_layer", "sec-nport"),
+                      **({"attribution": f["attribution"]} if f.get("attribution") else {}),
                       "weight_sum": str(sum((Decimal(h["pct"]) for h in f["holdings"]), Decimal(0)).quantize(PCT)),
                       "source": f["source"]} for s, f in funds.items()},
         "per_account": [{"account_id": a, "equity": money_str(totals[a].quantize(PCT)),
