@@ -99,7 +99,7 @@ def test_single_account_hand_computed(tmp_path):
     cash = out["per_account"][0]["cash"]
     assert cash[0]["value"] == "1500.00" and cash[0]["pct_of_equity"] == "50.00"   # cash + the money-market fund
     assert all(r["category"] != "cash" for r in ex)
-    assert row(ex, "cusip:CUSIPNOTE")["category"] == "other:DBT"
+    assert row(ex, "DBT:linked note")["category"] == "other:DBT"
     assert row(ex, "OTHER:FUNDA")["value"] == "50.00"            # the 5% residual net assets
 
 
@@ -316,7 +316,11 @@ def test_unexpanded_fund_marks_result_incomplete(tmp_path):
     accounts.create_account(layout, "a", "USD")
     accounts.write_snapshot(layout, "a", snapshot("a", "0.00", [pos("ZZZ", "1", "10", asset="etf")]))
     out = lookthrough.look_through(layout, ["a"], Net())
-    assert out["incomplete"] is True and out["unexpanded_funds"] == ["ZZZ"]
+    assert out["incomplete"] is False and out["unexpanded_funds"] == []      # not a registered fund: a single-asset line, not an outage
+    net = Net()
+    net.docs.pop("https://www.sec.gov/Archives/edgar/data/22/000000002226000001/primary_doc.xml")
+    out = lookthrough.look_through(book(tmp_path / "b"), ["acc2"], net)
+    assert out["incomplete"] is True and out["unexpanded_funds"] == ["FUNDB"]
     assert lookthrough.look_through(book(tmp_path / "ok"), ["acc1"], Net())["incomplete"] is False
 
 
@@ -344,3 +348,32 @@ def test_cusipless_name_variants_merge_into_one_row(tmp_path):
     out = lookthrough.look_through(book(tmp_path), ["acc2"], net)
     rows = [r for r in out["per_account"][0]["exposure"] if r["underlying"].startswith("name:")]
     assert len(rows) == 1 and rows[0]["value"] == "2000.00"
+
+
+def test_listing_pick_tolerates_null_fields():
+    rows = [{"ticker": None, "exchCode": None, "securityType2": None},
+            {"ticker": "ZZ", "exchCode": "UN", "securityType2": None}]
+    assert lookthrough._pick_listing(rows)["ticker"] == "ZZ"
+
+
+def test_ticker_lookup_outage_degrades_instead_of_aborting(tmp_path):
+    class Down(Net):
+        def __call__(self, url, headers, data):
+            if "openfigi" in url:
+                raise FinanceError("lookthrough: cannot reach https://api.openfigi.com/v3/mapping: dns")
+            return super().__call__(url, headers, data)
+
+    out = lookthrough.look_through(book(tmp_path), ["acc1"], Down())
+    assert out["incomplete"] is True and any("rerun to resume" in w for w in out["warnings"])
+    assert row(out["per_account"][0]["exposure"], "cusip:CUSIPAAA1")["value"] == "600.00"
+
+
+def test_bonds_group_by_issuer_and_are_never_ticker_mapped(tmp_path):
+    net = Net()
+    net.docs["https://www.sec.gov/Archives/edgar/data/22/000000002226000001/primary_doc.xml"] = nport(
+        "S000000002", [("NY State Dorm Auth 5%", "BOND00001", "30", "DBT"), ("NY State Dorm Auth 4%", "BOND00002", "30", "DBT"),
+                       ("Alpha Inc", "CUSIPAAA1", "40", "EC")])
+    out = lookthrough.look_through(book(tmp_path), ["acc2"], net, top=100)
+    rows = out["per_account"][0]["exposure"]
+    assert sum(1 for r in rows if r["underlying"].startswith("DBT:")) == 2
+    assert "BOND00001" not in json.dumps(lookthrough.read_json(tmp_path / ".finance" / "funds" / "cusip-ticker.json"))

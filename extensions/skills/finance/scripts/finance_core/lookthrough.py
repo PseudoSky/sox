@@ -27,7 +27,7 @@ from .money import money_str, parse_money
 Fetcher = Callable[[str, dict[str, str], bytes | None], tuple[int, bytes]]
 FUND_TTL_DAYS = 30
 MAP_TTL_DAYS = 7
-MAX_FILINGS_SCANNED = 200
+MAX_FILINGS_SCANNED = 800
 STALE_FILING_DAYS = 120
 FIGI_BATCH = 10
 FIGI_PAUSE_SECONDS = 2.6          # the keyless limit is 25 requests a minute
@@ -37,6 +37,10 @@ EQUITY_CATEGORIES = {"EC", "EP"}  # N-PORT asset categories: common and preferre
 
 
 RETRY_PAUSES = (1.0, 4.0, 12.0)
+
+
+class NotAFund(FinanceError):
+    """The symbol has no registered-fund filing at all (a stock, a commodity or crypto trust): not an outage."""
 
 
 def default_fetcher(url: str, headers: dict[str, str], data: bytes | None = None) -> tuple[int, bytes]:
@@ -167,8 +171,8 @@ def fund_holdings(layout: Layout, symbol: str, fetch: Fetcher | None = None, ref
             return record
     entry = _fund_map(layout, fetch).get(symbol)
     if entry is None:
-        raise FinanceError(f"lookthrough: {symbol} is not in the SEC's registered fund list (a stock, a foreign "
-                           "fund or a non-registered product has no N-PORT filing)")
+        raise NotAFund(f"lookthrough: {symbol} is not in the SEC's registered fund list (a stock, a foreign fund, "
+                       "or a commodity or crypto trust has no N-PORT filing)")
     scanned = 0
     for accession, filed in _nport_filings(fetch, entry["cik"])[:MAX_FILINGS_SCANNED]:
         scanned += 1
@@ -194,7 +198,7 @@ def fund_holdings(layout: Layout, symbol: str, fetch: Fetcher | None = None, ref
 
 def _pick_listing(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The US listing: the composite 'US' first, else any US exchange (codes start with U); never a '*' line."""
-    us = [e for e in entries if e.get("exchCode", "").startswith("U") and "*" not in (e.get("ticker") or "*")
+    us = [e for e in entries if (e.get("exchCode") or "").startswith("U") and "*" not in (e.get("ticker") or "*")
           and e.get("securityType2") in (None, "Common Stock", "Depositary Receipt", "REIT", "MLP")]
     us.sort(key=lambda e: e["exchCode"] != "US")
     return us[0] if us else None
@@ -249,6 +253,7 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
     """Underlying exposure for one or several accounts, in each account's own equity and combined."""
     fetch = fetch or default_fetcher
     warnings: list[str] = []
+    single: set[str] = set()
     funds: dict[str, dict[str, Any]] = {}
     per_account, combined_value = [], Decimal(0)
     exposures: dict[str, dict[str, Any]] = {}
@@ -274,7 +279,16 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
             funds[symbol] = fund_holdings(layout, symbol, fetch, issuer_files=issuer_files)
         except FinanceError as exc:
             warnings.append(f"{symbol}: {exc}; held as a single line")
-    mapped = _map_cusips(layout, [h["cusip"] for f in funds.values() for h in f["holdings"]], fetch) if funds else {}
+            if isinstance(exc, NotAFund):
+                single.add(symbol)
+    mapping_failed = False
+    try:
+        mapped = _map_cusips(layout, [h["cusip"] for f in funds.values() for h in f["holdings"] if h["category"] in EQUITY_CATEGORIES], fetch) if funds else {}
+    except FinanceError as exc:
+        mapping_failed = True
+        warnings.append(f"{exc}; holdings without a ticker are listed by CUSIP, rerun to resume")
+        path = layout.base / "funds" / "cusip-ticker.json"
+        mapped = read_json(path) if path.exists() else {}
     names = {v["ticker"]: v["name"] for v in mapped.values() if v.get("ticker") and v.get("name")}
     by_issuer = {issuer_key(n): t for t, n in names.items()}
     for account_id, rows, cash in plan:
@@ -291,7 +305,10 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
                 for h in funds[sym]["holdings"]:
                     ticker = h.get("ticker") or ((mapped.get(h["cusip"]) or {}).get("ticker") if h["cusip"] else None)
                     ticker = ticker or (by_issuer.get(issuer_key(h["name"])) if not h["cusip"] else None)
-                    key = ticker or (f"cusip:{h['cusip']}" if h["cusip"] else f"name:{issuer_key(h['name'])}")
+                    if h["category"] not in EQUITY_CATEGORIES:
+                        key = f"{h['category']}:{issuer_key(h['name'])}"      # bonds and other: grouped by issuer, never ticker-mapped
+                    else:
+                        key = ticker or (f"cusip:{h['cusip']}" if h["cusip"] else f"name:{issuer_key(h['name'])}")
                     category = "equity" if h["category"] in EQUITY_CATEGORIES else f"other:{h['category']}"
                     add(bucket, key, names.get(key, h["name"]), category, value * Decimal(h["pct"]) / 100, sym)
                 residual = Decimal(100) - sum((Decimal(h["pct"]) for h in funds[sym]["holdings"]), Decimal(0))
@@ -326,7 +343,7 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
                  "pct_of_equity": money_str((m["value"] / equity * 100).quantize(PCT)) if equity else None}
                 for m in sorted(rows, key=lambda m: -m["value"])]
 
-    unexpanded = sorted(set(wanted) - set(funds))
+    unexpanded = sorted(set(wanted) - set(funds) - single)
     stale = []
     for sym, f in funds.items():
         if f.get("period_end") and (date.today() - date.fromisoformat(f["period_end"][:10])).days > STALE_FILING_DAYS:
@@ -353,7 +370,7 @@ def look_through(layout: Layout, account_ids: list[str], fetch: Fetcher | None =
                          "cash": render(account_exposures[a], totals[a], cash=True),
                          "exposure": render(account_exposures[a], totals[a])[:top],
                          "merged_share_classes": issuers(account_exposures[a], totals[a])} for a in account_ids],
-        "incomplete": bool(unexpanded), "unexpanded_funds": unexpanded,
+        "incomplete": bool(unexpanded) or mapping_failed, "unexpanded_funds": unexpanded,
         "warnings": warnings}
     if len(account_ids) > 1:
         result["combined"] = {"equity": money_str(combined_value.quantize(PCT)),
