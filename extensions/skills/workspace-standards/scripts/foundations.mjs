@@ -352,4 +352,6 @@ function main(argv) {
   return r.exit;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exit(main(process.argv.slice(2)));
+// `process.exitCode`, not `process.exit()`: on macOS stdout to a pipe is asynchronous,
+// so an immediate exit truncates the JSON summary written just before it.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exitCode = main(process.argv.slice(2));
