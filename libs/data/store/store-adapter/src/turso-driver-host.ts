@@ -66,8 +66,9 @@
  */
 
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Worker } from 'node:worker_threads';
 import { currentRuntimeState, log, spawnWorker } from '@adhd/sox-telemetry';
 import {
@@ -175,20 +176,27 @@ class ETursoDriverProtocolMismatch extends Error {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Locate `turso-driver-worker.js`: the sibling in a tsc `dist/` or an esbuild
- * bundle (declared in this package's `sox.sidecars`, so every consuming bundle
- * emits it — docs/standards/extension-bundling.md §3), else the `.ts` source
- * run through `tsx` (vitest runs this module from `src/`), else `../dist`.
+ * Locate the worker entry, in priority order: the sibling `turso-driver-worker.js`
+ * (a bundle that ships it beside this module), the built
+ * `../dist/turso-driver-worker.js` (what a source test run uses after `build`), else
+ * the `.ts` source through `tsx`. The source fallback anchors the `tsx` loader to
+ * this module rather than the process cwd, but it is Node-version sensitive: on
+ * Node 20 a worker thread does not apply the loader before its entry module loads
+ * (ERR_UNKNOWN_FILE_EXTENSION), so test runs must use the built artifact.
  *
- * An exact mirror of `resolveDeepVerifierEntry` (deep-verify.ts:258-267).
+ * Mirrors `resolveDeepVerifierEntry` (deep-verify.ts:258-267) except for the order
+ * of the dist lookup.
  */
 export function resolveTursoDriverWorkerEntry(): { path: string; execArgv: string[] } {
   const sibling = join(__dirname, 'turso-driver-worker.js');
   if (existsSync(sibling)) return { path: sibling, execArgv: [] };
-  const source = join(__dirname, 'turso-driver-worker.ts');
-  if (existsSync(source)) return { path: source, execArgv: ['--import', 'tsx'] };
   const distSibling = join(__dirname, '..', 'dist', 'turso-driver-worker.js');
   if (existsSync(distSibling)) return { path: distSibling, execArgv: [] };
+  const source = join(__dirname, 'turso-driver-worker.ts');
+  if (existsSync(source)) {
+    const tsxEsm = createRequire(source).resolve('tsx/esm');
+    return { path: source, execArgv: ['--import', pathToFileURL(tsxEsm).href] };
+  }
   // Returned as-is so a failure names the path actually attempted.
   return { path: sibling, execArgv: [] };
 }

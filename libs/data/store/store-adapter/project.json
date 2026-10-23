@@ -31,6 +31,7 @@
     },
     "test": {
       "executor": "nx:run-commands",
+      "dependsOn": ["build"],
       "options": {
         "command": "vitest run --config libs/data/store/store-adapter/vitest.config.ts",
         "cwd": "."
