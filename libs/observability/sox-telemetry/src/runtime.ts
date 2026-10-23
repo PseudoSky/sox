@@ -28,7 +28,7 @@ import { DurableJsonlSink, type JsonlSinkOptions } from './sink.js';
 import { NOOP_OTEL, type OtelMetricPoint, type OtelRuntime, type OtelState } from './otel-types.js';
 import { currentTraceId } from './trace.js';
 import type { Redactor } from './redact.js';
-import { aggregateSnapshots, type MetricsSnapshotRecord, type RollupRow } from './rollup.js';
+import { aggregateSnapshots, parseTs, type MetricsSnapshotRecord, type RollupRow } from './rollup.js';
 
 export type Role = 'live-service' | 'test' | 'cli' | 'harness';
 export type LogSink = 'file' | 'stderr' | 'none';
@@ -483,16 +483,25 @@ interface TelemetryRuntime {
   /** The snapshot component name (`<service>.<role>.metrics-snapshot`) whose
    *  files `rollupMetrics` enumerates. */
   snapshotComponent: string;
-  /** mtime+size-keyed parse cache: an unchanged file is not re-read/re-parsed,
-   *  so a tick over N rotating files touches only the one that changed. */
+  /** Per-file incremental read state (byte offset + in-window records). A tick
+   *  reads only bytes appended since the previous tick and retains only the
+   *  trailing window, so the reader's memory is bounded by the window, not by
+   *  the history on disk. */
   rollupFileCache: Map<string, RollupCachedFile>;
+  /** Cumulative bytes the rollup reader pulled from snapshot files (observability for the reader's retention contract). */
+  rollupReadStats: { bytesRead: number };
 }
 
-/** A parsed snapshot file, cached by its (mtimeMs, size) identity. */
+/**
+ * Incremental read state for one snapshot file. `offset` is the byte position
+ * consumed so far; `partial` holds bytes after the last newline (a line the
+ * writer has not finished). `records` keeps ONLY records whose `ts` is inside
+ * the trailing rollup window, each with its parsed epoch, pruned every tick.
+ */
 interface RollupCachedFile {
-  mtimeMs: number;
-  size: number;
-  records: MetricsSnapshotRecord[];
+  offset: number;
+  partial: Buffer;
+  records: Array<{ t: number; rec: MetricsSnapshotRecord }>;
 }
 
 function defaultState(): RuntimeState {
@@ -534,6 +543,7 @@ function newRuntime(): TelemetryRuntime {
     snapshotDir: null,
     snapshotComponent: '',
     rollupFileCache: new Map(),
+    rollupReadStats: { bytesRead: 0 },
   };
 }
 
@@ -781,6 +791,7 @@ export function _resetTelemetryForTest(): void {
   rt.snapshotDir = null;
   rt.snapshotComponent = '';
   rt.rollupFileCache.clear();
+  rt.rollupReadStats = { bytesRead: 0 };
   _acquireSlot().owner = null;
   resetSelfCheck();
 }
@@ -1324,17 +1335,25 @@ function closeRollupSink(): void {
 }
 
 /**
- * Read every persisted `metrics.snapshot` record under `dir` whose file name
- * matches the snapshot component's full anchored shape (`<component>-<date>
- * [.<epoch>-<seq>].jsonl`). `fs.promises` only — never a sync directory scan —
- * and mtime+size-cached, so an unchanged file is neither re-read nor re-parsed
- * (only the current day's file changes between ticks). NEVER throws: a missing
- * dir, an unreadable file, or a malformed line is skipped.
+ * Read the persisted `metrics.snapshot` records under `dir` that fall inside the
+ * trailing window (`t >= windowFromMs`), incrementally.
+ *
+ * Each snapshot file (matching the component's full anchored shape
+ * `<component>-<date>[.<epoch>-<seq>].jsonl`) is tracked by a byte offset in
+ * `cache`: a tick reads only the bytes appended since the previous tick, holds a
+ * trailing fragment until its newline arrives, and retains only in-window
+ * records. A file that has not been seen before and was last written before the
+ * window is skipped without being read (every record in it predates the window).
+ * A file that shrank (rotated in place) is re-read from the start. Cache entries
+ * for files that are gone are evicted. `fs.promises` only. NEVER throws: a
+ * missing dir, an unreadable file, or a malformed line is skipped.
  */
 async function readSnapshotRecords(
   dir: string,
   component: string,
   cache: Map<string, RollupCachedFile>,
+  stats: { bytesRead: number },
+  windowFromMs: number,
 ): Promise<MetricsSnapshotRecord[]> {
   let names: string[];
   try {
@@ -1345,7 +1364,6 @@ async function readSnapshotRecords(
   const anchor = new RegExp(`^${escapeRegExp(component)}-\\d{4}-\\d{2}-\\d{2}(\\.\\d+-\\d+)?\\.jsonl$`);
   const matching = names.filter((f) => anchor.test(f)).sort();
   const matchingSet = new Set(matching);
-  // Evict cache entries whose file was rotated/pruned away.
   for (const key of [...cache.keys()]) {
     if (!matchingSet.has(key)) cache.delete(key);
   }
@@ -1359,32 +1377,72 @@ async function readSnapshotRecords(
     } catch {
       continue;
     }
-    const cached = cache.get(name);
-    if (cached !== undefined && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-      out.push(...cached.records);
-      continue;
+    let entry = cache.get(name);
+    if (entry !== undefined && stat.size < entry.offset) entry = undefined;
+    if (entry === undefined) {
+      entry = { offset: 0, partial: Buffer.alloc(0), records: [] };
+      cache.set(name, entry);
     }
-    let text: string;
+    if (stat.size > entry.offset) {
+      if (entry.offset === 0 && stat.mtimeMs < windowFromMs) {
+        // Never read, and last written before the window: every record predates it.
+        entry.offset = stat.size;
+      } else {
+        const chunk = await readAppended(full, entry.offset, stat.size - entry.offset);
+        if (chunk !== null) {
+          stats.bytesRead += chunk.length;
+          entry.offset += chunk.length;
+          foldChunk(entry, chunk, windowFromMs);
+        }
+      }
+    }
+    // Prune to the window: a record that has aged out is never needed again.
+    entry.records = entry.records.filter((x) => x.t >= windowFromMs);
+    for (const x of entry.records) out.push(x.rec);
+  }
+  return out;
+}
+
+/** Read `length` bytes of `file` starting at `offset`. `null` on any I/O error
+ *  (the file rotated or vanished mid-tick; the next tick re-stats it). */
+async function readAppended(file: string, offset: number, length: number): Promise<Buffer | null> {
+  let handle: fs.promises.FileHandle | undefined;
+  try {
+    handle = await fs.promises.open(file, 'r');
+    const buf = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buf, 0, length, offset);
+    return buf.subarray(0, bytesRead);
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+/** Fold newly read bytes into `entry`: complete lines are parsed, the trailing
+ *  fragment is kept in `entry.partial` for the next tick. Records outside the
+ *  window are dropped on the spot. */
+function foldChunk(entry: RollupCachedFile, chunk: Buffer, windowFromMs: number): void {
+  const buf = entry.partial.length === 0 ? chunk : Buffer.concat([entry.partial, chunk]);
+  const lastNl = buf.lastIndexOf(0x0a);
+  if (lastNl < 0) {
+    entry.partial = buf;
+    return;
+  }
+  entry.partial = buf.subarray(lastNl + 1);
+  for (const raw of buf.subarray(0, lastNl).toString('utf8').split('\n')) {
+    if (raw.length === 0) continue;
+    let parsed: unknown;
     try {
-      text = await fs.promises.readFile(full, 'utf8');
+      parsed = JSON.parse(raw);
     } catch {
       continue;
     }
-    const records: MetricsSnapshotRecord[] = [];
-    for (const line of text.split('\n')) {
-      if (line.length === 0) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (isPlainRecord(parsed)) records.push(parsed as MetricsSnapshotRecord);
-    }
-    cache.set(name, { mtimeMs: stat.mtimeMs, size: stat.size, records });
-    out.push(...records);
+    if (!isPlainRecord(parsed)) continue;
+    const t = parseTs((parsed as { ts?: unknown }).ts);
+    if (t === null || t < windowFromMs) continue;
+    entry.records.push({ t, rec: parsed as MetricsSnapshotRecord });
   }
-  return out;
 }
 
 /**
@@ -1407,9 +1465,10 @@ export async function rollupMetrics(reason: RollupReason): Promise<void> {
     const now = Date.now();
     const cache = rt.rollupFileCache ?? new Map<string, RollupCachedFile>();
     rt.rollupFileCache = cache;
-    const records = await readSnapshotRecords(dir, rt.snapshotComponent, cache);
+    const windowMs = rt.rollupWindowMs ?? DEFAULT_ROLLUP_WINDOW_MS;
+    const records = await readSnapshotRecords(dir, rt.snapshotComponent, cache, rt.rollupReadStats, now - windowMs);
     const rows: RollupRow[] = aggregateSnapshots(records, {
-      windowMs: rt.rollupWindowMs ?? DEFAULT_ROLLUP_WINDOW_MS,
+      windowMs,
       now,
     });
     const ts = new Date(now).toISOString();
@@ -1571,4 +1630,16 @@ export async function snapshotMetrics(
 /** Test seam: number of durable snapshots this process has written. */
 export function _snapshotCountForTest(): number {
   return runtime().snapshotsWritten;
+}
+
+/**
+ * Test observation of the rollup reader's retention contract: how many parsed
+ * snapshot records the reader currently holds, and the cumulative bytes it has
+ * read from disk. Not a runtime API.
+ */
+export function _rollupRetentionForTest(): { retainedRecords: number; bytesRead: number } {
+  const rt = runtime();
+  let retainedRecords = 0;
+  for (const entry of rt.rollupFileCache.values()) retainedRecords += entry.records.length;
+  return { retainedRecords, bytesRead: rt.rollupReadStats.bytesRead };
 }

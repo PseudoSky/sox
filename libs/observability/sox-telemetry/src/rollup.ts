@@ -395,7 +395,7 @@ function recordPid(r: MetricsSnapshotRecord): number | null {
 }
 
 /** Parse an ISO timestamp to epoch-ms, or `null` when absent/unparseable. */
-function parseTs(ts: unknown): number | null {
+export function parseTs(ts: unknown): number | null {
   if (typeof ts !== 'string' || ts.length === 0) return null;
   const t = Date.parse(ts);
   return Number.isFinite(t) ? t : null;
