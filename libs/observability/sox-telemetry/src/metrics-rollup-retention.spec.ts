@@ -220,4 +220,52 @@ describe('rollup reader retention (memory contract)', () => {
     // bisection slack), never the whole file.
     expect(_rollupRetentionForTest().bytesRead).toBeLessThan(size / 4);
   });
+
+  it('r7: re-pointing the reader at another dir drops the cache, so a same-named file is never a false hit', async () => {
+    const first = await fixture();
+    fs.appendFileSync(first.file, line(first.template, 60_000).repeat(5));
+    await rollupMetrics('interval');
+
+    // A second log dir with a snapshot file of the SAME basename but another
+    // release identity. The first dir's cached offset and records must not leak.
+    const REL_B = { version: '2.0.0', artifact_sha256: `sha256:${'b'.repeat(64)}`, git_sha: 'b'.repeat(40) } as const;
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-rollup-retention-b-'));
+    dirs.push(dir2);
+    initTelemetry({
+      service: SERVICE,
+      role: ROLE,
+      logSink: 'file',
+      logDir: dir2,
+      otel: false,
+      snapshotEveryRecords: 0,
+      snapshotEveryMs: 0,
+      release: REL_B,
+    });
+    await quiesce();
+    const template2 = { ...first.template, release: REL_B };
+    const file2 = path.join(dir2, path.basename(first.file));
+    fs.writeFileSync(file2, line(template2, 60_000).repeat(8));
+
+    await rollupMetrics('interval');
+
+    const rollupDir = path.join(dir2, 'rollup');
+    const rows = fs
+      .readdirSync(rollupDir)
+      .filter((f) => f.includes('.metrics-rollup-'))
+      .flatMap((f) =>
+        fs.readFileSync(path.join(rollupDir, f), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>),
+      )
+      .filter((r) => r['reason'] === 'interval');
+    const latestTick = rows.slice(-1);
+    expect(latestTick).toHaveLength(1);
+    expect(latestTick[0]!['release']).toEqual(REL_B);
+    // Every in-window record in the second dir, and only those: the 5 first-dir
+    // records (release A) would make this row larger and blend two releases.
+    const expected = fs
+      .readdirSync(dir2)
+      .filter((f) => f.includes('.metrics-snapshot-'))
+      .reduce((n, f) => n + inWindowRecords(path.join(dir2, f)), 0);
+    expect(expected).toBeGreaterThanOrEqual(8);
+    expect(latestTick[0]!['snapshots_in_window']).toBe(expected);
+  });
 });

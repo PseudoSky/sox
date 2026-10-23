@@ -1315,8 +1315,13 @@ function configureRollupSink(opts: InitTelemetryOptions, logSink: LogSink): void
   // Resolve the read coordinates unconditionally (the sink itself is only
   // created for a file sink) so a non-file sink never leaves a stale dir cached.
   const resolvedLogDir = opts.logDir ?? path.join(ecosystemHome(), opts.service, 'logs');
+  const component = `${opts.service}.${opts.role}.metrics-snapshot`;
+  // The cache is keyed by file basename and holds byte offsets into one
+  // directory's files. Re-pointing the reader at another dir or component would
+  // make every surviving entry a false hit, so the cache is dropped on any change.
+  if (rt.snapshotDir !== resolvedLogDir || rt.snapshotComponent !== component) rt.rollupFileCache.clear();
   rt.snapshotDir = resolvedLogDir;
-  rt.snapshotComponent = `${opts.service}.${opts.role}.metrics-snapshot`;
+  rt.snapshotComponent = component;
   rt.rollupWindowMs = resolveRollupWindowMs(opts.rollupWindowMs);
   if (logSink !== 'file') return;
   const dir = opts.rollupDir ?? path.join(resolvedLogDir, 'rollup');
