@@ -19,6 +19,7 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync } from 
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { log } from '@adhd/sox-telemetry';
+import { isRecycledPid, type PidReuseDeps } from './store-lease-liveness.js';
 
 export interface StoreLease {
   token: string;
@@ -68,6 +69,7 @@ const LEASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export function entryLiveness(
   content: string,
   now: number = Date.now(),
+  reuse?: PidReuseDeps,
 ): { live: boolean; pid: number; openedAt: number } | null {
   const [pidLine, openedAtLine] = content.split('\n');
   const openedAt = openedAtLine ? Date.parse(openedAtLine) : NaN;
@@ -87,7 +89,13 @@ export function entryLiveness(
     probe =
       code === 'EPERM' ? 'live' : code === 'ESRCH' || code === 'EINVAL' ? 'dead' : 'undeterminable';
   }
-  if (probe === 'live') return { live: true, pid, openedAt }; // live pids are age-out-proof
+  if (probe === 'live') {
+    // A live pid is a live session regardless of age — unless the process now
+    // owning it started AFTER the entry was written (pid reuse, 8ca41f1d): the
+    // writer is gone and the pid was recycled. Every uncertainty stays live.
+    if (isRecycledPid(pid, openedAt, reuse)) return { live: false, pid, openedAt };
+    return { live: true, pid, openedAt }; // live pids are age-out-proof
+  }
 
   // Not proven live — NOW the 24 h age-out applies (pid-reuse guard), and only
   // to the undeterminable class: a dead pid is dead regardless of age, and a
