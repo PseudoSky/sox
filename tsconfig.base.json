@@ -29,7 +29,7 @@
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
-      "@adhd/sox-manifest": ["libs/manifest/src/index.ts", "libs/manifest/dist/index.js"],
+      "@adhd/sox-manifest": ["libs/manifest/src/index.ts"],
       "@adhd/sox-authoring": ["libs/authoring/dist/index.js"],
       "@adhd/sox-install-engine": ["libs/install-engine/dist/index.js"],
       "@adhd/sox-host-runtime": ["libs/host-runtime/dist/index.js"],
@@ -38,9 +38,9 @@
       "@adhd/sox-memory-core/testing": ["libs/memory-core/dist-testing/testing/index.d.ts"],
       "@adhd/sox-memory-enrich": ["libs/memory-enrich/dist/index.d.ts"],
       "@adhd/sox-mcp-runtime": ["libs/mcp-runtime/dist/index.d.ts"],
-      "@adhd/sox-service-proxy": ["libs/service-proxy/dist/index.d.ts", "libs/service-proxy/dist/index.js"],
-      "@adhd/sox-listen-guard": ["libs/listen-guard/dist/index.d.ts", "libs/listen-guard/dist/index.js"],
-      "@adhd/sox-telemetry": ["libs/observability/sox-telemetry/dist/index.d.ts", "libs/observability/sox-telemetry/dist/index.js"]
+      "@adhd/sox-service-proxy": ["libs/service-proxy/dist/index.d.ts"],
+      "@adhd/sox-listen-guard": ["libs/listen-guard/dist/index.d.ts"],
+      "@adhd/sox-telemetry": ["libs/observability/sox-telemetry/dist/index.d.ts"]
     }
   },
   "include": ["scripts/**/*.ts", "extensions/**/*.ts"],
