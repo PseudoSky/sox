@@ -30,6 +30,15 @@ const AGENTS_ROOT = process.env['E00C47BB_AGENTS_ROOT'] ?? path.join(REPO_ROOT, 
  */
 const BASELINE_REF = 'dd8a8639';
 const MIGRATED = ['architect', 'architect-decision', 'debug', 'performance', 'product', 'researcher', 'typescript'] as const;
+/**
+ * Tool entries added to a migrated agent AFTER BASELINE_REF by an intentional change. The baseline
+ * comparison allows exactly these and nothing else. architect: aa68c1e9 (595965cc T47) gave it the
+ * gitnexus code-intel tool instead of grep/glob. product: 0d5f7a0c (595965cc T47) granted the backlog tool.
+ */
+const INTENTIONAL_LATER_TOOLS: Partial<Record<(typeof MIGRATED)[number], unknown[]>> = {
+  architect: [{ logical: 'code-intel', server: 'gitnexus' }],
+  product: [{ logical: 'backlog', server: 'backlog' }],
+};
 
 interface Manifest {
   entrypoint?: string;
@@ -145,7 +154,8 @@ describe('e00c47bb MIG1 — migrated agents carry the explicit nativeWebTools ov
       ) as Manifest;
       expect(old.render?.['agent-mcp']?.nativeWebTools).toBeUndefined();
       const now = withoutOverride(id);
-      expect(now.agent).toEqual(old.agent);
+      const extra = INTENTIONAL_LATER_TOOLS[id] ?? [];
+      expect(now.agent).toEqual(extra.length ? { ...old.agent, tools: [...(old.agent?.tools ?? []), ...extra] } : old.agent);
       expect(now.render?.['agent-mcp']).toEqual(old.render?.['agent-mcp']);
     }
   });

@@ -190,7 +190,11 @@ describe('agent-mcp — real review manifest golden render (cac771f8)', () => {
     expect(payload.nativeTooling.hitl).toBe(false);
     expect(payload.nativeWebTools).toBe(false);
     expect(payload.mcpServers).toEqual({});
-    expect(report).toEqual({ lost: [], warnings: [], unbound: false, shellDisabledByLoss: false });
+    // b120860d's command-text bash rules cannot be enforced (ADR-0008 D5), so shell fails closed and the loss is reported.
+    expect(report.lost.map((l) => l.source)).toEqual(['bash']);
+    expect(report.lost[0]).toMatchObject({ source: 'bash', disposition: 'dropped' });
+    expect(report.unbound).toBe(false);
+    expect(report.shellDisabledByLoss).toBe(true);
   });
 
   it('cac771f8 AC1 negative control: loosening edit (tool listed + permission allow) makes the fs deny rules disappear', () => {
@@ -234,7 +238,7 @@ describe('agent-mcp — real review manifest golden render (cac771f8)', () => {
     const stripped = renderReview({ ...manifest.agent, permission } as AgentIr);
     expect(stripped.payload).toEqual(base.payload);
     expect(stripped.report).toEqual(base.report);
-    expect(base.report.lost).toEqual([]);
+    expect(base.report.lost.map((l) => l.source)).toEqual(['bash']);
   });
 
   it('cac771f8 AC3 question deny IS mapped (hitl:false); allowing it flips hitl', () => {
@@ -249,9 +253,11 @@ describe('agent-mcp — real review manifest golden render (cac771f8)', () => {
   });
 
   describe('e00c47bb webfetch/websearch single-tool deny', () => {
+    // bash is denied here: these tests cover web-tool logic only, and the shipped review manifest's
+    // command-text bash rules (b120860d) are reported separately by the AC1 golden above.
     const web = (permission: Record<string, string>, override: AgentOverride | undefined = manifest.render['agent-mcp']) =>
       renderReview(
-        { ...manifest.agent, tools: [...(manifest.agent.tools ?? []), 'webfetch', 'websearch'], permission: { ...manifest.agent.permission, ...permission } } as AgentIr,
+        { ...manifest.agent, tools: [...(manifest.agent.tools ?? []), 'webfetch', 'websearch'], permission: { ...manifest.agent.permission, bash: 'deny', ...permission } } as AgentIr,
         override,
       );
 
@@ -326,6 +332,7 @@ describe('agent-mcp — real review manifest golden render (cac771f8)', () => {
       delete permission['webfetch'];
       delete permission['websearch'];
       permission[denied] = 'deny';
+      permission['bash'] = 'deny'; // web-only assertion: see the web helper above
       return renderReview({ ...manifest.agent, tools: [...(manifest.agent.tools ?? []), denied], permission } as AgentIr);
     };
 
