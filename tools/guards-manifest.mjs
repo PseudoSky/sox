@@ -284,6 +284,7 @@ export const GUARDS = [
     id: '26121495',
     tier: 1,
     script: 'test-26121495-smoke-embed-host-isolation.mjs',
+    needsBuild: ['service-proxy'],
     // Pins the smoke harness's embedding-host containment: a smoke-owned host with the operator
     // HOME, model cache or a temp-dir socket is a breach; the harness env keeps socket + cache in
     // the run through the product's own resolution; every memory-server leg gets the scratch HOME.
@@ -307,6 +308,7 @@ export const GUARDS = [
     id: 'df0ea359',
     tier: 1,
     script: 'test-df0ea359-spec-embed-isolation.mjs',
+    needsBuild: ['memory-server'],
     // Pins memory-server's bl404/bl401 real-entrypoint specs to never spawn a real
     // embedding host sharing the operator's HOME, model cache, or embed socket dir
     // (observed live: pids 21798/21856/22069 with HOME=/Users/nix), and to verified-stop
@@ -360,6 +362,7 @@ export const GUARDS = [
     id: '9303b749',
     tier: 1,
     script: 'test-9303b749-embed-isolation-prefix-control.mjs',
+    needsBuild: ['service-proxy'],
     // Pins that test-26121495's Part A pre-fix control is the real 49768a63 evaluateIsolation loaded
     // from git, not a stub. (49768a63 = parent of 683e34b1, the embed-host isolation commit; the
     // earlier pin 0bb5b497 was absent from this clone's object store and crashed this guard.)
