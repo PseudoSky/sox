@@ -1388,12 +1388,7 @@ async function readSnapshotRecords(
         // Never read, and last written before the window: every record predates it.
         entry.offset = stat.size;
       } else {
-        const chunk = await readAppended(full, entry.offset, stat.size - entry.offset);
-        if (chunk !== null) {
-          stats.bytesRead += chunk.length;
-          entry.offset += chunk.length;
-          foldChunk(entry, chunk, windowFromMs);
-        }
+        await foldAppended(entry, full, stat.size, windowFromMs, stats);
       }
     }
     // Prune to the window: a record that has aged out is never needed again.
@@ -1403,17 +1398,36 @@ async function readSnapshotRecords(
   return out;
 }
 
-/** Read `length` bytes of `file` starting at `offset`. `null` on any I/O error
- *  (the file rotated or vanished mid-tick; the next tick re-stats it). */
-async function readAppended(file: string, offset: number, length: number): Promise<Buffer | null> {
+/** Upper bound on one streamed read. A large file is folded chunk by chunk, so
+ *  the transient buffer, its string, and its line array are bounded by this
+ *  constant rather than by the file size. */
+const ROLLUP_READ_CHUNK_BYTES = 1024 * 1024;
+
+/** Stream the bytes of `file` from `entry.offset` up to `to`, folding each
+ *  bounded chunk as it is read. The offset advances only after a chunk is folded,
+ *  so an I/O error (the file rotated or vanished mid-read) leaves `entry`
+ *  consistent and the next tick resumes exactly where this one stopped. */
+async function foldAppended(
+  entry: RollupCachedFile,
+  file: string,
+  to: number,
+  windowFromMs: number,
+  stats: { bytesRead: number },
+): Promise<void> {
   let handle: fs.promises.FileHandle | undefined;
   try {
     handle = await fs.promises.open(file, 'r');
-    const buf = Buffer.alloc(length);
-    const { bytesRead } = await handle.read(buf, 0, length, offset);
-    return buf.subarray(0, bytesRead);
+    while (entry.offset < to) {
+      const len = Math.min(ROLLUP_READ_CHUNK_BYTES, to - entry.offset);
+      const buf = Buffer.alloc(len);
+      const { bytesRead } = await handle.read(buf, 0, len, entry.offset);
+      if (bytesRead === 0) break;
+      stats.bytesRead += bytesRead;
+      entry.offset += bytesRead;
+      foldChunk(entry, buf.subarray(0, bytesRead), windowFromMs);
+    }
   } catch {
-    return null;
+    // Rotated or vanished mid-read: the next tick re-stats the file and resumes.
   } finally {
     await handle?.close().catch(() => undefined);
   }

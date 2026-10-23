@@ -14,6 +14,10 @@
  *   (r2) read only the bytes appended since the previous tick (byte offset);
  *   (r3) hold a partial trailing line until its newline arrives, count it once;
  *   (r4) produce rows whose `snapshots_in_window` equals the in-window records.
+ *   (r5) fold a file larger than one bounded read chunk exactly — a record
+ *        straddling a chunk boundary is counted once, none dropped (correctness
+ *        guard for the streamed first read; memory boundedness is measured by the
+ *        host-like probe, not asserted here).
  *
  * FIXTURE CHOICE
  * ──────────────
@@ -180,5 +184,20 @@ describe('rollup reader retention (memory contract)', () => {
     expect(rows).toHaveLength(1);
     // The aggregator's window spans every snapshot file, so the row counts both.
     expect(rows[0]!['snapshots_in_window']).toBe(inWindowRecords(file) + inWindowRecords(today));
+  });
+
+  it('r5: a file larger than one read chunk is folded exactly, including a record straddling the boundary', async () => {
+    const { file, today, template } = await fixture();
+    // ~3 MiB of in-window records: spans several 1 MiB read chunks, and the
+    // record lengths are not aligned to the chunk size, so boundaries land
+    // mid-record.
+    const body = line(template, 20 * 60_000).repeat(3_000);
+    fs.appendFileSync(file, body);
+    expect(fs.statSync(file).size).toBeGreaterThan(3 * 1024 * 1024);
+
+    await rollupMetrics('interval');
+
+    expect(inWindowRecords(file)).toBe(3_000);
+    expect(_rollupRetentionForTest().retainedRecords).toBe(inWindowRecords(file) + inWindowRecords(today));
   });
 });
