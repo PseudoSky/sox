@@ -1384,18 +1384,92 @@ async function readSnapshotRecords(
       cache.set(name, entry);
     }
     if (stat.size > entry.offset) {
-      if (entry.offset === 0 && stat.mtimeMs < windowFromMs) {
-        // Never read, and last written before the window: every record predates it.
-        entry.offset = stat.size;
-      } else {
-        await foldAppended(entry, full, stat.size, windowFromMs, stats);
+      if (entry.offset === 0) {
+        // Never read. Last written before the window: every record predates it.
+        // Otherwise seek past the lines that predate the window, so only its
+        // in-window tail is read.
+        entry.offset =
+          stat.mtimeMs < windowFromMs ? stat.size : await firstWindowOffset(full, stat.size, windowFromMs);
       }
+      if (stat.size > entry.offset) await foldAppended(entry, full, stat.size, windowFromMs, stats);
     }
     // Prune to the window: a record that has aged out is never needed again.
     entry.records = entry.records.filter((x) => x.t >= windowFromMs);
     for (const x of entry.records) out.push(x.rec);
   }
   return out;
+}
+
+/** Bytes read per bisection probe, and the span at which bisection stops. */
+const ROLLUP_SEEK_PROBE_BYTES = 256 * 1024;
+const ROLLUP_SEEK_RESOLUTION_BYTES = 64 * 1024;
+
+/** The first complete line starting at or after `pos`: its start, the offset just
+ *  past its newline, and its parsed `ts` (or `null` when it does not parse).
+ *  `null` when no complete line fits in one probe. */
+interface LineProbe {
+  start: number;
+  next: number;
+  ts: number | null;
+}
+
+async function probeLine(handle: fs.promises.FileHandle, pos: number, size: number): Promise<LineProbe | null> {
+  const len = Math.min(ROLLUP_SEEK_PROBE_BYTES, size - pos);
+  if (len <= 0) return null;
+  const buf = Buffer.alloc(len);
+  const { bytesRead } = await handle.read(buf, 0, len, pos);
+  const view = buf.subarray(0, bytesRead);
+  let from = 0;
+  if (pos > 0) {
+    const nl = view.indexOf(0x0a);
+    if (nl < 0) return null;
+    from = nl + 1;
+  }
+  const end = view.indexOf(0x0a, from);
+  if (end < 0) return null;
+  let ts: number | null = null;
+  try {
+    const parsed: unknown = JSON.parse(view.subarray(from, end).toString('utf8'));
+    if (isPlainRecord(parsed)) ts = parseTs((parsed as { ts?: unknown }).ts);
+  } catch {
+    ts = null;
+  }
+  return { start: pos + from, next: pos + end + 1, ts };
+}
+
+/** Byte offset of a line boundary no later than the first line of `file` whose
+ *  `ts` is at or after `windowFromMs`, found by bisection over byte offsets.
+ *
+ *  Snapshot files are appended in time order, so every line before the returned
+ *  offset predates the window and need not be read; the caller's window filter
+ *  still drops any in-window-looking line the bisection leaves behind. The result
+ *  only ever advances past lines confirmed to predate the window, so a probe that
+ *  cannot find a line boundary returns a smaller (safe, slower) offset, never a
+ *  larger one. NEVER throws: any failure returns `0` (a full read). */
+async function firstWindowOffset(file: string, size: number, windowFromMs: number): Promise<number> {
+  let handle: fs.promises.FileHandle | undefined;
+  try {
+    handle = await fs.promises.open(file, 'r');
+    let lo = 0; // every line starting before `lo` predates the window
+    let hi = size; // every line starting at or after `hi` is in the window
+    while (hi - lo > ROLLUP_SEEK_RESOLUTION_BYTES) {
+      const mid = lo + Math.floor((hi - lo) / 2);
+      const probe = await probeLine(handle, mid, size);
+      if (probe === null) break;
+      if (probe.start >= hi) {
+        hi = mid;
+      } else if (probe.ts !== null && probe.ts < windowFromMs) {
+        lo = probe.next;
+      } else {
+        hi = probe.start;
+      }
+    }
+    return lo;
+  } catch {
+    return 0;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 /** Upper bound on one streamed read. A large file is folded chunk by chunk, so

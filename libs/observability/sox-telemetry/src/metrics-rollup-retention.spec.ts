@@ -18,6 +18,8 @@
  *        straddling a chunk boundary is counted once, none dropped (correctness
  *        guard for the streamed first read; memory boundedness is measured by the
  *        host-like probe, not asserted here).
+ *   (r6) seek a recently written file to its window on the first read, so an
+ *        aged prefix is never read (bytes read stay near the in-window tail).
  *
  * FIXTURE CHOICE
  * ──────────────
@@ -199,5 +201,23 @@ describe('rollup reader retention (memory contract)', () => {
 
     expect(inWindowRecords(file)).toBe(3_000);
     expect(_rollupRetentionForTest().retainedRecords).toBe(inWindowRecords(file) + inWindowRecords(today));
+  });
+
+  it('r6: a recently written file is seeked to its window, so the aged prefix is never read', async () => {
+    const { file, today, template } = await fixture();
+    // A long history prefix (every record five hours old) followed by a small
+    // in-window tail. The file's mtime is NOW, so the mtime skip does not apply:
+    // only the bisection can keep the reader out of the prefix.
+    const prefix = line(template, 5 * HOUR_MS).repeat(4_000);
+    fs.appendFileSync(file, prefix + line(template, 60_000).repeat(25));
+    const size = fs.statSync(file).size;
+
+    await rollupMetrics('interval');
+
+    expect(inWindowRecords(file)).toBe(25);
+    expect(_rollupRetentionForTest().retainedRecords).toBe(inWindowRecords(file) + inWindowRecords(today));
+    // The bytes read are the in-window tail (plus at most one resolution step of
+    // bisection slack), never the whole file.
+    expect(_rollupRetentionForTest().bytesRead).toBeLessThan(size / 4);
   });
 });
