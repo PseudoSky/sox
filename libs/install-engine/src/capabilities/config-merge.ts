@@ -21,8 +21,19 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { parse as parseTomlLib, patch as patchTomlLib, stringify as stringifyTomlLib } from '@decimalturn/toml-patch';
 import { Ledger, LedgerAction } from '../ledger.js';
+
+/** The ESM-only `@decimalturn/toml-patch` module, loaded on first use. The lib
+ *  builds with `module: Node16`, so this literal `import()` stays native in the
+ *  CommonJS output and loads the ESM package on every supported Node. */
+type TomlPatchLib = typeof import('@decimalturn/toml-patch', { with: { 'resolution-mode': 'import' } });
+
+let tomlPatchLib: Promise<TomlPatchLib> | undefined;
+
+function loadTomlPatch(): Promise<TomlPatchLib> {
+  tomlPatchLib ??= import('@decimalturn/toml-patch');
+  return tomlPatchLib;
+}
 
 // --- Types ---
 
@@ -88,14 +99,16 @@ export interface VerifyResult {
 type TomlValue = string | number | boolean | null | TomlTable | TomlValue[];
 interface TomlTable { [key: string]: TomlValue }
 
-/** Parse a TOML string into a nested object. Throws on invalid TOML. */
-export function parseToml(src: string): TomlTable {
-  return parseTomlLib(src) as TomlTable;
+/** Parse a TOML string into a nested object. Rejects on invalid TOML. */
+export async function parseToml(src: string): Promise<TomlTable> {
+  const lib = await loadTomlPatch();
+  return lib.parse(src) as TomlTable;
 }
 
 /** Serialise a nested object to TOML. */
-export function stringifyToml(obj: TomlTable): string {
-  return stringifyTomlLib(obj);
+export async function stringifyToml(obj: TomlTable): Promise<string> {
+  const lib = await loadTomlPatch();
+  return lib.stringify(obj);
 }
 
 // --- JSON helpers ---
@@ -112,17 +125,18 @@ function writeJson(filePath: string, data: Record<string, unknown>): void {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf8');
 }
 
-function readToml(filePath: string): TomlTable {
+async function readToml(filePath: string): Promise<TomlTable> {
   if (!fs.existsSync(filePath)) return {};
   const raw = fs.readFileSync(filePath, 'utf8');
-  return parseToml(raw);
+  return await parseToml(raw);
 }
 
-function writeToml(filePath: string, data: TomlTable): void {
+async function writeToml(filePath: string, data: TomlTable): Promise<void> {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
-  const out = existing.trim() === '' ? stringifyTomlLib(data) : patchTomlLib(existing, data);
+  const lib = await loadTomlPatch();
+  const out = existing.trim() === '' ? lib.stringify(data) : lib.patch(existing, data);
   fs.writeFileSync(filePath, out, 'utf8');
 }
 
@@ -185,16 +199,16 @@ function sha256(value: unknown): string {
 
 // --- Read/write the config file (format-aware) ---
 
-function readConfig(filePath: string): Record<string, unknown> {
+async function readConfig(filePath: string): Promise<Record<string, unknown>> {
   if (isToml(filePath)) {
-    return readToml(filePath) as Record<string, unknown>;
+    return (await readToml(filePath)) as Record<string, unknown>;
   }
   return readJson(filePath);
 }
 
-function writeConfig(filePath: string, data: Record<string, unknown>): void {
+async function writeConfig(filePath: string, data: Record<string, unknown>): Promise<void> {
   if (isToml(filePath)) {
-    writeToml(filePath, data as TomlTable);
+    await writeToml(filePath, data as TomlTable);
   } else {
     writeJson(filePath, data);
   }
@@ -212,7 +226,7 @@ export async function apply(ctx: ConfigMergeCtx): Promise<void> {
   const { value } = ctx.payload;
   const parts = parseKeyPath(keyPath);
 
-  const config = readConfig(filePath);
+  const config = await readConfig(filePath);
   const current = getByKeyPath(config, parts);
   const newHash = sha256(value);
   const currentHash = sha256(current);
@@ -225,7 +239,7 @@ export async function apply(ctx: ConfigMergeCtx): Promise<void> {
 
   if (!unchanged) {
     setByKeyPath(config, parts, value);
-    writeConfig(filePath, config);
+    await writeConfig(filePath, config);
   }
 
   // Record ledger action.
@@ -269,10 +283,10 @@ export async function reverse(ctx: ConfigMergeCtx): Promise<void> {
   if (matched.length === 0) return; // nothing to reverse
 
   if (!fs.existsSync(filePath)) return;
-  const config = readConfig(filePath);
+  const config = await readConfig(filePath);
   const parts = parseKeyPath(keyPath);
   deleteByKeyPath(config, parts);
-  writeConfig(filePath, config);
+  await writeConfig(filePath, config);
 
   ledger.remove(ctx.ext, ctx.host, ctx.scope);
   ledger.save();
@@ -290,7 +304,7 @@ export async function update(ctx: ConfigMergeCtx): Promise<Diff> {
   );
 
   if (!fs.existsSync(filePath)) return { kind: 'add' };
-  const config = readConfig(filePath);
+  const config = await readConfig(filePath);
   const parts = parseKeyPath(keyPath);
   const current = getByKeyPath(config, parts);
 
@@ -317,7 +331,7 @@ export async function verify(ctx: ConfigMergeCtx): Promise<VerifyResult> {
   if (!fs.existsSync(filePath)) {
     return { ok: false, reason: `config file not found: ${filePath}` };
   }
-  const config = readConfig(filePath);
+  const config = await readConfig(filePath);
   const parts = parseKeyPath(keyPath);
   const current = getByKeyPath(config, parts);
   if (current === undefined) {

@@ -346,7 +346,7 @@ describe('config-merge TOML — [capability-engine.2]', () => {
     });
     const raw = fs.readFileSync(fp, 'utf8');
     expect(raw).toContain('# user comment kept');
-    const parsed = configMerge.parseToml(raw) as any;
+    const parsed = (await configMerge.parseToml(raw)) as any;
     expect(parsed.projects['/Users/nix/Documents/pro'].trust_level).toBe('trusted');
     expect(parsed.plugins['browser@openai-bundled'].enabled).toBe(true);
     expect(parsed.agents.old.description).toBe('has "quotes" and a # hash');
@@ -357,30 +357,30 @@ describe('config-merge TOML — [capability-engine.2]', () => {
     expect(parsed.fake).toBeUndefined();
   });
 
-  it('exports parseToml and stringifyToml', () => {
+  it('exports parseToml and stringifyToml', async () => {
     expect(typeof configMerge.parseToml).toBe('function');
     expect(typeof configMerge.stringifyToml).toBe('function');
   });
 
-  it('parseToml: parses flat key=value', () => {
+  it('parseToml: parses flat key=value', async () => {
     const src = `model = "o4-mini"\ntimeout = 30\n`;
-    const result = configMerge.parseToml(src);
+    const result = await configMerge.parseToml(src);
     expect(result['model']).toBe('o4-mini');
     expect(result['timeout']).toBe(30);
   });
 
-  it('parseToml: parses table headers', () => {
+  it('parseToml: parses table headers', async () => {
     const src = `[mcp_servers.my-server]\ncommand = "node"\nargs = ["index.js"]\n`;
-    const result = configMerge.parseToml(src);
+    const result = await configMerge.parseToml(src);
     const servers = result['mcp_servers'] as Record<string, unknown>;
     const s = servers['my-server'] as Record<string, unknown>;
     expect(s['command']).toBe('node');
   });
 
-  it('stringifyToml: round-trips flat values', () => {
+  it('stringifyToml: round-trips flat values', async () => {
     const obj = { model: 'o4-mini', timeout: 30, debug: true };
-    const toml = configMerge.stringifyToml(obj);
-    const parsed = configMerge.parseToml(toml);
+    const toml = await configMerge.stringifyToml(obj);
+    const parsed = await configMerge.parseToml(toml);
     expect(parsed['model']).toBe('o4-mini');
     expect(parsed['timeout']).toBe(30);
     expect(parsed['debug']).toBe(true);
@@ -415,7 +415,7 @@ describe('config-merge TOML — [capability-engine.2]', () => {
     await configMerge.reverse(ctx);
     const raw = fs.readFileSync(fp, 'utf8');
     // Foreign key 'model' must survive
-    const parsed = configMerge.parseToml(raw);
+    const parsed = await configMerge.parseToml(raw);
     expect(parsed['model']).toBe('o4-mini');
     expect(parsed['approval_policy']).toBeUndefined();
   });
