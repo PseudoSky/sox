@@ -12,8 +12,10 @@
 
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   _observeTick,
@@ -187,8 +189,11 @@ describe('BL-369 — the heartbeat must never hold a process open', () => {
       `import { startSuspensionTracking } from ${JSON.stringify(mod)};\nstartSuspensionTracking();\n`,
     );
     try {
-      // Node 24 strips types natively, so the source module runs as-is.
-      const r = spawnSync(process.execPath, [probe], { timeout: 15_000, encoding: 'utf8' });
+      // Load the TypeScript source through the tsx ESM loader, resolved from this
+      // spec's location (not cwd). Node 24 would strip types natively, but Node 20
+      // (the CI and release runtime) cannot import a .ts module without a loader.
+      const tsxEsm = pathToFileURL(createRequire(import.meta.url).resolve('tsx/esm')).href;
+      const r = spawnSync(process.execPath, ['--import', tsxEsm, probe], { timeout: 15_000, encoding: 'utf8' });
       expect(r.signal, `process had to be killed — the heartbeat held it open: ${r.stderr}`).toBeNull();
       expect(r.status).toBe(0);
     } finally {
