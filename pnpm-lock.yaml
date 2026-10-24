@@ -299,6 +299,8 @@ importers:
 
   extensions/skills/dispatch-worktrees: {}
 
+  extensions/skills/finance: {}
+
   extensions/skills/iterative-research-refinement: {}
 
   extensions/skills/project: {}
