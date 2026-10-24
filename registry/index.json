@@ -24,7 +24,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
+    "builtFromCommit": "db0c3c7688a29b987cd76c6ac4e7c90616b53c6b"
   },
   {
     "id": "memory-cli",
@@ -39,7 +39,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
+    "builtFromCommit": "db0c3c7688a29b987cd76c6ac4e7c90616b53c6b"
   },
   {
     "id": "memory-flush",
@@ -54,7 +54,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
+    "builtFromCommit": "db0c3c7688a29b987cd76c6ac4e7c90616b53c6b"
   },
   {
     "id": "memory-server",
@@ -73,7 +73,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
+    "builtFromCommit": "db0c3c7688a29b987cd76c6ac4e7c90616b53c6b"
   },
   {
     "id": "memory-usage",
@@ -88,7 +88,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
+    "builtFromCommit": "db0c3c7688a29b987cd76c6ac4e7c90616b53c6b"
   },
   {
     "id": "sox",
@@ -101,6 +101,6 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "4fec02a2b9d13a4b5faa2cb594764c8a84785318"
+    "builtFromCommit": "db0c3c7688a29b987cd76c6ac4e7c90616b53c6b"
   }
 ]
